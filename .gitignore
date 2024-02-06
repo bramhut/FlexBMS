@@ -1,0 +1,9 @@
+*History/
+*__Previews/
+Simulations/**.log
+Simulations/**.raw
+**/.pio/
+**/.vscode/
+**/__pycache__
+*Project Outputs for*
+*Project Logs for*
