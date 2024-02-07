@@ -1,0 +1,3 @@
+Record=TopLevelDocument|FileName=Top.SchDoc|SheetNumber=1
+Record=SheetSymbol|SourceDocument=Top.SchDoc|Designator=Designator|SchDesignator=Designator|FileName=Power.SchDoc|SheetNumber=3|SymbolType=Normal|RawFileName=Power.SchDoc|DesignItemId= |SourceLibraryName= |ObjectKind=Sheet Symbol|RevisionGUID= |ItemGUID= |VaultGUID= 
+Record=SheetSymbol|SourceDocument=Top.SchDoc|Designator=Designator|SchDesignator=Designator|FileName=STM32_IO.SchDoc|SheetNumber=2|SymbolType=Normal|RawFileName=STM32_IO.SchDoc|DesignItemId= |SourceLibraryName= |ObjectKind=Sheet Symbol|RevisionGUID= |ItemGUID= |VaultGUID= 
