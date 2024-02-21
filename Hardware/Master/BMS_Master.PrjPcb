@@ -275,24 +275,24 @@ DocumentPath=Project Outputs for BMS_Master\Design Rule Check - Master.html
 DItemRevisionGUID=
 
 [Parameter1]
-Name=ProjectPrettyName
-Value=BMS Master
+Name=Author
+Value=Bram Bremer
 
 [Parameter2]
-Name=Author4
-Value= 
+Name=Author2
+Value=
 
 [Parameter3]
 Name=Author3
-Value= 
+Value=
 
 [Parameter4]
-Name=Author2
-Value= 
+Name=Author4
+Value=
 
 [Parameter5]
-Name=Author
-Value=Bram Bremer
+Name=ProjectPrettyName
+Value=BMS Master
 
 [DiffPairSuffix1]
 Positive=_HI
