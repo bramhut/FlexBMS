@@ -270,6 +270,10 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=WJQXEVFR
 
+[GeneratedDocument1]
+DocumentPath=Project Outputs for BMS_Master\Design Rule Check - Master.html
+DItemRevisionGUID=
+
 [DiffPairSuffix1]
 Positive=_HI
 Negative=_LO
