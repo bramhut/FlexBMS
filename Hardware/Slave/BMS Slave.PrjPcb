@@ -84,40 +84,6 @@ GenerateClassCluster=0
 DocumentUniqueId=JPZFTCXJ
 
 [Document3]
-DocumentPath=NTC Measurement.SchDoc
-AnnotationEnabled=1
-AnnotateStartValue=1
-AnnotationIndexControlEnabled=0
-AnnotateSuffix=
-AnnotateScope=All
-AnnotateOrder=2
-DoLibraryUpdate=1
-DoDatabaseUpdate=1
-ClassGenCCAutoEnabled=1
-ClassGenCCAutoRoomEnabled=1
-ClassGenNCAutoScope=None
-DItemRevisionGUID=
-GenerateClassCluster=1
-DocumentUniqueId=CJKFWZTM
-
-[Document4]
-DocumentPath=Cell Terminal LPF.SchDoc
-AnnotationEnabled=1
-AnnotateStartValue=1
-AnnotationIndexControlEnabled=0
-AnnotateSuffix=
-AnnotateScope=All
-AnnotateOrder=3
-DoLibraryUpdate=1
-DoDatabaseUpdate=1
-ClassGenCCAutoEnabled=1
-ClassGenCCAutoRoomEnabled=1
-ClassGenNCAutoScope=None
-DItemRevisionGUID=
-GenerateClassCluster=1
-DocumentUniqueId=BSJAMVAW
-
-[Document5]
 DocumentPath=Module Board.PcbDoc
 AnnotationEnabled=1
 AnnotateStartValue=1

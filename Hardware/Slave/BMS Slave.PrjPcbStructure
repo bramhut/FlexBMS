@@ -1,5 +1,3 @@
 Record=TopLevelDocument|FileName=Module Board.SchDoc|SheetNumber=1
 Record=SheetSymbol|SourceDocument=Module Board.SchDoc|Designator=S1|SchDesignator=S1|FileName=Slave.SchDoc|SheetNumber=2|SymbolType=Normal|RawFileName=Slave.SchDoc|DesignItemId= |SourceLibraryName= |ObjectKind=Sheet Symbol|RevisionGUID= |ItemGUID= |VaultGUID= 
 Record=SheetSymbol|SourceDocument=Module Board.SchDoc|Designator=S2|SchDesignator=S2|FileName=Slave.SchDoc|SheetNumber=2|SymbolType=Normal|RawFileName=Slave.SchDoc|DesignItemId= |SourceLibraryName= |ObjectKind=Sheet Symbol|RevisionGUID= |ItemGUID= |VaultGUID= 
-Record=NoMainPathDocument|SourceDocument=Module Board.SchDoc|FileName=Cell Terminal LPF.SchDoc|SheetNumber=4
-Record=NoMainPathDocument|SourceDocument=Module Board.SchDoc|FileName=NTC Measurement.SchDoc|SheetNumber=3
