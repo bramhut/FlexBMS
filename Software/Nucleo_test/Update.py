@@ -28,6 +28,10 @@ for filename in os.listdir("./Src"):
 # Run the command 'stm32pio generate' on both /Src and /Inc directories
 os.system("stm32pio generate")
 
+# Remove app_freertos.c file from /Src directory
+if os.path.exists("./Src/app_freertos.c"):
+    os.remove("./Src/app_freertos.c")
+
 # Rename all *.c files in /Src subdirectory back to *.cpp. Exclude usbd_conf.c
 for filename in os.listdir("./Src"):
     if filename.endswith('.c') and os.path.isfile(os.path.join("./Src", filename)) and filename != "usbd_conf.c":
