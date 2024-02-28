@@ -21,6 +21,7 @@
 #include "cmsis_os.h"
 #include "adc.h"
 #include "dma.h"
+#include "fdcan.h"
 #include "usart.h"
 #include "rtc.h"
 #include "tim.h"
@@ -97,6 +98,8 @@ int main(void)
   MX_RTC_Init();
   MX_TIM7_Init();
   MX_ADC1_Init();
+  MX_FDCAN1_Init();
+  MX_FDCAN2_Init();
   /* USER CODE BEGIN 2 */
   /* USER CODE END 2 */
 
