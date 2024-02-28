@@ -10,8 +10,16 @@
 #define MICROS_TIMER htim7
 
 
-// ADC peripherals
+/* ADC peripherals */
+#define ADC1_ENABLED
+#define ADC1_CHANNELS 4
+// #define ADC2_ENABLED
+// #define ADC2_CHANNELS 4
+// #define ADC3_ENABLED
+// #define ADC3_CHANNELS 4
 
+// Use ratiometric mode or absolute voltage mode
+#define RATIOMETRIC 
 
 
 
