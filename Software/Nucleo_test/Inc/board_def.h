@@ -2,33 +2,47 @@
 
 /***** SETTINGS *****/
 
-#define BOARD_SERIES_G4
-// #define BOARD_SERIES_H7
+    // Board series
+    #define BOARD_SERIES_G4
+    // #define BOARD_SERIES_H7
 
 
-// Timer peripherals
-#define MICROS_TIMER htim7
+/* Peripheral - Timers */
+
+    // Timer peripherals
+    #define MICROS_TIMER htim7
+    #define TIMER_BUS_FREQUENCY 168 // MHz, maybe automate this later?
 
 
-/* ADC peripherals */
-#define ADC1_ENABLED
-#define ADC1_CHANNELS 4
-// #define ADC2_ENABLED
-// #define ADC2_CHANNELS 4
-// #define ADC3_ENABLED
-// #define ADC3_CHANNELS 4
+/* Peripheral - ADC */
 
-// Use ratiometric mode or absolute voltage mode
-#define RATIOMETRIC 
+    // Number of ADC channels, 0 = disabled
+    #define ADC1_CHANNELS 4
+    #define ADC2_CHANNELS 0
+    #define ADC3_CHANNELS 0
 
+    // Define the channel for VREFINT. Start counting from channel 0, adc1
+    // So if VREFINT is on channel 3, adc3: set to ADC1_CHANNELS + ADC2_CHANNELS + 3
+    #define ADC_VREFINT_IDX 3
+
+/* Peripheral - Debug */
+
+
+    // Comment these lines to disable debug messages over specific interfaces
+    #define DEBUG_USB
+    //#define DEBUG_ITM
+    //#define DEBUG_SERIAL
+
+    // IMPORTANT! if you are using serial, define the Serial object here
+    //#define DEBUG_SERIAL_HANDLE 
 
 
 
 /***** DON'T EDIT *****/
 
-#define ADC_ENABLED __has_include("adc.h")
-#define DAC_ENABLED __has_include("dac.h")
-#define CAN_ENABLED __has_include("fdcan.h")
-#define USB_ENABLED __has_include("usb_device.h")
-#define I2C_ENABLED __has_include("i2c.h")
-#define USART_ENABLED __has_include("usart.h")
+    #define ADC_ENABLED __has_include("adc.h")
+    #define DAC_ENABLED __has_include("dac.h")
+    #define CAN_ENABLED __has_include("fdcan.h")
+    #define USB_ENABLED __has_include("usb_device.h")
+    #define I2C_ENABLED __has_include("i2c.h")
+    #define USART_ENABLED __has_include("usart.h")
