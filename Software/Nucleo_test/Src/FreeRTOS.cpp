@@ -17,14 +17,24 @@ void DefaultTask(void *argument)
 {
 	AIN::begin();
 	setupMicros();
-	uint32_t lastMicros = 0;
+	uint32_t lastMicros = 0, lastMillis = 0, curMicros = 0;
+	static bool ledState = false, ledState2 = false;
 	while(1)
 	{
-		if (micros() - lastMicros > 1000000)
+		if ((curMicros = micros()) - lastMicros > 1000000)
 		{
-			lastMicros = micros();
-			WRITE_PIN(LD2, !READ_PIN(LD2));
+			lastMicros = curMicros;
+			WRITE_PIN(LD2, ledState);
+			// lastMillis = millis();
+			ledState = !ledState;
 		}
+
+		// if (millis() - lastMillis > 1000)
+		// {
+		// 	lastMillis = millis();
+		// 	// WRITE_PIN(LD2, ledState2);
+		// 	ledState2 = !ledState2;
+		// }
 	}
 }
 
