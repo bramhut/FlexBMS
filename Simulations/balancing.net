@@ -1,0 +1,8 @@
+* C:\Users\Arjan Blankestijn\Documents\GTT\Projects\bms\Simulations\balancing.asc
+V1 N001 0 4.3
+Rbal N002 N001 37.5
+R_bal_c N003 0 3.3
+Rds N002 N003 0.5
+.tran 1s
+.backanno
+.end
