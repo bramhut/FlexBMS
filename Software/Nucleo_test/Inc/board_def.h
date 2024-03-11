@@ -46,3 +46,5 @@
     #define USB_ENABLED __has_include("usb_device.h")
     #define I2C_ENABLED __has_include("i2c.h")
     #define USART_ENABLED __has_include("usart.h")
+    #define SPI_ENABLED __has_include("spi.h")
+    #define FREERTOS_ENABLED __has_include("FreeRTOS.h")
