@@ -10,9 +10,7 @@
 /* Peripheral - Timers */
 
     // Timer peripherals
-    #define MICROS_TIMER htim7
-    #define TIMER_BUS_FREQUENCY 168 // MHz, maybe automate this later?
-
+    #define MICROS_TIMER htim6 // Share this timer with the Timebase source timer as set in CubeMX (NOT systick)
 
 /* Peripheral - ADC */
 
