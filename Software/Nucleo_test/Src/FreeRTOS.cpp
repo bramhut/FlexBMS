@@ -5,6 +5,10 @@
 #include "AIN.h"
 #include "Time.h"
 #include "DIO.h"
+#include "SPIwrapper.h"
+
+#define DEBUG_LVL 2
+#include "Debug.h"
 
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
@@ -13,28 +17,51 @@ const osThreadAttr_t defaultTask_attributes = {
 	.priority = (osPriority_t) osPriorityNormal,
 };
 
+// SPI spiTX(&hspi2, SPI::MASTER_TX, 0, SPI2_CS_GPIO_Port, SPI2_CS_Pin);
+// SPI spiRX(&hspi3, SPI::SLAVE_RX, 6);
+
 void DefaultTask(void *argument)
 {
-	AIN::begin();
-	setupMicros();
+	uint8_t test_arr[] = {0x01, 0x01, 0x08, 0x01, 0x30, 0x3C};
 	uint32_t lastMicros = 0, lastMillis = 0, curMicros = 0;
-	static bool ledState = false, ledState2 = false;
+	bool pinState = false;
+
+	AIN::begin();
+	
+	// spiTX.setup();
+	// spiRX.setup();
+
+	// spiRX.addRXCallback([&test_arr](uint8_t *data, size_t size) {
+	// 	PRINTF_INFO("[SPI] Received %d bytes\n", size);
+	// 	for (size_t i = 0; i < size; i++)
+	// 	{
+	// 		PRINTF_INFO("%02X ", data[i]);
+	// 	}
+	// 	PRINTF_INFO("\n");
+	// 	memcpy(test_arr, data, size);
+	// 	test_arr[0] += 1;
+	// });
+
 	while(1)
 	{
-		if ((curMicros = micros()) - lastMicros > 1000000)
-		{
-			lastMicros = curMicros;
-			WRITE_PIN(LD2, ledState);
-			// lastMillis = millis();
-			ledState = !ledState;
-		}
 
-		// if (millis() - lastMillis > 1000)
+		// SPI TESTING
+		// if (millis() - lastMillis >= 1)
 		// {
 		// 	lastMillis = millis();
-		// 	// WRITE_PIN(LD2, ledState2);
-		// 	ledState2 = !ledState2;
+		// 	spiTX.transmitGuaranteed(test_arr, sizeof(test_arr));
 		// }
+		// spiTX.loop();
+		// spiRX.loop();
+
+
+		// TIMER TESTING
+		if ((curMicros = micros()) - lastMicros >= 250)
+		{
+			lastMicros = curMicros;
+			WRITE_PIN(SPI2_CS, pinState);
+			pinState = !pinState;
+		}
 	}
 }
 

@@ -10,9 +10,7 @@
 /* Peripheral - Timers */
 
     // Timer peripherals
-    #define MICROS_TIMER htim7
-    #define TIMER_BUS_FREQUENCY 168 // MHz, maybe automate this later?
-
+    #define MICROS_TIMER htim6 // Share this timer with the Timebase source timer as set in CubeMX (NOT systick)
 
 /* Peripheral - ADC */
 
@@ -46,3 +44,5 @@
     #define USB_ENABLED __has_include("usb_device.h")
     #define I2C_ENABLED __has_include("i2c.h")
     #define USART_ENABLED __has_include("usart.h")
+    #define SPI_ENABLED __has_include("spi.h")
+    #define FREERTOS_ENABLED __has_include("FreeRTOS.h")
