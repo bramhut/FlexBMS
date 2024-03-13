@@ -10,9 +10,16 @@
 #define DEBUG_LVL 2
 #include "Debug.h"
 
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-	.name = "defaultTask",
+osThreadId_t mainTaskHandle;
+const osThreadAttr_t mainTask_attributes = {
+	.name = "mainTask",
+	.stack_size = 128 * 4,
+	.priority = (osPriority_t) osPriorityNormal,
+};
+
+osThreadId_t testTaskHandle;
+const osThreadAttr_t testTask_attributes = {
+	.name = "testTask",
 	.stack_size = 128 * 4,
 	.priority = (osPriority_t) osPriorityNormal,
 };
@@ -20,7 +27,7 @@ const osThreadAttr_t defaultTask_attributes = {
 // SPI spiTX(&hspi2, SPI::MASTER_TX, 0, SPI2_CS_GPIO_Port, SPI2_CS_Pin);
 // SPI spiRX(&hspi3, SPI::SLAVE_RX, 6);
 
-void DefaultTask(void *argument)
+void mainTask(void *argument)
 {
 	uint8_t test_arr[] = {0x01, 0x01, 0x08, 0x01, 0x30, 0x3C};
 	uint32_t lastMicros = 0, lastMillis = 0, curMicros = 0;
@@ -56,16 +63,22 @@ void DefaultTask(void *argument)
 
 
 		// TIMER TESTING
-		if ((curMicros = micros()) - lastMicros >= 250)
-		{
-			lastMicros = curMicros;
-			WRITE_PIN(SPI2_CS, pinState);
-			pinState = !pinState;
-		}
+		// if ((curMicros = micros()) - lastMicros >= 250)
+		// {
+		// 	lastMicros = curMicros;
+		// 	WRITE_PIN(SPI2_CS, pinState);
+		// 	pinState = !pinState;
+		// }
+		WRITE_PIN(SPI2_CS, 1);
+		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_13);
+		// delay(100);
+		// WRITE_PIN(SPI2_CS, 0);
 	}
 }
 
 // Don't change the function name, it is called from the generated code
+// Start up tasks
 void MX_FREERTOS_Init() {
-	defaultTaskHandle = osThreadNew(DefaultTask, NULL, &defaultTask_attributes);
+	mainTaskHandle = osThreadNew(mainTask, NULL, &mainTask_attributes);
+	testTaskHandle = osThreadNew(testTask, NULL, &testTask_attributes);
 }
