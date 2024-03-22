@@ -57,9 +57,11 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define B1_Pin GPIO_PIN_13
-#define B1_GPIO_Port GPIOC
-#define B1_EXTI_IRQn EXTI15_10_IRQn
+#define SW1_IN_Pin GPIO_PIN_13
+#define SW1_IN_GPIO_Port GPIOC
+#define SW1_IN_EXTI_IRQn EXTI15_10_IRQn
+#define RELAY_Pin GPIO_PIN_3
+#define RELAY_GPIO_Port GPIOC
 #define LPUART1_TX_Pin GPIO_PIN_2
 #define LPUART1_TX_GPIO_Port GPIOA
 #define LPUART1_RX_Pin GPIO_PIN_3
@@ -68,6 +70,16 @@ void Error_Handler(void);
 #define LD2_GPIO_Port GPIOA
 #define SPI2_CS_Pin GPIO_PIN_12
 #define SPI2_CS_GPIO_Port GPIOB
+#define MC_INT_Pin GPIO_PIN_8
+#define MC_INT_GPIO_Port GPIOC
+#define MC_EN_Pin GPIO_PIN_9
+#define MC_EN_GPIO_Port GPIOC
+#define LED_R_Pin GPIO_PIN_8
+#define LED_R_GPIO_Port GPIOA
+#define LED_G_Pin GPIO_PIN_9
+#define LED_G_GPIO_Port GPIOA
+#define LED_B_Pin GPIO_PIN_10
+#define LED_B_GPIO_Port GPIOA
 #define T_SWDIO_Pin GPIO_PIN_13
 #define T_SWDIO_GPIO_Port GPIOA
 #define T_SWCLK_Pin GPIO_PIN_14

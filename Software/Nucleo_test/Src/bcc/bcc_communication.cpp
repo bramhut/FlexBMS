@@ -1,33 +1,3 @@
-/*
- * Copyright 2016 - 2020 NXP
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without modification,
- * are permitted provided that the following conditions are met:
- *
- * o Redistributions of source code must retain the above copyright notice, this list
- *   of conditions and the following disclaimer.
- *
- * o Redistributions in binary form must reproduce the above copyright notice, this
- *   list of conditions and the following disclaimer in the documentation and/or
- *   other materials provided with the distribution.
- *
- * o Neither the name of the copyright holder nor the names of its
- *   contributors may be used to endorse or promote products derived from this
- *   software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
- * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
- * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 /*!
  * @file bcc_communication.c
  *
@@ -40,23 +10,24 @@
  ******************************************************************************/
 
 #include "bcc/bcc_communication.h"
+#include "cmsis_os.h" // Needed for assert
 
 /*******************************************************************************
  * Definitions
  ******************************************************************************/
 
 /*! @brief Size of CRC table. */
-#define BCC_CRC_TBL_SIZE          256U
+#define BCC_CRC_TBL_SIZE 256U
 
 /** BCC Commands. */
 /*! @brief No operation command. */
-#define BCC_CMD_NOOP              0x00U
+#define BCC_CMD_NOOP 0x00U
 /*! @brief Read command. */
-#define BCC_CMD_READ              0x01U
+#define BCC_CMD_READ 0x01U
 /*! @brief Write command. */
-#define BCC_CMD_WRITE             0x02U
+#define BCC_CMD_WRITE 0x02U
 /*! @brief Global write command. */
-#define BCC_CMD_GLOB_WRITE        0x03U
+#define BCC_CMD_GLOB_WRITE 0x03U
 
 /*!
  * @brief Returns data field of the communication frame.
@@ -64,18 +35,18 @@
  * @param msg Pointer to the frame.
  * @return Data field.
  */
-#define BCC_GET_MSG_DATA(msg) \
-    (((uint16_t)*((msg) + BCC_MSG_IDX_DATA_H) << 8U) | \
-      (uint16_t)*((msg) + BCC_MSG_IDX_DATA_L))
+#define BCC_GET_MSG_DATA(msg)                            \
+    (((uint16_t) * ((msg) + BCC_MSG_IDX_DATA_H) << 8U) | \
+     (uint16_t) * ((msg) + BCC_MSG_IDX_DATA_L))
 
 /*! @brief Mask for address field of frame. */
-#define BCC_MSG_ADDR_MASK         0x7FU
+#define BCC_MSG_ADDR_MASK 0x7FU
 /*! @brief Mask of the message counter bit field within the BCC_MSG_IDX_CNT_CMD
  *  byte. */
-#define BCC_MSG_MSG_CNT_MASK      0xF0U
+#define BCC_MSG_MSG_CNT_MASK 0xF0U
 /*! @brief Shift of the message counter bit field within the BCC_MSG_IDX_CNT_CMD
  *  byte. */
-#define BCC_MSG_MSG_CNT_SHIFT     4U
+#define BCC_MSG_MSG_CNT_SHIFT 4U
 
 /*!
  * @brief Increments message counter value and executes modulo 16.
@@ -94,15 +65,15 @@
  * @return True when the response is zero (except CRC and MSG_CNTR), false
  *         otherwise.
  */
-#define BCC_IS_NULL_RESP(resp) \
+#define BCC_IS_NULL_RESP(resp)             \
     (((resp)[BCC_MSG_IDX_DATA_H] == 0U) && \
      ((resp)[BCC_MSG_IDX_DATA_L] == 0U) && \
-     ((resp)[BCC_MSG_IDX_ADDR] == 0U) && \
-     ((resp)[BCC_MSG_IDX_CID] == 0U) && \
+     ((resp)[BCC_MSG_IDX_ADDR] == 0U) &&   \
+     ((resp)[BCC_MSG_IDX_CID] == 0U) &&    \
      (((resp)[BCC_MSG_IDX_CNT_CMD] & (~BCC_MSG_MSG_CNT_MASK)) == 0U))
 
 /*! @brief Address of the last register. */
-#define BCC_MAX_REG_ADDR       0x7FU
+#define BCC_MAX_REG_ADDR 0x7FU
 
 /*******************************************************************************
  * Constant variables
@@ -141,592 +112,397 @@ static const uint8_t s_crcTable[BCC_CRC_TBL_SIZE] = {
     0x76U, 0x59U, 0x28U, 0x07U, 0xcaU, 0xe5U, 0x94U, 0xbbU,
     0x21U, 0x0eU, 0x7fU, 0x50U, 0x9dU, 0xb2U, 0xc3U, 0xecU,
     0xd8U, 0xf7U, 0x86U, 0xa9U, 0x64U, 0x4bU, 0x3aU, 0x15U,
-    0x8fU, 0xa0U, 0xd1U, 0xfeU, 0x33U, 0x1cU, 0x6dU, 0x42U
-};
+    0x8fU, 0xa0U, 0xd1U, 0xfeU, 0x33U, 0x1cU, 0x6dU, 0x42U};
 
-/*******************************************************************************
- * Prototypes of internal functions
- ******************************************************************************/
-
-/*!
- * @brief This function calculates CRC value for the SPI frame.
- *
- * @param data Pointer to the SPI frame.
- *
- * @return Computed CRC value.
- */
-static inline uint8_t BCC_CalcCRC(const uint8_t* const data);
-
-/*!
- * @brief This function calculates CRC of a received frame and compares
- * it with CRC field of this frame.
- *
- * @param resp Pointer to memory that contains a response (frame) to be checked.
- *
- * @return bcc_status_t Error code.
- */
-static bcc_status_t BCC_CheckCRC(const uint8_t* const resp);
-
-/*!
- * @brief This function checks value of the Message counter field of a frame.
- * It is done by comparing a value parsed from the frame with a value from
- * previously received frame, which is internally stored in the driver
- * configuration structure.
- *
- * @param drvConfig Pointer to driver instance configuration.
- * @param cid       Cluster Identification Address of communicating BCC device.
- * @param resp      Pointer to memory that contains a response (frame) to be
- *                  checked.
- *
- * @return bcc_status_t Error code.
- */
-static bcc_status_t BCC_CheckMsgCntr(bcc_drv_config_t* const drvConfig,
-    const bcc_cid_t cid, const uint8_t* const resp);
-
-/*!
- * @brief This function checks content of the received echo frame. It should be
- * equal to the sent frame.
- *
- * @param txBuf Pointer to memory that contains the sent frame.
- * @param resp  Pointer to memory that contains a response (frame) to be
- *              checked.
- *
- * @return bcc_status_t Error code.
- */
-static bcc_status_t BCC_CheckEchoFrame(const uint8_t* const txBuf,
-    const uint8_t* const resp);
-
-/*!
- * @brief This function packs all the parameters into a frame according to
- * the BCC frame format (see BCC datasheet).
- *
- * @param data   16 bit Register Data field of the BCC frame.
- * @param addr   7 bit Register Address field of the BCC frame.
- * @param cid    6 bit Physical Address field of the BCC frame.
- * @param cntCmd 4 bit Message Counter and 2 bit Command field of the BCC frame.
- *               -----------------------------------------
- *               | Message counter | Reserved |  Command |
- *               |    Bit[7:4]     | Bit[3:2] | Bit[1:0] |
- *               -----------------------------------------
- * @param frame  Pointer to a BCC_MSG_SIZE-byte array where all the fields and
- *               computed CRC will be stored. Note that fields are stored into
- *               the array according to BCC_MSG_IDX_* macros.
- */
-static void BCC_PackFrame(const uint16_t data, const uint8_t addr,
-    const bcc_cid_t cid, const uint8_t cmdCnt, uint8_t* const frame);
-
-/*******************************************************************************
- * Internal function
- ******************************************************************************/
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_CalcCRC
- * Description   : This function calculates CRC value of passed data array.
- *
- *END**************************************************************************/
-static inline uint8_t BCC_CalcCRC(const uint8_t* const data)
+namespace BCC_Communication
 {
-    uint8_t crc;      /* Result. */
-    uint8_t tableIdx; /* Index to the CRC table. */
 
-    BCC_MCU_Assert(data != NULL);
-
-    /* Expanding value. */
-    crc = 0x42U;
-
-    tableIdx = crc ^ data[BCC_MSG_IDX_DATA_H];
-    crc = s_crcTable[tableIdx];
-    tableIdx = crc ^ data[BCC_MSG_IDX_DATA_L];
-    crc = s_crcTable[tableIdx];
-    tableIdx = crc ^ data[BCC_MSG_IDX_ADDR];
-    crc = s_crcTable[tableIdx];
-    tableIdx = crc ^ data[BCC_MSG_IDX_CID];
-    crc = s_crcTable[tableIdx];
-    tableIdx = crc ^ data[BCC_MSG_IDX_CNT_CMD];
-    crc = s_crcTable[tableIdx];
-
-    return crc;
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_CheckCRC
- * Description   : This function calculates CRC of a received frame and compares
- *                 it with CRC field of the frame.
- *
- *END**************************************************************************/
-static bcc_status_t BCC_CheckCRC(const uint8_t* const resp)
-{
-    uint8_t frameCrc;  /* CRC value from the response frame. */
-    uint8_t compCrc;   /* Computed (expected) CRC value. */
-
-    BCC_MCU_Assert(resp != NULL);
-
-    frameCrc = resp[BCC_MSG_IDX_CRC];
-    compCrc = BCC_CalcCRC(resp);
-
-    return (compCrc != frameCrc) ? BCC_STATUS_COM_CRC : BCC_STATUS_SUCCESS;
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_CheckMsgCnt
- * Description   : This function checks value of the Message counter field of
- *                 a frame.
- *
- *END**************************************************************************/
-static bcc_status_t BCC_CheckMsgCntr(bcc_drv_config_t* const drvConfig,
-    const bcc_cid_t cid, const uint8_t* const resp)
-{
-    uint8_t msgCntPrev;  /* Previously received message counter value. */
-    uint8_t msgCntRcv;   /* Currently received message counter value. */
-
-    BCC_MCU_Assert(drvConfig != NULL);
-    BCC_MCU_Assert(resp != NULL);
-
-    msgCntPrev = drvConfig->drvData.msgCntr[(uint8_t)cid];
-    msgCntRcv = (resp[BCC_MSG_IDX_CNT_CMD] & BCC_MSG_MSG_CNT_MASK) >> BCC_MSG_MSG_CNT_SHIFT;
-
-    /* Store the Message counter value. */
-    drvConfig->drvData.msgCntr[(uint8_t)cid] = msgCntRcv;
-
-    /* Check the Message counter value.
-     * Note: Do not perform a check for CID=0. */
-    if ((cid != BCC_CID_UNASSIG) && (msgCntRcv != BCC_INC_MSG_CNTR(msgCntPrev)))
+    //internal anonymous namespace for private functions 
+    namespace
     {
-        return BCC_STATUS_COM_MSG_CNT;
-    }
-
-    return BCC_STATUS_SUCCESS;
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_CheckEchoFrame
- * Description   : This function checks content of the echo frame.
- *
- *END**************************************************************************/
-static bcc_status_t BCC_CheckEchoFrame(const uint8_t* const txBuf,
-    const uint8_t* const resp)
-{
-    BCC_MCU_Assert(resp != NULL);
-    BCC_MCU_Assert(txBuf != NULL);
-
-    if ((txBuf[BCC_MSG_IDX_DATA_H] == resp[BCC_MSG_IDX_DATA_H]) &&
-        (txBuf[BCC_MSG_IDX_DATA_L] == resp[BCC_MSG_IDX_DATA_L]) &&
-        (txBuf[BCC_MSG_IDX_ADDR] == resp[BCC_MSG_IDX_ADDR]) &&
-        (txBuf[BCC_MSG_IDX_CID] == resp[BCC_MSG_IDX_CID]) &&
-        (txBuf[BCC_MSG_IDX_CNT_CMD] == resp[BCC_MSG_IDX_CNT_CMD]) &&
-        (txBuf[BCC_MSG_IDX_CRC] == resp[BCC_MSG_IDX_CRC]))
-    {
-        return BCC_STATUS_SUCCESS;
-    }
-    else
-    {
-        return BCC_STATUS_COM_ECHO;
-    }
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_PackFrame
- * Description   : This function packs all the parameters into a frame according
- *                 to the BCC frame format (see BCC datasheet).
- *
- *END**************************************************************************/
-static void BCC_PackFrame(const uint16_t data, const uint8_t addr,
-    const bcc_cid_t cid, const uint8_t cmdCnt, uint8_t* const frame)
-{
-    BCC_MCU_Assert(frame != NULL);
-
-    /* Register Data field. */
-    frame[BCC_MSG_IDX_DATA_H] = (uint8_t)(data >> 8U);
-    frame[BCC_MSG_IDX_DATA_L] = (uint8_t)(data & 0xFFU);
-
-    /* Register Address field. Master/Slave field is always 0 for sending. */
-    frame[BCC_MSG_IDX_ADDR] = (addr & BCC_MSG_ADDR_MASK);
-
-    /* Device address (Cluster ID) field. */
-    frame[BCC_MSG_IDX_CID] = ((uint8_t)cid & 0x3FU);
-
-    /* Message counter and Command fields. */
-    frame[BCC_MSG_IDX_CNT_CMD] = (cmdCnt & 0xF3U);
-
-    /* CRC field. */
-    frame[BCC_MSG_IDX_CRC] = BCC_CalcCRC(frame);
-}
-
-/******************************************************************************
- * API
- ******************************************************************************/
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_Reg_ReadTpl
- * Description   : This function reads desired number of registers of the BCC
- *                 device. Intended for TPL mode only.
- *
- *END**************************************************************************/
-bcc_status_t BCC_Reg_ReadTpl(bcc_drv_config_t* const drvConfig,
-    const bcc_cid_t cid, const uint8_t regAddr, const uint8_t regCnt,
-    uint16_t* regVal)
-{
-    uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
-    uint8_t *rxBuf;              /* Pointer to received data. */
-    uint8_t regIdx;              /* Index of a received register. */
-    bcc_status_t status;
-
-    BCC_MCU_Assert(drvConfig != NULL);
-    BCC_MCU_Assert(regVal != NULL);
-
-    if (((uint8_t)cid > drvConfig->devicesCnt) || (regAddr > BCC_MAX_REG_ADDR) ||
-        (regCnt == 0U) || ((regAddr + regCnt - 1U) > BCC_MAX_REG_ADDR))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    /* Create frame for request. */
-    BCC_PackFrame((uint16_t)regCnt, regAddr, cid, BCC_CMD_READ, txBuf);
-
-    /* Pointer to beginning of the received frame. */
-    rxBuf = (uint8_t *)(drvConfig->drvData.rxBuf);
-
-    status = BCC_MCU_TransferTpl(drvConfig->drvInstance, txBuf, rxBuf, regCnt + 1);
-    if (status != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check the echo frame. */
-    status = BCC_CheckEchoFrame(txBuf, rxBuf);
-    if (status != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check and store responses. */
-    for (regIdx = 0U; regIdx < regCnt; regIdx++)
-    {
-        rxBuf += BCC_MSG_SIZE;
-
-        /* Check CRC. */
-        if ((status = BCC_CheckCRC(rxBuf)) != BCC_STATUS_SUCCESS)
+        /*FUNCTION**********************************************************************
+         *
+         * Function Name : BCC_CalcCRC
+         * Description   : This function calculates CRC value of passed data array.
+         *
+         *END**************************************************************************/
+        uint8_t BCC_CalcCRC(const uint8_t *const data)
         {
-            return status;
+            uint8_t crc;      /* Result. */
+            uint8_t tableIdx; /* Index to the CRC table. */
+
+            configASSERT(data != NULL);
+
+            /* Expanding value. */
+            crc = 0x42U;
+
+            tableIdx = crc ^ data[BCC_MSG_IDX_DATA_H];
+            crc = s_crcTable[tableIdx];
+            tableIdx = crc ^ data[BCC_MSG_IDX_DATA_L];
+            crc = s_crcTable[tableIdx];
+            tableIdx = crc ^ data[BCC_MSG_IDX_ADDR];
+            crc = s_crcTable[tableIdx];
+            tableIdx = crc ^ data[BCC_MSG_IDX_CID];
+            crc = s_crcTable[tableIdx];
+            tableIdx = crc ^ data[BCC_MSG_IDX_CNT_CMD];
+            crc = s_crcTable[tableIdx];
+
+            return crc;
         }
 
-        /* Check the Message counter value. */
-        if ((status = BCC_CheckMsgCntr(drvConfig, cid, rxBuf)) != BCC_STATUS_SUCCESS)
+        /*FUNCTION**********************************************************************
+         *
+         * Function Name : BCC_CheckCRC
+         * Description   : This function calculates CRC of a received frame and compares
+         *                 it with CRC field of the frame.
+         *
+         *END**************************************************************************/
+        bcc_status_t BCC_CheckCRC(const uint8_t *const resp)
         {
-            return status;
+            uint8_t frameCrc; /* CRC value from the response frame. */
+            uint8_t compCrc;  /* Computed (expected) CRC value. */
+
+            configASSERT(resp != NULL);
+
+            frameCrc = resp[BCC_MSG_IDX_CRC];
+            compCrc = BCC_CalcCRC(resp);
+
+            return (compCrc != frameCrc) ? BCC_STATUS_COM_CRC : BCC_STATUS_SUCCESS;
         }
 
-        /* Store data. */
-        *regVal++ = BCC_GET_MSG_DATA(rxBuf);
-    }
-
-    return BCC_STATUS_SUCCESS;
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_Reg_ReadSpi
- * Description   : This function reads desired number of registers of the BCC
- *                 device. Intended for SPI mode only.
- *
- *END**************************************************************************/
-bcc_status_t BCC_Reg_ReadSpi(bcc_drv_config_t* const drvConfig,
-    const bcc_cid_t cid, uint8_t regAddr, const uint8_t regCnt,
-    uint16_t* regVal)
-{
-    uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
-    uint8_t rxBuf[BCC_MSG_SIZE]; /* Buffer for receiving. */
-    uint8_t regIdx;              /* Index of a received register. */
-    bcc_status_t status;
-
-    BCC_MCU_Assert(drvConfig != NULL);
-    BCC_MCU_Assert(regVal != NULL);
-
-    if (((uint8_t)cid > drvConfig->devicesCnt) || (regAddr > BCC_MAX_REG_ADDR) ||
-        (regCnt == 0U) || ((regAddr + regCnt - 1U) > BCC_MAX_REG_ADDR))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    /* Create frame for request. */
-    BCC_PackFrame(0x0001U, regAddr, cid, BCC_CMD_READ, txBuf);
-
-    /* Send request for data. Required data are returned with the following transfer. */
-    status = BCC_MCU_TransferSpi(drvConfig->drvInstance, txBuf, rxBuf);
-    if (status != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check CRC, message counter, a null response (all field except CRC and
-     * message counter are zero) and discard the response. */
-    if ((status = BCC_CheckCRC(rxBuf)) != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    if ((status = BCC_CheckMsgCntr(drvConfig, cid, rxBuf)) != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    if (BCC_IS_NULL_RESP(rxBuf))
-    {
-        return BCC_STATUS_COM_NULL;
-    }
-
-    /* Read required data. */
-    for (regIdx = 0U; regIdx < regCnt; regIdx++)
-    {
-        /* Increment address of the register to be read. */
-        regAddr++;
-        if (regAddr > 0x7FU)
+        /*FUNCTION**********************************************************************
+         *
+         * Function Name : BCC_CheckMsgCnt
+         * Description   : This function checks value of the Message counter field of
+         *                 a frame.
+         *
+         *END**************************************************************************/
+        bcc_status_t BCC_CheckMsgCntr(bcc_drv_config_t *const drvConfig,
+                                      const bcc_cid_t cid, const uint8_t *const resp)
         {
-            regAddr = 0x00U;
+            uint8_t msgCntPrev; /* Previously received message counter value. */
+            uint8_t msgCntRcv;  /* Currently received message counter value. */
+
+            configASSERT(drvConfig != NULL);
+            configASSERT(resp != NULL);
+
+            msgCntPrev = drvConfig->drvData.msgCntr[(uint8_t)cid];
+            msgCntRcv = (resp[BCC_MSG_IDX_CNT_CMD] & BCC_MSG_MSG_CNT_MASK) >> BCC_MSG_MSG_CNT_SHIFT;
+
+            /* Store the Message counter value. */
+            drvConfig->drvData.msgCntr[(uint8_t)cid] = msgCntRcv;
+
+            /* Check the Message counter value.
+             * Note: Do not perform a check for CID=0. */
+            if ((cid != BCC_CID_UNASSIG) && (msgCntRcv != BCC_INC_MSG_CNTR(msgCntPrev)))
+            {
+                return BCC_STATUS_COM_MSG_CNT;
+            }
+
+            return BCC_STATUS_SUCCESS;
         }
 
-        BCC_PackFrame(0x0001U, regAddr, cid, BCC_CMD_READ, txBuf);
+        /*FUNCTION**********************************************************************
+         *
+         * Function Name : BCC_CheckEchoFrame
+         * Description   : This function checks content of the echo frame.
+         *
+         *END**************************************************************************/
+        bcc_status_t BCC_CheckEchoFrame(const uint8_t *const txBuf,
+                                        const uint8_t *const resp)
+        {
+            configASSERT(resp != NULL);
+            configASSERT(txBuf != NULL);
 
-        /* Send request for data. Required data are returned with the following transfer. */
-        status = BCC_MCU_TransferSpi(drvConfig->drvInstance, txBuf, rxBuf);
+            if ((txBuf[BCC_MSG_IDX_DATA_H] == resp[BCC_MSG_IDX_DATA_H]) &&
+                (txBuf[BCC_MSG_IDX_DATA_L] == resp[BCC_MSG_IDX_DATA_L]) &&
+                (txBuf[BCC_MSG_IDX_ADDR] == resp[BCC_MSG_IDX_ADDR]) &&
+                (txBuf[BCC_MSG_IDX_CID] == resp[BCC_MSG_IDX_CID]) &&
+                (txBuf[BCC_MSG_IDX_CNT_CMD] == resp[BCC_MSG_IDX_CNT_CMD]) &&
+                (txBuf[BCC_MSG_IDX_CRC] == resp[BCC_MSG_IDX_CRC]))
+            {
+                return BCC_STATUS_SUCCESS;
+            }
+            else
+            {
+                return BCC_STATUS_COM_ECHO;
+            }
+        }
+
+        /*FUNCTION**********************************************************************
+         *
+         * Function Name : BCC_PackFrame
+         * Description   : This function packs all the parameters into a frame according
+         *                 to the BCC frame format (see BCC datasheet).
+         *
+         *END**************************************************************************/
+        void BCC_PackFrame(const uint16_t data, const uint8_t addr,
+                           const bcc_cid_t cid, const uint8_t cmdCnt, uint8_t *const frame)
+        {
+            configASSERT(frame != NULL);
+
+            /* Register Data field. */
+            frame[BCC_MSG_IDX_DATA_H] = (uint8_t)(data >> 8U);
+            frame[BCC_MSG_IDX_DATA_L] = (uint8_t)(data & 0xFFU);
+
+            /* Register Address field. Master/Slave field is always 0 for sending. */
+            frame[BCC_MSG_IDX_ADDR] = (addr & BCC_MSG_ADDR_MASK);
+
+            /* Device address (Cluster ID) field. */
+            frame[BCC_MSG_IDX_CID] = ((uint8_t)cid & 0x3FU);
+
+            /* Message counter and Command fields. */
+            frame[BCC_MSG_IDX_CNT_CMD] = (cmdCnt & 0xF3U);
+
+            /* CRC field. */
+            frame[BCC_MSG_IDX_CRC] = BCC_CalcCRC(frame);
+        }
+
+        /*FUNCTION**********************************************************************
+        *
+        * Function Name : BCC_MCU_TransferTpl
+        * Description   : This function sends and receives data via TX and RX SPI buses.
+        *                 Intended for TPL mode only.
+        *
+        *END**************************************************************************/
+        bcc_status_t BCC_MCU_TransferTpl(uint8_t txBuf[],
+            uint8_t rxBuf[], const uint16_t rxTrCnt)
+
+        {
+            BCC_MCU_Assert(txBuf != NULL);
+            BCC_MCU_Assert(rxBuf != NULL);
+            BCC_MCU_Assert(rxTrCnt > 0);
+
+            /* Transmissions at RX and TX SPI occur almost at the same time. Start
+            * reading (response) at RX SPI first. */
+            
+            // error = LPSPI_DRV_SlaveTransfer(LPSPISPI_TPL1RX, NULL, rxBuf, rxTrCnt * LPSPI_ALIGNMENT);
+            // if (error != STATUS_SUCCESS)
+            // {
+            //     return BCC_STATUS_SPI_FAIL;
+            // }
+
+            // Just in case there is some data in the RX buffer
+            spiRX->clearRxBuffer();
+
+            /* Send data via TX SPI. */
+            // error = LPSPI_DRV_MasterTransferBlocking(LPSPITPLTX, txBuf, NULL,
+            //         LPSPI_ALIGNMENT, BCC_TX_COM_TIMEOUT_MS);
+            // if (error != STATUS_SUCCESS)
+            // {
+            //     /* Cancel reception of data. */
+            //     LPSPI_DRV_SlaveAbortTransfer(LPSPISPI_TPL1RX);
+
+            //     return (error == STATUS_TIMEOUT) ? BCC_STATUS_COM_TIMEOUT : BCC_STATUS_SPI_FAIL;
+            // }
+
+            if(!spiTX->transmitGuaranteed(txBuf, sizeof(txBuf), BCC_TX_COM_TIMEOUT_MS)) {
+                return BCC_STATUS_COM_TIMEOUT;
+            }
+
+            /* Wait until RX transmission finished. */
+            // rxTimeout = BCC_RX_COM_TIMEOUT_MS * 1000;
+            // while ((LPSPI_DRV_SlaveGetTransferStatus(LPSPISPI_TPL1RX, NULL)
+            //         == STATUS_BUSY) && (rxTimeout > 0))
+            // {
+            //     wait.BCC_MCU_WaitUs(10);
+            //     rxTimeout -= 10;
+            // }
+
+            int32_t rxTimeout = BCC_RX_COM_TIMEOUT_MS * 1000;
+            while ((!spiRX->getRxDataAvailable()) && (rxTimeout > 0))
+            {
+                BCC_MCU_WaitUs(10);
+                rxTimeout -= 10;
+            }
+
+            if (!spiRX->getRxData(rxBuf, rxTrCnt * 6)) {
+                return BCC_STATUS_SPI_FAIL;
+            }
+
+            /* Cancel data reception if the timeout expires. */
+            // if (rxTimeout <= 0)
+            // {
+            //     LPSPI_DRV_SlaveAbortTransfer(LPSPISPI_TPL1RX);
+            //     return BCC_STATUS_COM_TIMEOUT;
+            // }
+
+            return BCC_STATUS_SUCCESS;
+
+
+        }
+
+    }
+
+    /*FUNCTION**********************************************************************
+     *
+     * Function Name : BCC_Reg_ReadTpl
+     * Description   : This function reads desired number of registers of the BCC
+     *                 device. Intended for TPL mode only.
+     *
+     *END**************************************************************************/
+    bcc_status_t BCC_Reg_ReadTpl(bcc_drv_config_t *const drvConfig,
+                                                    const bcc_cid_t cid, const uint8_t regAddr, const uint8_t regCnt,
+                                                    uint16_t *regVal)
+    {
+        uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
+        uint8_t *rxBuf;              /* Pointer to received data. */
+        uint8_t regIdx;              /* Index of a received register. */
+        bcc_status_t status;
+
+        configASSERT(drvConfig != NULL);
+        configASSERT(regVal != NULL);
+
+        if (((uint8_t)cid > drvConfig->devicesCnt) || (regAddr > BCC_MAX_REG_ADDR) ||
+            (regCnt == 0U) || ((regAddr + regCnt - 1U) > BCC_MAX_REG_ADDR))
+        {
+            return BCC_STATUS_PARAM_RANGE;
+        }
+
+        /* Create frame for request. */
+        BCC_PackFrame((uint16_t)regCnt, regAddr, cid, BCC_CMD_READ, txBuf);
+
+        /* Pointer to beginning of the received frame. */
+        rxBuf = (uint8_t *)(drvConfig->drvData.rxBuf);
+
+        status = BCC_MCU_TransferTpl(txBuf, rxBuf, regCnt + 1);
         if (status != BCC_STATUS_SUCCESS)
         {
             return status;
         }
 
-        /* Check CRC. */
-        if ((status = BCC_CheckCRC(rxBuf)) != BCC_STATUS_SUCCESS)
+        /* Check the echo frame. */
+        status = BCC_CheckEchoFrame(txBuf, rxBuf);
+        if (status != BCC_STATUS_SUCCESS)
         {
             return status;
         }
 
-        /* Check the Message counter value. */
-        if ((status = BCC_CheckMsgCntr(drvConfig, cid, rxBuf)) != BCC_STATUS_SUCCESS)
+        /* Check and store responses. */
+        for (regIdx = 0U; regIdx < regCnt; regIdx++)
+        {
+            rxBuf += BCC_MSG_SIZE;
+
+            /* Check CRC. */
+            if ((status = BCC_CheckCRC(rxBuf)) != BCC_STATUS_SUCCESS)
+            {
+                return status;
+            }
+
+            /* Check the Message counter value. */
+            if ((status = BCC_CheckMsgCntr(drvConfig, cid, rxBuf)) != BCC_STATUS_SUCCESS)
+            {
+                return status;
+            }
+
+            /* Store data. */
+            *regVal++ = BCC_GET_MSG_DATA(rxBuf);
+        }
+
+        return BCC_STATUS_SUCCESS;
+    }
+
+    /*FUNCTION**********************************************************************
+     *
+     * Function Name : BCC_Reg_WriteTpl
+     * Description   : This function writes a value to addressed register of the
+     *                 BCC device. Intended for TPL mode only.
+     *
+     *END**************************************************************************/
+    bcc_status_t BCC_Reg_WriteTpl(bcc_drv_config_t *const drvConfig,
+                                                     const bcc_cid_t cid, const uint8_t regAddr, const uint16_t regVal)
+    {
+        uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
+        bcc_status_t status;
+
+        BCC_MCU_Assert(drvConfig != NULL);
+
+        if (((uint8_t)cid > drvConfig->devicesCnt) || (regAddr > BCC_MAX_REG_ADDR))
+        {
+            return BCC_STATUS_PARAM_RANGE;
+        }
+
+        /* Create frame for writing. */
+        BCC_PackFrame(regVal, regAddr, cid, BCC_CMD_WRITE, txBuf);
+
+        status = BCC_MCU_TransferTpl(txBuf, drvConfig->drvData.rxBuf, 1);
+        if (status != BCC_STATUS_SUCCESS)
         {
             return status;
         }
 
-        if (BCC_IS_NULL_RESP(rxBuf))
+        /* Check the echo frame. */
+        return BCC_CheckEchoFrame(txBuf, drvConfig->drvData.rxBuf);
+    }
+
+    /*FUNCTION**********************************************************************
+     *
+     * Function Name : BCC_Reg_WriteGlobalTpl
+     * Description   : This function writes a value to addressed register of all
+     *                 configured BCC devices in the chain. Intended for TPL mode
+     *                 only.
+     *
+     *END**************************************************************************/
+    bcc_status_t BCC_Reg_WriteGlobalTpl(bcc_drv_config_t *const drvConfig,
+                                                           const uint8_t regAddr, const uint16_t regVal)
+    {
+        uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
+        bcc_status_t status;
+
+        BCC_MCU_Assert(drvConfig != NULL);
+
+        /* Check input parameters. */
+        if (regAddr > BCC_MAX_REG_ADDR)
         {
-            return BCC_STATUS_COM_NULL;
+            return BCC_STATUS_PARAM_RANGE;
         }
 
-        /* Store data. */
-        *regVal++ = BCC_GET_MSG_DATA(rxBuf);
+        /* Create frame for writing. */
+        BCC_PackFrame(regVal, regAddr, BCC_CID_UNASSIG, BCC_CMD_GLOB_WRITE, txBuf);
+
+        status = BCC_MCU_TransferTpl(txBuf, drvConfig->drvData.rxBuf, 1);
+        if (status != BCC_STATUS_SUCCESS)
+        {
+            return status;
+        }
+
+        /* Check the echo frame. */
+        return BCC_CheckEchoFrame(txBuf, drvConfig->drvData.rxBuf);
     }
 
-    return BCC_STATUS_SUCCESS;
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_Reg_WriteTpl
- * Description   : This function writes a value to addressed register of the
- *                 BCC device. Intended for TPL mode only.
- *
- *END**************************************************************************/
-bcc_status_t BCC_Reg_WriteTpl(bcc_drv_config_t* const drvConfig,
-    const bcc_cid_t cid, const uint8_t regAddr, const uint16_t regVal)
-{
-    uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
-    bcc_status_t status;
-
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if (((uint8_t)cid > drvConfig->devicesCnt) || (regAddr > BCC_MAX_REG_ADDR))
+    /*FUNCTION**********************************************************************
+     *
+     * Function Name : BCC_SendNopTpl
+     * Description   : This function sends a No Operation command (NOP) to the
+     *                 BCC device. Intended for TPL mode only.
+     *
+     *END**************************************************************************/
+    bcc_status_t BCC_SendNopTpl(bcc_drv_config_t *const drvConfig,
+                                                   const bcc_cid_t cid)
     {
-        return BCC_STATUS_PARAM_RANGE;
+        uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
+        bcc_status_t status;
+
+        BCC_MCU_Assert(drvConfig != NULL);
+
+        if ((cid == BCC_CID_UNASSIG) || ((uint8_t)cid > drvConfig->devicesCnt))
+        {
+            return BCC_STATUS_PARAM_RANGE;
+        }
+
+        /* Create frame for writing.
+         * Note: Register Data, Register Address and Message counter fields can
+         * contain any value. */
+        BCC_PackFrame(0x0000U, 0x00U, cid, BCC_CMD_NOOP, txBuf);
+
+        status = BCC_MCU_TransferTpl(txBuf, drvConfig->drvData.rxBuf, 1);
+        if (status != BCC_STATUS_SUCCESS)
+        {
+            return status;
+        }
+
+        /* Check the echo frame. */
+        return BCC_CheckEchoFrame(txBuf, drvConfig->drvData.rxBuf);
     }
 
-    /* Create frame for writing. */
-    BCC_PackFrame(regVal, regAddr, cid, BCC_CMD_WRITE, txBuf);
-
-    status = BCC_MCU_TransferTpl(drvConfig->drvInstance, txBuf, drvConfig->drvData.rxBuf, 1);
-    if (status != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check the echo frame. */
-    return BCC_CheckEchoFrame(txBuf, drvConfig->drvData.rxBuf);
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_Reg_WriteSpi
- * Description   : This function writes a value to addressed register of the
- *                 BCC device. Intended for SPI mode only.
- *
- *END**************************************************************************/
-bcc_status_t BCC_Reg_WriteSpi(bcc_drv_config_t* const drvConfig,
-    const bcc_cid_t cid, const uint8_t regAddr, const uint16_t regVal)
-{
-    uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
-    uint8_t rxBuf[BCC_MSG_SIZE]; /* Buffer for receiving. */
-    bcc_status_t status;
-
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if (((uint8_t)cid > drvConfig->devicesCnt) || (regAddr > BCC_MAX_REG_ADDR))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    /* Create frame for writing. */
-    BCC_PackFrame(regVal, regAddr, cid, BCC_CMD_WRITE, txBuf);
-
-    status = BCC_MCU_TransferSpi(drvConfig->drvInstance, txBuf, rxBuf);
-    if (status != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check CRC. */
-    if ((status = BCC_CheckCRC(rxBuf)) != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check message counter. */
-    if ((status = BCC_CheckMsgCntr(drvConfig, cid, rxBuf)) != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check whether all field except CRC and message counter are zero. */
-    if (BCC_IS_NULL_RESP(rxBuf))
-    {
-        return BCC_STATUS_COM_NULL;
-    }
-
-    return BCC_STATUS_SUCCESS;
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_Reg_WriteGlobalTpl
- * Description   : This function writes a value to addressed register of all
- *                 configured BCC devices in the chain. Intended for TPL mode
- *                 only.
- *
- *END**************************************************************************/
-bcc_status_t BCC_Reg_WriteGlobalTpl(bcc_drv_config_t* const drvConfig,
-    const uint8_t regAddr, const uint16_t regVal)
-{
-    uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
-    bcc_status_t status;
-
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    /* Check input parameters. */
-    if (regAddr > BCC_MAX_REG_ADDR)
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    /* Create frame for writing. */
-    BCC_PackFrame(regVal, regAddr, BCC_CID_UNASSIG, BCC_CMD_GLOB_WRITE, txBuf);
-
-    status = BCC_MCU_TransferTpl(drvConfig->drvInstance, txBuf, drvConfig->drvData.rxBuf, 1);
-    if (status != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check the echo frame. */
-    return BCC_CheckEchoFrame(txBuf, drvConfig->drvData.rxBuf);
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_SendNopTpl
- * Description   : This function sends a No Operation command (NOP) to the
- *                 BCC device. Intended for TPL mode only.
- *
- *END**************************************************************************/
-bcc_status_t BCC_SendNopTpl(bcc_drv_config_t* const drvConfig,
-    const bcc_cid_t cid)
-{
-    uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
-    bcc_status_t status;
-
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || ((uint8_t)cid > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    /* Create frame for writing.
-    * Note: Register Data, Register Address and Message counter fields can
-    * contain any value. */
-    BCC_PackFrame(0x0000U, 0x00U, cid, BCC_CMD_NOOP, txBuf);
-
-    status = BCC_MCU_TransferTpl(drvConfig->drvInstance, txBuf, drvConfig->drvData.rxBuf, 1);
-    if (status != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check the echo frame. */
-    return BCC_CheckEchoFrame(txBuf, drvConfig->drvData.rxBuf);
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_SendNopSpi
- * Description   : This function sends a No Operation command (NOP) to the
- *                 BCC device. Intended for SPI mode only.
- *
- *END**************************************************************************/
-bcc_status_t BCC_SendNopSpi(bcc_drv_config_t* const drvConfig,
-    const bcc_cid_t cid)
-{
-    uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
-    uint8_t rxBuf[BCC_MSG_SIZE]; /* Buffer for receiving. */
-    bcc_status_t status;
-
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || ((uint8_t)cid > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    /* Create frame for writing.
-    * Note: Register Data, Register Address and Message counter fields can
-    * contain any value. */
-    BCC_PackFrame(0x0000U, 0x00U, cid, BCC_CMD_NOOP, txBuf);
-
-    status = BCC_MCU_TransferSpi(drvConfig->drvInstance, txBuf, rxBuf);
-    if (status != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check CRC. */
-    if ((status = BCC_CheckCRC(rxBuf)) != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check message counter. */
-    if ((status = BCC_CheckMsgCntr(drvConfig, cid, rxBuf)) != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Check whether all field except CRC and message counter are zero. */
-    if (BCC_IS_NULL_RESP(rxBuf))
-    {
-        return BCC_STATUS_COM_NULL;
-    }
-
-    return BCC_STATUS_SUCCESS;
 }

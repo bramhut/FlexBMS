@@ -9,6 +9,7 @@
 
 #define DEBUG_LVL 2
 #include "Debug.h"
+#include "bcc/bcc.h"
 
 osThreadId_t mainTaskHandle;
 const osThreadAttr_t mainTask_attributes = {
@@ -24,8 +25,9 @@ const osThreadAttr_t testTask_attributes = {
 	.priority = (osPriority_t) osPriorityNormal,
 };
 
-// SPI spiTX(&hspi2, SPI::MASTER_TX, 0, SPI2_CS_GPIO_Port, SPI2_CS_Pin);
-// SPI spiRX(&hspi3, SPI::SLAVE_RX, 6);
+SPI spiTX(&hspi2, SPI::MASTER_TX, 0, SPI2_CS_GPIO_Port, SPI2_CS_Pin);
+SPI spiRX(&hspi3, SPI::SLAVE_RX, 6);
+
 
 void mainTask(void *argument)
 {
@@ -34,6 +36,8 @@ void mainTask(void *argument)
 	bool pinState = false;
 
 	AIN::begin();
+	BCC bcc = BCC(&spiTX, &spiRX);
+
 	
 	// spiTX.setup();
 	// spiRX.setup();
@@ -80,5 +84,5 @@ void mainTask(void *argument)
 // Start up tasks
 void MX_FREERTOS_Init() {
 	mainTaskHandle = osThreadNew(mainTask, NULL, &mainTask_attributes);
-	testTaskHandle = osThreadNew(testTask, NULL, &testTask_attributes);
+	// testTaskHandle = osThreadNew(testTask, NULL, &testTask_attributes);
 }
