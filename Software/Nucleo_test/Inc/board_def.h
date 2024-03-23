@@ -26,15 +26,6 @@
 /* Peripheral - Debug */
 
 
-    // Comment these lines to disable debug messages over specific interfaces
-    #define DEBUG_USB
-    //#define DEBUG_ITM
-    //#define DEBUG_SERIAL
-
-    // IMPORTANT! if you are using serial, define the Serial object here
-    //#define DEBUG_SERIAL_HANDLE 
-
-
 
 /***** DON'T EDIT *****/
 
