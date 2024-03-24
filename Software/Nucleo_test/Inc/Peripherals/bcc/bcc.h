@@ -16,23 +16,29 @@
 
 #include "bcc_utils.h"
 #include "bcc_communication.h"
-#include "bcc_peripherals.h"
 #include "main.h"
 #include "SPIwrapper.h"
 
 class BCC
 {
 private:
-   
-    uint8_t devicesCnt;
 
-    // TODO set size of this array to deviceCnt to reduce memory usage
-    // Number of connected cells for each BCC. Indexed by CID
-    uint16_t cellCount[BCC_DEVICE_CNT_MAX];
+    /*******************************************************************************
+     * DEVICE SPECIFIC SETTINGS
+     ******************************************************************************/
 
-    // Loop back mode, if False, RDTX_OUT of the last node is terminated
-    bool loopBack = false;
+    // Device type
+    const bcc_device_t device;
 
+    // Number of connected cells
+    const uint16_t cellCount;
+
+    // Map of connected cells
+    const uint16_t cellMap;
+
+    /*******************************************************************************
+     * PRIVATE FUNCTIONS
+     ******************************************************************************/
 
     /*!
      * @brief This function does two consecutive transitions of CSB_TX from low to
@@ -98,7 +104,11 @@ private:
     bool checkConfiguration();
 
 public:
-    BCC(SPI *spiTX, SPI *spiRX);
+
+
+    BCC(bcc_device_t device, uint16_t cellCount);
+
+
     /*!
      * @brief This function initializes the battery cell controller device(s),
      * assigns CID and initializes internal driver data.
@@ -120,28 +130,14 @@ public:
     bcc_status_t BCC_Init();
 
     /*!
-     * @brief This function sends No Operation command the to BCC device. It can be
-     * used to reset the communication timeout of the device without performing
-     * any operation.
-     *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t BCC_SendNop(bcc_drv_config_t *const drvConfig, const bcc_cid_t cid);
-
-    /*!
      * @brief This function sets sleep mode to all battery cell controller devices.
      *
      * In case of TPL communication mode, MC33664 has to be put into the sleep mode
      * separately, by the BCC_TPL_Disable function.
      *
-     * @param drvConfig Pointer to driver instance configuration.
-     *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Sleep(bcc_drv_config_t *const drvConfig);
+    bcc_status_t BCC_Sleep();
 
 
     /*!
@@ -195,73 +191,7 @@ public:
      */
     void BCC_TPL_Disable(const uint8_t drvInstance);
 
-    /*!
-     * @brief This function reads a value from addressed register (or desired
-     * number of registers) of selected battery cell controller device.
-     *
-     * In case of simultaneous read of more registers, address is incremented
-     * in ascending manner.
-     *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
-     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
-     *                  for possible values (MC3377*C_*_OFFSET macros).
-     * @param regCnt    Number of registers to be read.
-     * @param regVal    Pointer to memory where content of selected 16 bit registers
-     *                  is stored.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t BCC_Reg_Read(bcc_drv_config_t *const drvConfig,
-                              const bcc_cid_t cid, const uint8_t regAddr, const uint8_t regCnt,
-                              uint16_t *regVal);
-
-    /*!
-     * @brief This function writes a value to addressed register of selected battery
-     * cell controller device.
-     *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
-     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
-     *                  for possible values (MC3377*C_*_OFFSET macros).
-     * @param regVal    New value of selected register.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t BCC_Reg_Write(bcc_drv_config_t *const drvConfig,
-                               const bcc_cid_t cid, const uint8_t regAddr, const uint16_t regVal);
-
-    /*!
-     * @brief This function writes a value to addressed register of all configured
-     * BCC devices. Intended for TPL mode only!
-     *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
-     *                  for possible values (MC3377*C_*_OFFSET macros).
-     * @param regVal    New value of selected register.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t BCC_Reg_WriteGlobal(bcc_drv_config_t *const drvConfig,
-                                     const uint8_t regAddr, const uint16_t regVal);
-
-    /*!
-     * @brief This function updates content of a selected register; affects bits
-     * specified by a bit mask only.
-     *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
-     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
-     *                  for possible values (MC3377*C_*_OFFSET macros).
-     * @param regMask   Bit mask. Bits set to 1 will be updated.
-     * @param regVal    New value of register bits defined by bit mask.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t BCC_Reg_Update(bcc_drv_config_t *const drvConfig,
-                                const bcc_cid_t cid, const uint8_t regAddr, const uint16_t regMask,
-                                const uint16_t regVal);
-
+    
     /*!
      * @brief This function starts ADC conversion in selected BCC device. It sets
      * number of samples to be averaged and Start of Conversion bit in ADC_CFG

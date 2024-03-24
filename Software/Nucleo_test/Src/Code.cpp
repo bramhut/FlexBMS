@@ -21,9 +21,6 @@ const osThreadAttr_t mainTask_attributes = {
 SPI spiTX(&hspi2, SPI::MASTER_TX, SPI2_CS_GPIO_Port, SPI2_CS_Pin);
 SPI spiRX(&hspi3, SPI::SLAVE_RX);
 
-SPI spiTX(&hspi2, SPI::MASTER_TX, 0, SPI2_CS_GPIO_Port, SPI2_CS_Pin);
-SPI spiRX(&hspi3, SPI::SLAVE_RX, 6);
-
 
 void mainTask(void *argument)
 {

@@ -561,13 +561,6 @@ enum bcc_cid_t
     BCC_CID_DEV63 = 63U   /*!< Cluster ID of device 63. */
 };
 
-/*! @brief BCC communication mode.  */
-enum bcc_mode_t
-{
-    BCC_MODE_SPI = 0U, /*!< SPI communication mode. */
-    BCC_MODE_TPL = 1U  /*!< TPL communication mode. */
-};
-
 /*! @brief BCC device.  */
 enum bcc_device_t
 {
@@ -687,10 +680,10 @@ struct bcc_cc_data_t
  */
 struct bcc_drv_data_t
 {
-    uint16_t cellMap[BCC_DEVICE_CNT_MAX];    /*!< Bit map of used cells of each BCC device. */
-    uint8_t msgCntr[BCC_DEVICE_CNT_MAX + 1]; /*!< Last received value of Message counter (values 0-15).
+    uint16_t cellMap[BCC_DEVICE_CNT_MAX];    /*!< Bit map of used cells of each BCC device. */ // MOVED TO BCC
+    uint8_t msgCntr[BCC_DEVICE_CNT_MAX + 1]; /*!< Last received value of Message counter (values 0-15). // MOVED TO COMM
                                                   MsgCntr[0] contains Message counter of CID=0. */
-    uint8_t rxBuf[BCC_RX_BUF_SIZE_TPL];      /*!< Buffer for receiving data in TPL mode. */
+    uint8_t rxBuf[BCC_RX_BUF_SIZE_TPL];      /*!< Buffer for receiving data in TPL mode. */ // MOVED TO COMM
 };
 
 /*!
@@ -702,17 +695,13 @@ struct bcc_drv_data_t
  */
 struct bcc_drv_config_t
 {
-    uint8_t drvInstance; /*!< BCC driver instance. Passed to the external functions
-                              defined by the user. */
-
-    bcc_mode_t commMode;                     /*!< BCC communication mode. */
-    uint8_t devicesCnt;                      /*!< Number of BCC devices. SPI mode allows one device only,
+    uint8_t devicesCnt;                      /*!< Number of BCC devices. SPI mode allows one device only, // MOVED TO CONTROLLER
                                                   TPL mode allows up to 63 devices. */
-    bcc_device_t device[BCC_DEVICE_CNT_MAX]; /*!< BCC device type of
+    bcc_device_t device[BCC_DEVICE_CNT_MAX]; /*!< BCC device type of // MOVED TO BCC
                                                   [0] BCC with CID=1, [1] BCC with CID=2, etc. */
-    uint16_t cellCnt[BCC_DEVICE_CNT_MAX];    /*!< Number of connected cells to each BCC.
+    uint16_t cellCnt[BCC_DEVICE_CNT_MAX];    /*!< Number of connected cells to each BCC. // MOVED TO BCC
                                                   [0] BCC with CID=1, [1] BCC with CID=2, etc. */
-    bool loopBack;                           /*!< Loop back mode. If False, TPL_TX_Term. (RDTX_OUT) bit
+    bool loopBack;                           /*!< Loop back mode. If False, TPL_TX_Term. (RDTX_OUT) bit // MOVED TO CONTROLLER
                                                   is set for the last BCC device in the TPL chain.
                                                   This configuration item is ignored in SPI mode. */
 
