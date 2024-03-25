@@ -11,6 +11,9 @@
 #include "Debug.h"
 #include "bcc/bcc.h"
 
+/*
+	Main task handler and attributes. Don't edit if you are unsure what EXACTLY you are doing.
+*/
 osThreadId_t mainTaskHandle;
 const osThreadAttr_t mainTask_attributes = {
 	.name = "mainTask",
@@ -84,7 +87,7 @@ void mainTask(void *argument)
 }
 
 // Don't change the function name, it is called from the generated code
-// Start up tasks
 void MX_FREERTOS_Init() {
+	// Start up the main task. If necessary you can add other tasks here as well.
 	mainTaskHandle = osThreadNew(mainTask, NULL, &mainTask_attributes);
 }

@@ -1,37 +1,20 @@
 #pragma once
+#include "bcc/bcc.h"
 
-
-enum BMSFault {
-    NO_FAULT,
-    CID_INITIALIZATION_FAULT,
-    REGISTER_INITIALIZATION_FAULT,
-    ADC_CONVERSION_FAULT,
-    CELL_BALANCING_FAULT,
-    DIAGNOSTICS_FAULT,
-
-};
-
-class SlaveController
+namespace SlaveController
 {
+    enum BMSFault
+    {
+        NO_FAULT,
+        CID_INITIALIZATION_FAULT,
+        REGISTER_INITIALIZATION_FAULT,
+        ADC_CONVERSION_FAULT,
+        CELL_BALANCING_FAULT,
+        DIAGNOSTICS_FAULT,
 
-    private:
+    };
 
-        BMSFault currentFault = NO_FAULT;
+    void mainTask(){};
 
-
-        bool initializeDaisyChain();
-        bool initializeRegisters();
-        bool ADCConversions();
-        bool performCellBalancing();
-        bool diagnostics();
-        bool allCIDsPresence();
-
-        void runningLoop();
-    public:
-        SlaveController() {};
-        void mainTask() {};
-
-        BMSFault getCurrentFault() {
-            return currentFault;
-        }
-};
+    inline BMSFault getCurrentFault() { return mCurrentFault; }
+}

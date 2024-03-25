@@ -48,7 +48,7 @@ namespace BCC_Communication
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t regRead(const bcc_cid_t cid, const uint8_t regAddr, const uint8_t regCnt, uint16_t *regVal);
+    bcc_status_t regRead(uint8_t &msgCnt, const bcc_cid_t cid, const uint8_t regAddr, const uint8_t regCnt, uint16_t *regVal);
 
     /*!
      * @brief This function writes a value to addressed register of the BCC device.
@@ -86,7 +86,7 @@ namespace BCC_Communication
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t regUpdate(const bcc_cid_t cid, const uint8_t regAddr, const uint16_t regMask, const uint16_t regVal);
+    bcc_status_t regUpdate(uint8_t &msgCnt, const bcc_cid_t cid, const uint8_t regAddr, const uint16_t regMask, const uint16_t regVal);
 
     /*!
      * @brief This function sends a No Operation command to the BCC device.
@@ -96,6 +96,46 @@ namespace BCC_Communication
      * @return bcc_status_t Error code.
      */
     bcc_status_t sendNop(const bcc_cid_t cid);
+
+    /*!
+     * @brief This function does two consecutive transitions of CSB_TX from low to
+     * high.
+     * 
+     * @param devicesCnt Number of devices in the chain.
+     *
+     * CSB_TX -> 0 for 25 us
+     * CSB_TX -> 1 for 600 us
+     * CSB_TX -> 0 for 25 us
+     * CSB_TX -> 1 for 750*numberOfDevices us
+     *
+     */
+    void wakeUpPattern(size_t devicesCnt);
+
+    /*!
+     * @brief This function enables MC33664 device (sets a normal mode).
+     * Intended for TPL mode only!
+     *
+     * During the driver initialization (BCC_Init function), normal mode of MC33664
+     * is set automatically. This function can be used when sleep mode of BCC
+     * device(s) and MC33664 together is required. The typical function flow is as
+     * follows: BCC_Sleep -> BCC_TPL_Disable -> ... -> BCC_TPL_Enable -> BCC_WakeUp.
+     *
+     * @return bcc_status_t Error code.
+     */
+    bcc_status_t TPL_Enable();
+
+    /*!
+     * @brief This function puts MC33664 device into the sleep mode.
+     * Intended for TPL mode only!
+     *
+     * This function can be (optionally) used after BCC_Sleep function. Function
+     * BCC_TPL_Enable must be then called before BCC_WakeUp function!
+     *
+     * @param drvInstance BCC driver instance (content of the bcc_drv_config_t
+     *                    structure). Passed to the external functions defined by
+     *                    the user.
+     */
+    void TPL_Disable();
 
     /*! @} */
 };

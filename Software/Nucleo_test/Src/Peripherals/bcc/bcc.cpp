@@ -17,10 +17,6 @@
  * Definitions
  ******************************************************************************/
 
-/*! @brief Time after VPWR connection for the IC to be ready for initialization
- *  (t_VPWR(READY), max.) in [ms]. */
-#define BCC_T_VPWR_READY_MS 5U
-
 /*! @brief RESET de-glitch filter (t_RESETFLT, typ.) in [us]. */
 #define BCC_T_RESETFLT_US 100U
 
@@ -33,23 +29,6 @@
 /*! @brief Power up duration (t_WAKE-UP, max.) in [us]. */
 #define BCC_T_WAKE_UP_US 440U
 
-/*! @brief CSB_TX LOW period in CSB_TX wake-up pulse sequence in [us]. */
-#define BCC_WAKE_PULSE_US 25U
-
-/*! @brief Time between wake pulses (t_WAKE_DELAY, typ.) in [us]. */
-#define BCC_T_WAKE_DELAY_US 600U
-
-/*! @brief Time the MCU shall wait after sending first wake-up message
- * per 33771C/33772C IC (t_WU_Wait, min.) in [us]. */
-#define BCC_T_WU_WAIT_US 750U
-
-/*! @brief EN LOW to HIGH transition to INTB verification pulse
- * (t_INTB_PULSE_DELAY, max.) in [us]. */
-#define BCC_T_INTB_PULSE_DELAY_US 100U
-
-/*! @brief INTB verification pulse duration (t_INTB_PULSE, typ.) in [us]. */
-#define BCC_T_INTB_PULSE_US 100U
-
 /*! @brief SOC to data ready (includes post processing of data, ADC_CFG[AVG]=0)
  * (in [us]), typical value. */
 #define BCC_T_EOC_TYP_US 520U
@@ -57,22 +36,6 @@
 /*! @brief Timeout for SOC to data ready (ADC_CFG[AVG]=0) (in [us]).
  * Note: The typical value is 520 us, the maximal one 546 us. */
 #define BCC_T_EOC_TIMEOUT_US 650U
-
-/*! @brief Timeout (in [us]) for BCC device to perform a EEPROM read command
- * via I2C (START + 2*(8b + ACK) + START + 2*(8b + ACK) + STOP) and to clear
- * EEPROM_CTRL_BUSY flag.
- *
- * Note: The time measured for KIT33772CTPLEVB was around 420 us. */
-#define BCC_EEPROM_READ_TIMEOUT_US 1000
-
-/*! @brief Timeout (in [us]) for BCC device to perform a EEPROM write command
- * via I2C (START + 3*(8b + ACK) + STOP) and to clear EEPROM_CTRL_BUSY flag.
- *
- * Note: The time measured for KIT33772CTPLEVB was around 310 us. */
-#define BCC_EEPROM_WRITE_TIMEOUT_US 800
-
-/*! @brief Maximal address of EEPROM data. */
-#define BCC_MAX_EEPROM_ADDR 0x7FU
 
 /*! @brief Maximal MC33771C fuse mirror address for read access. */
 #define MC33771C_MAX_FUSE_READ_ADDR 0x1AU
@@ -155,40 +118,12 @@ static const uint16_t s_cellMap[2][MC33771C_MAX_CELLS + 1] = {{
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_WakeUpPatternTpl
- * Description   : This function does two consecutive transitions of CSB_TX from
- *                 low to high.
- *
- *END**************************************************************************/
-void BCC::BCC_WakeUpPatternTpl()
-{
-    /* CSB_TX low for 25 us. */
-    BCC_MCU_WriteCsbPin(0);
-    BCC_MCU_WaitUs(BCC_WAKE_PULSE_US);
-
-    /* CSB_TX high for 600 us. */
-    BCC_MCU_WriteCsbPin(1);
-    BCC_MCU_WaitUs(BCC_T_WAKE_DELAY_US);
-
-    /* CSB_TX low for 25 us. */
-    BCC_MCU_WriteCsbPin(0);
-    BCC_MCU_WaitUs(BCC_WAKE_PULSE_US);
-
-    /* CSB_TX high. */
-    BCC_MCU_WriteCsbPin(1);
-    /* Time to switch Sleep mode to normal mode after TPL bus wake-up. */
-    BCC_MCU_WaitUs(BCC_T_WU_WAIT_US * this->devicesCnt);
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_AssignCid
+ * Function Name : assignCid
  * Description   : This function assigns CID to a BCC device that has CID equal
  *                 to zero.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_AssignCid(bcc_drv_config_t *const drvConfig,
-                                const bcc_cid_t cid)
+bcc_status_t BCC::assignCid(bool loopback, uint8_t devicesCnt)
 {
     uint16_t writeVal, readVal;
     bcc_status_t status;
@@ -198,31 +133,33 @@ bcc_status_t BCC::BCC_AssignCid(bcc_drv_config_t *const drvConfig,
     /* Note: In SPI communication mode, the device responds with all bit filed
      * set to zero except message counter and the correct CRC to the very first
      * MCU <-> MC33771C/772C message. */
-    status = BCC_Communication::regRead(BCC_CID_UNASSIG, MC33771C_INIT_OFFSET, 1U, &readVal);
+    status = BCC_Communication::regRead(mMsgCnt, BCC_CID_UNASSIG, MC33771C_INIT_OFFSET, 1U, &readVal);
     if ((status != BCC_STATUS_SUCCESS) && (status != BCC_STATUS_COM_NULL))
     {
         return status;
+            
     }
 
     /* Assign CID;
      * Terminate RDTX_OUT of the last node in TPL setup without loop-back.
      * Stop forwarding only for MC33772C in TPL setup with one node and no
      * loop-back. RDTX_OUT should not be terminated in this case. */
-    writeVal = MC33771C_INIT_CID(cid) |
+    writeVal = MC33771C_INIT_CID(mCID) |
                MC33771C_INIT_RDTX_IN(MC33771C_INIT_RDTX_IN_DISABLED_ENUM_VAL);
-    if ((drvConfig->devicesCnt == 1U) &&
-        (!drvConfig->loopBack) &&
-        (drvConfig->device[(uint8_t)cid - 1] == BCC_DEVICE_MC33772C))
+
+    if ((devicesCnt == 1U) &&
+        (!loopBack) &&
+        (mDevice == BCC_DEVICE_MC33772C))
     {
         writeVal |= MC33772C_INIT_TPL2_TX_TERM(MC33772C_INIT_TPL2_TX_TERM_DISABLED_ENUM_VAL) |
                     MC33772C_INIT_BUS_FW(MC33772C_INIT_BUS_FW_DISABLED_ENUM_VAL);
     }
-    else if (((uint8_t)cid == drvConfig->devicesCnt) &&
-             (!drvConfig->loopBack))
+    else if (((uint8_t)mCID == devicesCnt) &&
+             (!loopBack))
     {
         writeVal |= MC33771C_INIT_RDTX_OUT(MC33771C_INIT_RDTX_OUT_ENABLED_ENUM_VAL);
 
-        if (drvConfig->device[(uint8_t)cid - 1] == BCC_DEVICE_MC33772C)
+        if (mDevice == BCC_DEVICE_MC33772C)
         {
             writeVal |= MC33772C_INIT_BUS_FW(MC33772C_INIT_BUS_FW_ENABLED_ENUM_VAL);
         }
@@ -231,7 +168,7 @@ bcc_status_t BCC::BCC_AssignCid(bcc_drv_config_t *const drvConfig,
     {
         writeVal |= MC33771C_INIT_RDTX_OUT(MC33771C_INIT_RDTX_OUT_DISABLED_ENUM_VAL);
 
-        if (drvConfig->device[(uint8_t)cid - 1] == BCC_DEVICE_MC33772C)
+        if (mDevice == BCC_DEVICE_MC33772C)
         {
             writeVal |= MC33772C_INIT_BUS_FW(MC33772C_INIT_BUS_FW_ENABLED_ENUM_VAL);
         }
@@ -240,15 +177,10 @@ bcc_status_t BCC::BCC_AssignCid(bcc_drv_config_t *const drvConfig,
     status = BCC_Communication::regWrite(BCC_CID_UNASSIG, MC33771C_INIT_OFFSET, writeVal);
     if (status == BCC_STATUS_SUCCESS)
     {
-        /* Store the last received message counter value from device with CID=0
-         * into drvConfig for appropriate (newly assigned) CID.
-         * Note: In TPL mode, a response is generated only for read commands,
-         * i.e. message counter is incremented only by read commands. In SPI mode,
-         * message counter was incremented also by the write command! */
-        drvConfig->drvData.msgCntr[(uint8_t)cid] = drvConfig->drvData.msgCntr[0];
+
 
         /* Check if assigned node replies. */
-        status = BCC_Communication::regRead(cid, MC33771C_INIT_OFFSET, 1U, &readVal);
+        status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_INIT_OFFSET, 1U, &readVal);
 
         /* Check the written data. */
         if ((status == BCC_STATUS_SUCCESS) && (writeVal != readVal))
@@ -265,13 +197,9 @@ bcc_status_t BCC::BCC_AssignCid(bcc_drv_config_t *const drvConfig,
         status = BCC_Communication::regWrite(BCC_CID_UNASSIG, MC33771C_INIT_OFFSET, writeVal);
         if (status == BCC_STATUS_SUCCESS)
         {
-            /* Store the last message counter value into drvConfig for appropriate CID.
-             * Note: In TPL mode, a response is generated only for read commands. i.e. message
-             * counter is incremented only by them. In SPI mode, message counter is
-             * incremented by all types of commands! */
-            drvConfig->drvData.msgCntr[(uint8_t)cid] = drvConfig->drvData.msgCntr[0];
 
-            status = BCC_Communication::regRead(cid, MC33771C_INIT_OFFSET, 1U, &readVal);
+
+            status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_INIT_OFFSET, 1U, &readVal);
 
             /* Check the written data. */
             if ((status == BCC_STATUS_SUCCESS) && (writeVal != readVal))
@@ -286,91 +214,26 @@ bcc_status_t BCC::BCC_AssignCid(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_InitDevices
- * Description   : This function wakes device(s) up, resets them (if needed),
- *                 assigns CIDs and checks the communication.
- *
- *END**************************************************************************/
-bcc_status_t BCC::BCC_InitDevices()
-{
-    uint8_t cid;
-    bcc_status_t status;
-
-    /* Wake-up all configured devices (in case they are in SLEEP mode) or
-     * move the first device (device closest to MC33664) from IDLE mode to
-     * NORMAL mode (in case devices are in IDLE mode). */
-    BCC_WakeUpPatternTpl();
-
-    /* Reset all configured devices (in case they are already initialized).
-     * If the devices are not initialized (CID is equal to 000000b), a write
-     * command is sent via communication interface, but the software reset is
-     * not performed as only INIT register of uninitialized devices can be
-     * written by the pack controller. */
-    (void)BCC_SoftwareReset(drvConfig, (drvConfig->commMode == BCC_MODE_TPL) ? BCC_CID_UNASSIG : BCC_CID_DEV1);
-
-    /* Wait for 5 ms - for the IC to be ready for initialization. */
-    BCC_MCU_WaitMs(BCC_T_VPWR_READY_MS);
-
-    /* Assign CID to the first node and terminate its RDTX_OUT if only one
-     * device is utilised and if loop-back is not required. */
-    status = BCC_AssignCid(drvConfig, BCC_CID_DEV1);
-    if (status != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Init the rest of devices. */
-    for (cid = 2U; cid <= drvConfig->devicesCnt; cid++)
-    {
-        BCC_MCU_WaitMs(2U);
-
-        /* Move the following device from IDLE to NORMAL mode (in case the
-         * devices are in IDLE mode).
-         * Note that the WAKE-UP sequence is recognised as two wrong SPI
-         * transfers in devices which are already in the NORMAL mode. That will
-         * increase their COM_STATUS[COM_ERR_COUNT]. */
-        BCC_WakeUpPatternTpl(drvConfig);
-
-        status = BCC_AssignCid(drvConfig, (bcc_cid_t)cid);
-        if (status != BCC_STATUS_SUCCESS)
-        {
-            return status;
-        }
-    }
-
-    return status;
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_GPIO_SetMode
+ * Function Name : setGpioCfg
  * Description   : This function configures selected GPIO/AN pin as analog
  *                 input, digital input or digital output by writing the
  *                 GPIO_CFG1[GPIOx_CFG] bit field.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_SetGpioCfg(bcc_drv_config_t *const drvConfig,
-                                 const bcc_cid_t cid, const uint8_t gpioSel, const bcc_pin_mode_t mode)
+bcc_status_t BCC::setGpioCfg(const uint8_t gpioSel, const bcc_pin_mode_t mode)
 {
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt) ||
-        (gpioSel >= BCC_GPIO_INPUT_CNT) || (mode > BCC_PIN_DIGITAL_OUT))
+    if ((gpioSel >= BCC_GPIO_INPUT_CNT) || (mode > BCC_PIN_DIGITAL_OUT))
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
     /* Update the content of GPIO_CFG1 register. */
-    return BCC_Communication::regUpdate(cid,
+    return BCC_Communication::regUpdate(mMsgCnt, mCID,
                           MC33771C_GPIO_CFG1_OFFSET,
                           (uint16_t)(MC33771C_GPIO_CFG1_GPIO0_CFG_MASK << (gpioSel * 2U)),
                           (uint16_t)(((uint16_t)mode) << (gpioSel * 2U)));
 }
 
-bool BCC::checkConfiguration()
-{
-    // TODO Expand this function to check all the configurations
-    return devicesCnt != 0 && sizeof(cellCount) != 0;
-
-}
 /*******************************************************************************
  * PUBLIC FUNCTIONS
  ******************************************************************************/
@@ -381,259 +244,59 @@ bool BCC::checkConfiguration()
  * Description   : Sets correct parameters
  *
  *END**************************************************************************/
-BCC::BCC(bcc_device_t device, uint16_t cellCount) : device(device), cellCount(cellCount), cellMap(s_cellMap[device][cellCount]){}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_Init
- * Description   : This function initializes the battery cell controller
- *                 device(s), assigns CID and initializes internal driver data.
- *
- *END**************************************************************************/
-bcc_status_t BCC::BCC_Init()
-{
-    uint8_t dev;
-    bcc_status_t status;
-
-    bool correctConfiguration = checkConfiguration();
-    BCC_MCU_Assert(correctConfiguration);
-    if (!correctConfiguration) {
-
-    }
-
-
-    for (dev = 0; dev < drvConfig->devicesCnt; dev++)
-    {
-        drvConfig->drvData.msgCntr[dev] = 0U;
-        if (drvConfig->device[dev] == BCC_DEVICE_MC33771C)
-        {
-            if (!BCC_IS_IN_RANGE(drvConfig->cellCnt[dev], MC33771C_MIN_CELLS, MC33771C_MAX_CELLS))
-            {
-                return BCC_STATUS_PARAM_RANGE;
-            }
-            // drvConfig->drvData.cellMap[dev] = s_cellMap33771c[drvConfig->cellCnt[dev]]; -> cellMap intialized in constructor
-        }
-        else if (drvConfig->device[dev] == BCC_DEVICE_MC33772C)
-        {
-            if (!BCC_IS_IN_RANGE(drvConfig->cellCnt[dev], MC33772C_MIN_CELLS, MC33772C_MAX_CELLS))
-            {
-                return BCC_STATUS_PARAM_RANGE;
-            }
-            // drvConfig->drvData.cellMap[dev] = s_cellMap33772c[drvConfig->cellCnt[dev]]; -> cellMap intialized in constructor
-        }
-        else
-        {
-            return BCC_STATUS_PARAM_RANGE;
-        }
-    }
-    drvConfig->drvData.msgCntr[drvConfig->devicesCnt] = 0U;
-
-    /* Set RESET pin inactive (RESET -> 0). */
-    BCC_MCU_WriteRstPin(drvConfig->drvInstance, 0);
-
-    /* Enable MC33664 device in TPL mode. */
-    if ((status = BCC_TPL_Enable(drvConfig->drvInstance)) != BCC_STATUS_SUCCESS)
-    {
-        return status;
-    }
-
-    /* Wake-up BCCs (in case of idle/sleep mode), reset them, assign CID and
-     * check communication with configured devices. */
-    return BCC_InitDevices(drvConfig);
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_Sleep
- * Description   : This function sets sleep mode to all battery cell controller
- *                 devices.
- *
- *END**************************************************************************/
-bcc_status_t BCC::BCC_Sleep()
-{
-    return BCC_Communication::regWriteGlobal(MC33771C_SYS_CFG_GLOBAL_OFFSET, MC33771C_SYS_CFG_GLOBAL_GO2SLEEP(MC33771C_SYS_CFG_GLOBAL_GO2SLEEP_ENABLED_ENUM_VAL));
-}
+BCC::BCC(bcc_device_t device, uint16_t cellCount, bcc_cid_t cid) : mDevice(device), mCellCount(cellCount), mCID(cid), mCellMap(s_cellMap[device][cellCount]){}
 
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_SoftwareReset
+ * Function Name : softwareReset
  * Description   : This function resets BCC device using software reset. It
  *                 enters reset via SPI or TPL interface.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_SoftwareReset(bcc_drv_config_t *const drvConfig,
-                                    const bcc_cid_t cid)
+bcc_status_t BCC::softwareReset()
 {
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((((uint8_t)cid) > drvConfig->devicesCnt) ||
-        ((cid == BCC_CID_UNASSIG) && (drvConfig->commMode == BCC_MODE_SPI)))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    /* Note: it is not necessary to read content of SYS_CFG1 register and to
-     * change the SOFT_RST bit only, because SYS_CFG1 will be set to POR value
-     * after the reset anyway. */
-    if (cid == BCC_CID_UNASSIG)
-    {
-        /* TPL Global reset command. */
-        return BCC_Communication::regWriteGlobal(MC33771C_SYS_CFG1_OFFSET,
-                                   MC33771C_SYS_CFG1_SOFT_RST(MC33771C_SYS_CFG1_SOFT_RST_ACTIVE_ENUM_VAL));
-    }
-    else
-    {
-        return BCC_Communication::regWrite(cid, MC33771C_SYS_CFG1_OFFSET,
-                             MC33771C_SYS_CFG1_SOFT_RST(MC33771C_SYS_CFG1_SOFT_RST_ACTIVE_ENUM_VAL));
-    }
+    return BCC_Communication::regWrite(mCid, MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_SOFT_RST(MC33771C_SYS_CFG1_SOFT_RST_ACTIVE_ENUM_VAL));
 }
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_HardwareReset
- * Description   : This function resets BCC device using RESET pin.
- *
- *END**************************************************************************/
-void BCC::BCC_HardwareReset(const bcc_drv_config_t *const drvConfig)
-{
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    BCC_MCU_WriteRstPin(drvConfig->drvInstance, 1);
-    /* Wait at least t_RESETFLT (100 us). */
-    BCC_MCU_WaitUs(BCC_T_RESETFLT_US);
-    BCC_MCU_WriteRstPin(drvConfig->drvInstance, 0);
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_TPL_Enable
- * Description   : This function enables MC33664 TPL device. It uses EN and
- *                 INTB pins. Intended for TPL mode only!
- *
- *END**************************************************************************/
-bcc_status_t BCC::BCC_TPL_Enable(const uint8_t drvInstance)
-{
-    int32_t timeout;
-
-    /* Set normal state (transition from low to high). */
-    BCC_MCU_WriteEnPin(drvInstance, 0);
-    /* Wait at least 100 us. */
-    BCC_MCU_WaitUs(150);
-    BCC_MCU_WriteEnPin(drvInstance, 1);
-
-    /* Note: MC33664 has time t_Ready/t_INTB_PULSE_DELAY (max. 100 us) to take effect.
-     * Wait for INTB transition from high to low (max. 100 us). */
-    timeout = BCC_T_INTB_PULSE_DELAY_US;
-    while ((BCC_MCU_ReadIntbPin(drvInstance) > 0) && (timeout > 0))
-    {
-        timeout -= 5;
-        BCC_MCU_WaitUs(5U);
-    }
-    if ((timeout <= 0) && (BCC_MCU_ReadIntbPin(drvInstance) > 0))
-    {
-        return BCC_STATUS_COM_TIMEOUT;
-    }
-
-    /* Wait for INTB transition from low to high (typ. 100 us).
-     * Wait for at most 200 us. */
-    timeout = BCC_T_INTB_PULSE_US * 2;
-    while ((BCC_MCU_ReadIntbPin(drvInstance) == 0) && (timeout > 0))
-    {
-        timeout -= 10;
-        BCC_MCU_WaitUs(10U);
-    }
-    if ((timeout <= 0) && (BCC_MCU_ReadIntbPin(drvInstance) == 0))
-    {
-        return BCC_STATUS_COM_TIMEOUT;
-    }
-
-    /* Now the device should be in normal mode (i.e. after INTB low to high
-     * transition). For sure wait for 150 us. */
-    BCC_MCU_WaitUs(150U);
-
-    return BCC_STATUS_SUCCESS;
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_TPL_Disable
- * Description   : This function puts MC33664 device into the sleep mode.
- *                 Intended for TPL mode only!
- *
- *END**************************************************************************/
-void BCC::BCC_TPL_Disable(const uint8_t drvInstance)
-{
-    BCC_MCU_WriteEnPin(drvInstance, 0);
-}
-
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_Meas_StartConversion
+ * Function Name : meas_StartConversion
  * Description   : This function starts ADC conversion in selected BCC device.
  *                 It sets number of samples to be averaged and Start of
  *                 Conversion bit in ADC_CFG register.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_StartConversion(bcc_drv_config_t *const drvConfig,
-                                           const bcc_cid_t cid, const bcc_avg_t avg)
+bcc_status_t BCC::meas_StartConversion(const bcc_avg_t avg)
 {
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt) ||
-        (avg > BCC_AVG_256))
+    if (avg > BCC_AVG_256)
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    return BCC_Communication::regUpdate(cid, MC33771C_ADC_CFG_OFFSET,
+    return BCC_Communication::regUpdate(mMsgCnt, mCid, MC33771C_ADC_CFG_OFFSET,
                           MC33771C_ADC_CFG_SOC_MASK | MC33771C_ADC_CFG_AVG_MASK,
                           MC33771C_ADC_CFG_SOC(MC33771C_ADC_CFG_SOC_ENABLED_ENUM_VAL) |
                               MC33771C_ADC_CFG_AVG(avg));
 }
 
-/*FUNCTION**********************************************************************
- *
- * Function Name : BCC_Meas_StartConversionGlobal
- * Description   : This function starts ADC conversion for all devices in TPL
- *                 chain. It uses a Global Write command to set ADC_CFG
- *                 register. Intended for TPL mode only!
- *
- *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_StartConversionGlobal(bcc_drv_config_t *const drvConfig,
-                                                 uint16_t adcCfgValue)
-{
-    BCC_MCU_Assert(drvConfig != NULL);
-    BCC_MCU_Assert(drvConfig->commMode == BCC_MODE_TPL);
 
-    /* Set Start of Conversion bit in case it is not. */
-    adcCfgValue |= MC33771C_ADC_CFG_SOC(MC33771C_ADC_CFG_SOC_ENABLED_ENUM_VAL);
-
-    return BCC_Communication::regWriteGlobal(MC33771C_ADC_CFG_OFFSET, adcCfgValue);
-}
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Meas_IsConverting
+ * Function Name : meas_IsConverting
  * Description   : This function checks status of conversion defined by End of
  *                 Conversion bit in ADC_CFG register.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_IsConverting(bcc_drv_config_t *const drvConfig,
-                                        const bcc_cid_t cid, bool *const completed)
+bcc_status_t BCC::meas_IsConverting(bool *const completed)
 {
     uint16_t adcCfgVal;
     bcc_status_t status;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(completed != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    status = BCC_Communication::regRead(cid, MC33771C_ADC_CFG_OFFSET, 1U, &adcCfgVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_ADC_CFG_OFFSET, 1U, &adcCfgVal);
 
     *(completed) = ((adcCfgVal & MC33771C_ADC_CFG_EOC_N_MASK) ==
                     MC33771C_ADC_CFG_EOC_N(MC33771C_ADC_CFG_EOC_N_COMPLETED_ENUM_VAL));
@@ -643,26 +306,22 @@ bcc_status_t BCC::BCC_Meas_IsConverting(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Meas_StartAndWait
+ * Function Name : meas_StartAndWait
  * Description   : This function starts an on-demand conversion in selected BCC
  *                 device and waits for completion.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_StartAndWait(bcc_drv_config_t *const drvConfig,
-                                        const bcc_cid_t cid, const bcc_avg_t avg)
+bcc_status_t BCC::meas_StartAndWait(const bcc_avg_t avg)
 {
     bool complete; /* Conversion complete flag. */
     bcc_status_t status;
 
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt) ||
-        (avg > BCC_AVG_256))
+    if (avg > BCC_AVG_256)
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    status = BCC_Meas_StartConversion(drvConfig, cid, avg);
+    status = meas_StartConversion(avg);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -685,7 +344,7 @@ bcc_status_t BCC::BCC_Meas_StartAndWait(bcc_drv_config_t *const drvConfig,
 
     do
     {
-        status = BCC_Meas_IsConverting(drvConfig, cid, &complete);
+        status = meas_IsConverting(&complete);
         if (status != BCC_STATUS_SUCCESS)
         {
             return status;
@@ -698,7 +357,7 @@ bcc_status_t BCC::BCC_Meas_StartAndWait(bcc_drv_config_t *const drvConfig,
      * timeout expiration. */
     if (!complete)
     {
-        status = BCC_Meas_IsConverting(drvConfig, cid, &complete);
+        status = meas_IsConverting(&complete);
         if (status != BCC_STATUS_SUCCESS)
         {
             return status;
@@ -710,36 +369,29 @@ bcc_status_t BCC::BCC_Meas_StartAndWait(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Meas_GetRawValues
+ * Function Name : meas_GetRawValues
  * Description   : This function reads the measurement registers and returns raw
  *                 values.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_GetRawValues(bcc_drv_config_t *const drvConfig,
-                                        const bcc_cid_t cid, uint16_t *const measurements)
+bcc_status_t BCC::meas_GetRawValues(uint16_t *const measurements)
 {
     bcc_status_t status;
     uint8_t i;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(measurements != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
 
     /* Read all the measurement registers.
      * Note: the order and number of registers conforms to the order of measured
      * values in Measurements array, see enumeration bcc_measurements_t. */
-    if (drvConfig->device[(uint8_t)cid - 1] == BCC_DEVICE_MC33771C)
+    if (mDevice == BCC_DEVICE_MC33771C)
     {
-        status = BCC_Communication::regRead(cid, MC33771C_CC_NB_SAMPLES_OFFSET,
+        status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_CC_NB_SAMPLES_OFFSET,
                               BCC_MEAS_CNT, measurements);
     }
     else
     {
-        status = BCC_Communication::regRead(cid, MC33772C_CC_NB_SAMPLES_OFFSET,
+        status = BCC_Communication::regRead(mMsgCnt, mCid, MC33772C_CC_NB_SAMPLES_OFFSET,
                               (MC33772C_MEAS_STACK_OFFSET - MC33772C_CC_NB_SAMPLES_OFFSET) + 1, measurements);
         if (status != BCC_STATUS_SUCCESS)
         {
@@ -756,7 +408,7 @@ bcc_status_t BCC::BCC_Meas_GetRawValues(bcc_drv_config_t *const drvConfig,
         measurements[BCC_MSR_CELL_VOLT8] = 0x0000;
         measurements[BCC_MSR_CELL_VOLT7] = 0x0000;
 
-        status = BCC_Communication::regRead(cid, MC33772C_MEAS_CELL6_OFFSET,
+        status = BCC_Communication::regRead(mMsgCnt, mCid, MC33772C_MEAS_CELL6_OFFSET,
                               (MC33772C_MEAS_VBG_DIAG_ADC1B_OFFSET - MC33772C_MEAS_CELL6_OFFSET) + 1,
                               (uint16_t *)(measurements + ((uint8_t)BCC_MSR_CELL_VOLT6)));
     }
@@ -777,25 +429,18 @@ bcc_status_t BCC::BCC_Meas_GetRawValues(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Meas_GetCoulombCounter
+ * Function Name : meas_GetCoulombCounter
  * Description   : This function reads the Coulomb counter registers.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_GetCoulombCounter(bcc_drv_config_t *const drvConfig,
-                                             const bcc_cid_t cid, bcc_cc_data_t *const cc)
+bcc_status_t BCC::meas_GetCoulombCounter(bcc_cc_data_t *const cc)
 {
     bcc_status_t status;
     uint16_t readVal[3];
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(cc != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    status = BCC_Communication::regRead(cid, MC33771C_CC_NB_SAMPLES_OFFSET, 3U, readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_CC_NB_SAMPLES_OFFSET, 3U, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -809,26 +454,19 @@ bcc_status_t BCC::BCC_Meas_GetCoulombCounter(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Meas_GetIsenseVoltage
+ * Function Name : meas_GetIsenseVoltage
  * Description   : This function reads the ISENSE measurement and converts it to
  *                 [uV].
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_GetIsenseVoltage(bcc_drv_config_t *const drvConfig,
-                                            const bcc_cid_t cid, int32_t *const isenseVolt)
+bcc_status_t BCC::meas_GetIsenseVoltage(int32_t *const isenseVolt)
 {
     bcc_status_t status;
     uint16_t readVal[2];
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(isenseVolt != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    status = BCC_Communication::regRead(cid, MC33771C_MEAS_ISENSE1_OFFSET, 2U, readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_ISENSE1_OFFSET, 2U, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -846,26 +484,19 @@ bcc_status_t BCC::BCC_Meas_GetIsenseVoltage(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Meas_GetStackVoltage
+ * Function Name : meas_GetStackVoltage
  * Description   : This function reads the stack measurement and converts it to
  *                 [uV].
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_GetStackVoltage(bcc_drv_config_t *const drvConfig,
-                                           const bcc_cid_t cid, uint32_t *const stackVolt)
+bcc_status_t BCC::meas_GetStackVoltage(uint32_t *const stackVolt)
 {
     bcc_status_t status;
     uint16_t readVal;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(stackVolt != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    status = BCC_Communication::regRead(cid, MC33771C_MEAS_STACK_OFFSET, 1U, &readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_STACK_OFFSET, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -883,31 +514,24 @@ bcc_status_t BCC::BCC_Meas_GetStackVoltage(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Meas_GetCellVoltages
+ * Function Name : meas_GetCellVoltages
  * Description   : This function reads the cell measurements and converts them
  *                 to [uV].
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_GetCellVoltages(bcc_drv_config_t *const drvConfig,
-                                           const bcc_cid_t cid, uint32_t *const cellVolt)
+bcc_status_t BCC::meas_GetCellVoltages(uint32_t *const cellVolt)
 {
     bcc_status_t status;
     uint16_t readVal[BCC_MAX_CELLS];
     uint8_t i, cellCnt;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(cellVolt != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    cellCnt = BCC_MAX_CELLS_DEV(drvConfig->device[(uint8_t)cid - 1]);
+    cellCnt = BCC_MAX_CELLS_DEV(device);
 
     /* Read the measurement registers. */
-    status = BCC_Communication::regRead(cid,
-                          (drvConfig->device[(uint8_t)cid - 1] == BCC_DEVICE_MC33771C) ? MC33771C_MEAS_CELL14_OFFSET : MC33771C_MEAS_CELL6_OFFSET,
+    status = BCC_Communication::regRead(mMsgCnt, mCid,
+                          (device == BCC_DEVICE_MC33771C) ? MC33771C_MEAS_CELL14_OFFSET : MC33771C_MEAS_CELL6_OFFSET,
                           cellCnt, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
@@ -931,27 +555,24 @@ bcc_status_t BCC::BCC_Meas_GetCellVoltages(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Meas_GetCellVoltage
+ * Function Name : meas_GetCellVoltage
  * Description   : This function reads the voltage measurement of a selected
  *                 cell and converts it to [uV].
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_GetCellVoltage(bcc_drv_config_t *const drvConfig,
-                                          const bcc_cid_t cid, uint8_t cellIndex, uint32_t *const cellVolt)
+bcc_status_t BCC::meas_GetCellVoltage(uint8_t cellIndex, uint32_t *const cellVolt)
 {
     bcc_status_t status;
     uint16_t readVal;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(cellVolt != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt) ||
-        (cellIndex >= BCC_MAX_CELLS_DEV(drvConfig->device[(uint8_t)cid - 1])))
+    if (cellIndex >= BCC_MAX_CELLS_DEV(device))
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    status = BCC_Communication::regRead(cid, MC33771C_MEAS_CELL1_OFFSET - cellIndex, 1U, &readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_CELL1_OFFSET - cellIndex, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -969,29 +590,22 @@ bcc_status_t BCC::BCC_Meas_GetCellVoltage(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Meas_GetAnVoltages
+ * Function Name : meas_GetAnVoltages
  * Description   : This function reads the voltage measurement for all ANx
  *                 and converts them to [uV]. Intended for ANx configured for
  *                 absolute measurements only!
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_GetAnVoltages(bcc_drv_config_t *const drvConfig,
-                                         const bcc_cid_t cid, uint32_t *const anVolt)
+bcc_status_t BCC::meas_GetAnVoltages(uint32_t *const anVolt)
 {
     bcc_status_t status;
     uint16_t readVal[BCC_GPIO_INPUT_CNT];
     uint8_t i;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(anVolt != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
     /* Read the measurement registers. */
-    status = BCC_Communication::regRead(cid, MC33771C_MEAS_AN6_OFFSET,
+    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_AN6_OFFSET,
                           BCC_GPIO_INPUT_CNT, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
@@ -1015,28 +629,25 @@ bcc_status_t BCC::BCC_Meas_GetAnVoltages(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Meas_GetAnVoltage
+ * Function Name : meas_GetAnVoltage
  * Description   : This function reads the voltage measurement of a selected
  *                 ANx and converts it to [uV]. Intended for ANx configured for
  *                 absolute measurements only!
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_GetAnVoltage(bcc_drv_config_t *const drvConfig,
-                                        const bcc_cid_t cid, uint8_t anIndex, uint32_t *const anVolt)
+bcc_status_t BCC::meas_GetAnVoltage(uint8_t anIndex, uint32_t *const anVolt)
 {
     bcc_status_t status;
     uint16_t readVal;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(anVolt != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt) ||
-        (anIndex >= BCC_GPIO_INPUT_CNT))
+    if (anIndex >= BCC_GPIO_INPUT_CNT)
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    status = BCC_Communication::regRead(cid, MC33771C_MEAS_AN0_OFFSET - anIndex, 1U, &readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_AN0_OFFSET - anIndex, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -1054,27 +665,24 @@ bcc_status_t BCC::BCC_Meas_GetAnVoltage(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Meas_GetIcTemp
+ * Function Name : meas_GetIcTemp
  * Description   : This function reads the BCC temperature and converts it to
  *                 the selected unit.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Meas_GetIcTemperature(bcc_drv_config_t *const drvConfig,
-                                            const bcc_cid_t cid, bcc_temp_unit_t unit, int16_t *const icTemp)
+bcc_status_t BCC::meas_GetIcTemperature(bcc_temp_unit_t unit, int16_t *const icTemp)
 {
     bcc_status_t status;
     uint16_t readVal;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(icTemp != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt) ||
-        (unit > BCC_TEMP_FAHRENHEIT))
+    if (unit > BCC_TEMP_FAHRENHEIT)
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    status = BCC_Communication::regRead(cid, MC33771C_MEAS_IC_TEMP_OFFSET, 1U, &readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_IC_TEMP_OFFSET, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -1103,57 +711,49 @@ bcc_status_t BCC::BCC_Meas_GetIcTemperature(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Fault_GetStatus
+ * Function Name : fault_GetStatus
  * Description   : This function reads the fault status registers of the BCC
  *                 device.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Fault_GetStatus(bcc_drv_config_t *const drvConfig,
-                                      const bcc_cid_t cid, uint16_t *const fltStatus)
+bcc_status_t BCC::fault_GetStatus(uint16_t *const fltStatus)
 {
     bcc_status_t status;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(fltStatus != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
     /* Read CELL_OV_FLT and CELL_UV_FLT. */
-    status = BCC_Communication::regRead(cid, MC33771C_CELL_OV_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CELL_OV]);
+    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_CELL_OV_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CELL_OV]);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* Read CB_OPEN_FLT, CB_SHORT_FLT. */
-    status = BCC_Communication::regRead(cid, MC33771C_CB_OPEN_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CB_OPEN]);
+    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_CB_OPEN_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CB_OPEN]);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* Read GPIO_STS, AN_OT_UT_FLT, GPIO_SHORT_Anx_OPEN_STS. */
-    status = BCC_Communication::regRead(cid, MC33771C_GPIO_STS_OFFSET, 3U, &fltStatus[BCC_FS_GPIO_STATUS]);
+    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_GPIO_STS_OFFSET, 3U, &fltStatus[BCC_FS_GPIO_STATUS]);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* Read COM_STATUS, FAULT1_STATUS, FAULT2_STATUS and FAULT3_STATUS. */
-    return BCC_Communication::regRead(cid, MC33771C_COM_STATUS_OFFSET, 4U, &fltStatus[BCC_FS_COMM]);
+    return BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_COM_STATUS_OFFSET, 4U, &fltStatus[BCC_FS_COMM]);
 }
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_Fault_ClearStatus
+ * Function Name : fault_ClearStatus
  * Description   : This function clears selected fault status register.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_Fault_ClearStatus(bcc_drv_config_t *const drvConfig,
-                                        const bcc_cid_t cid, const bcc_fault_status_t statSel)
+bcc_status_t BCC::fault_ClearStatus(const bcc_fault_status_t statSel)
 {
     /* This array is intended for conversion of bcc_fault_status_t value to
      * a BCC register address. */
@@ -1165,32 +765,25 @@ bcc_status_t BCC::BCC_Fault_ClearStatus(bcc_drv_config_t *const drvConfig,
         MC33771C_FAULT1_STATUS_OFFSET, MC33771C_FAULT2_STATUS_OFFSET,
         MC33771C_FAULT3_STATUS_OFFSET};
 
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt) ||
-        ((uint32_t)statSel >= BCC_STAT_CNT))
+    if ((uint32_t)statSel >= BCC_STAT_CNT)
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    return BCC_Communication::regWrite(cid, regAddrMap[statSel], 0x0000U);
+    return BCC_Communication::regWrite(mCID, regAddrMap[statSel], 0x0000U);
 }
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_GPIO_SetMode
+ * Function Name : GPIO_SetMode
  * Description   : This function sets the mode of one BCC GPIOx/ANx pin.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_GPIO_SetMode(bcc_drv_config_t *const drvConfig,
-                                   const bcc_cid_t cid, const uint8_t gpioSel, const bcc_pin_mode_t mode)
+bcc_status_t BCC::GPIO_SetMode(const uint8_t gpioSel, const bcc_pin_mode_t mode)
 {
     bcc_status_t status = BCC_STATUS_PARAM_RANGE;
 
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt) ||
-        (gpioSel >= BCC_GPIO_INPUT_CNT))
+    if (gpioSel >= BCC_GPIO_INPUT_CNT)
     {
         return BCC_STATUS_PARAM_RANGE;
     }
@@ -1198,10 +791,10 @@ bcc_status_t BCC::BCC_GPIO_SetMode(bcc_drv_config_t *const drvConfig,
     if ((mode == BCC_PIN_WAKE_UP_IN) && (gpioSel == 0U))
     {
         /* Set GPIO0 to digital input and enable the wake-up capability. */
-        status = BCC_SetGpioCfg(drvConfig, cid, 0U, BCC_PIN_DIGITAL_IN);
+        status = setGpioCfg(0U, BCC_PIN_DIGITAL_IN);
         if (status == BCC_STATUS_SUCCESS)
         {
-            status = BCC_Communication::regUpdate(cid,
+            status = BCC_Communication::regUpdate(mMsgCnt, mCID,
                                     MC33771C_GPIO_CFG2_OFFSET,
                                     MC33771C_GPIO_CFG2_GPIO0_WU_MASK,
                                     MC33771C_GPIO_CFG2_GPIO0_WU(MC33771C_GPIO_CFG2_GPIO0_WU_WAKEUP_ENUM_VAL));
@@ -1210,10 +803,10 @@ bcc_status_t BCC::BCC_GPIO_SetMode(bcc_drv_config_t *const drvConfig,
     else if ((mode == BCC_PIN_CONVERT_TR_IN) && (gpioSel == 2U))
     {
         /* Set GPIO2 to digital input serving as a conversion trigger. */
-        status = BCC_SetGpioCfg(drvConfig, cid, 2U, BCC_PIN_DIGITAL_IN);
+        status = setGpioCfg(2U, BCC_PIN_DIGITAL_IN);
         if (status == BCC_STATUS_SUCCESS)
         {
-            status = BCC_Communication::regUpdate(cid,
+            status = BCC_Communication::regUpdate(mMsgCnt, mCID,
                                     MC33771C_GPIO_CFG2_OFFSET,
                                     MC33771C_GPIO_CFG2_GPIO2_SOC_MASK,
                                     MC33771C_GPIO_CFG2_GPIO2_SOC(MC33771C_GPIO_CFG2_GPIO2_SOC_ADC_TRG_ENABLED_ENUM_VAL));
@@ -1225,7 +818,7 @@ bcc_status_t BCC::BCC_GPIO_SetMode(bcc_drv_config_t *const drvConfig,
         if (gpioSel == 0U)
         {
             /* Disable the wake-up capability. */
-            status = BCC_Communication::regUpdate(cid,
+            status = BCC_Communication::regUpdate(mMsgCnt, mCID,
                                     MC33771C_GPIO_CFG2_OFFSET,
                                     MC33771C_GPIO_CFG2_GPIO0_WU_MASK,
                                     MC33771C_GPIO_CFG2_GPIO0_WU(MC33771C_GPIO_CFG2_GPIO0_WU_NO_WAKEUP_ENUM_VAL));
@@ -1233,7 +826,7 @@ bcc_status_t BCC::BCC_GPIO_SetMode(bcc_drv_config_t *const drvConfig,
         else if (gpioSel == 2U)
         {
             /* Disable the conversion trigger. */
-            status = BCC_Communication::regUpdate(cid,
+            status = BCC_Communication::regUpdate(mMsgCnt, mCID,
                                     MC33771C_GPIO_CFG2_OFFSET,
                                     MC33771C_GPIO_CFG2_GPIO2_SOC_MASK,
                                     MC33771C_GPIO_CFG2_GPIO2_SOC(MC33771C_GPIO_CFG2_GPIO2_SOC_ADC_TRG_DISABLED_ENUM_VAL));
@@ -1241,7 +834,7 @@ bcc_status_t BCC::BCC_GPIO_SetMode(bcc_drv_config_t *const drvConfig,
 
         if (status == BCC_STATUS_SUCCESS)
         {
-            status = BCC_SetGpioCfg(drvConfig, cid, gpioSel, mode);
+            status = setGpioCfg(gpioSel, mode);
         }
     }
 
@@ -1250,27 +843,24 @@ bcc_status_t BCC::BCC_GPIO_SetMode(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_GPIO_ReadPin
+ * Function Name : GPIO_ReadPin
  * Description   : This function reads a value of one BCC GPIO pin.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_GPIO_ReadPin(bcc_drv_config_t *const drvConfig,
-                                   const bcc_cid_t cid, const uint8_t gpioSel, bool *const val)
+bcc_status_t BCC::GPIO_ReadPin(const uint8_t gpioSel, bool *const val)
 {
     bcc_status_t status;
     uint16_t gpioStsVal;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(val != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt) ||
-        (gpioSel >= BCC_GPIO_INPUT_CNT))
+    if (gpioSel >= BCC_GPIO_INPUT_CNT)
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
     /* Read and update content of GPIO_CFG2 register. */
-    status = BCC_Communication::regRead(cid, MC33771C_GPIO_STS_OFFSET, 1U, &gpioStsVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_GPIO_STS_OFFSET, 1U, &gpioStsVal);
     *val = (gpioStsVal & (1U << gpioSel)) > 0U;
 
     return status;
@@ -1278,70 +868,49 @@ bcc_status_t BCC::BCC_GPIO_ReadPin(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_GPIO_SetOutput
+ * Function Name : GPIO_SetOutput
  * Description   : This function sets output value of one BCC GPIO pin.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_GPIO_SetOutput(bcc_drv_config_t *const drvConfig,
-                                     const bcc_cid_t cid, const uint8_t gpioSel, const bool val)
+bcc_status_t BCC::GPIO_SetOutput(const uint8_t gpioSel, const bool val)
 {
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt) ||
-        (gpioSel >= BCC_GPIO_INPUT_CNT))
+    if (gpioSel >= BCC_GPIO_INPUT_CNT)
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
     /* Update the content of GPIO_CFG2 register. */
-    return BCC_Communication::regUpdate(cid, MC33771C_GPIO_CFG2_OFFSET,
+    return BCC_Communication::regUpdate(mMsgCnt, mCID, MC33771C_GPIO_CFG2_OFFSET,
                           (uint16_t)(1U << gpioSel),
                           (uint16_t)((val ? 1U : 0U) << gpioSel));
 }
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_CB_Enable
+ * Function Name : CB_Enable
  * Description   : This function enables or disables the cell balancing via
  *                 SYS_CFG1[CB_DRVEN] bit.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_CB_Enable(bcc_drv_config_t *const drvConfig,
-                                const bcc_cid_t cid, const bool enable)
+bcc_status_t BCC::CB_Enable(const bool enable)
 {
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    return BCC_Communication::regUpdate(cid, MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_CB_DRVEN_MASK,
+    return BCC_Communication::regUpdate(mMsgCnt, mCID, MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_CB_DRVEN_MASK,
                           enable ? MC33771C_SYS_CFG1_CB_DRVEN(MC33771C_SYS_CFG1_CB_DRVEN_ENABLED_ENUM_VAL)
                                  : MC33771C_SYS_CFG1_CB_DRVEN(MC33771C_SYS_CFG1_CB_DRVEN_DISABLED_ENUM_VAL));
 }
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_CB_SetIndividual
+ * Function Name : CB_SetIndividual
  * Description   : This function enables or disables cell balancing for a
  *                 specified cell and sets its timer.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_CB_SetIndividual(bcc_drv_config_t *const drvConfig,
-                                       const bcc_cid_t cid, const uint8_t cellIndex, const bool enable,
-                                       const uint16_t timer)
+bcc_status_t BCC::CB_SetIndividual(const uint8_t cellIndex, const bool enable, const uint16_t timer)
 {
     uint16_t cbxCfgVal;
 
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    if (cellIndex >= BCC_MAX_CELLS_DEV(drvConfig->device[(uint8_t)cid - 1]))
+    if (cellIndex >= BCC_MAX_CELLS_DEV(mDevice))
     {
         return BCC_STATUS_PARAM_RANGE;
     }
@@ -1355,56 +924,41 @@ bcc_status_t BCC::BCC_CB_SetIndividual(bcc_drv_config_t *const drvConfig,
                        : MC33771C_CB1_CFG_CB_EN(MC33771C_CB1_CFG_CB_EN_DISABLED_ENUM_VAL);
     cbxCfgVal |= MC33771C_CB1_CFG_CB_TIMER(timer);
 
-    return BCC_Communication::regWrite(cid, MC33771C_CB1_CFG_OFFSET + cellIndex, cbxCfgVal);
+    return BCC_Communication::regWrite(mCID, MC33771C_CB1_CFG_OFFSET + cellIndex, cbxCfgVal);
 }
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_CB_Pause
+ * Function Name : CB_Pause
  * Description   : This function pauses cell balancing.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_CB_Pause(bcc_drv_config_t *const drvConfig,
-                               const bcc_cid_t cid, const bool pause)
+bcc_status_t BCC::CB_Pause(const bool pause)
 {
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    return BCC_Communication::regUpdate(cid, MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_CB_MANUAL_PAUSE_MASK,
+    return BCC_Communication::regUpdate(mMsgCnt, mCID, MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_CB_MANUAL_PAUSE_MASK,
                           (pause) ? MC33771C_SYS_CFG1_CB_MANUAL_PAUSE(MC33771C_SYS_CFG1_CB_MANUAL_PAUSE_ENABLED_ENUM_VAL)
                                   : MC33771C_SYS_CFG1_CB_MANUAL_PAUSE(MC33771C_SYS_CFG1_CB_MANUAL_PAUSE_DISABLED_ENUM_VAL));
 }
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_FuseMirror_Read
+ * Function Name : fuseMirror_Read
  * Description   : This function reads a fuse mirror register of selected BCC
  *                 device.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_FuseMirror_Read(bcc_drv_config_t *const drvConfig,
-                                      const bcc_cid_t cid, const uint8_t fuseAddr, uint16_t *const value)
+bcc_status_t BCC::fuseMirror_Read(const uint8_t fuseAddr, uint16_t *const value)
 {
     bcc_status_t status;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(value != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
+    if (fuseAddr > ((mDevice == BCC_DEVICE_MC33771C) ? MC33771C_MAX_FUSE_READ_ADDR : MC33772C_MAX_FUSE_READ_ADDR))
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    if (fuseAddr > ((drvConfig->device[(uint8_t)cid - 1U] == BCC_DEVICE_MC33771C) ? MC33771C_MAX_FUSE_READ_ADDR : MC33772C_MAX_FUSE_READ_ADDR))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    status = BCC_Communication::regWrite(cid, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
+    status = BCC_Communication::regWrite(mCID, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
                            MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(fuseAddr) |
                                MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_LOCKED_ENUM_VAL) |
                                MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_SPI_WRITE_ENABLE_ENUM_VAL));
@@ -1413,35 +967,27 @@ bcc_status_t BCC::BCC_FuseMirror_Read(bcc_drv_config_t *const drvConfig,
         return status;
     }
 
-    return BCC_Communication::regRead(cid, MC33771C_FUSE_MIRROR_DATA_OFFSET, 1U, value);
+    return BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_FUSE_MIRROR_DATA_OFFSET, 1U, value);
 }
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_FuseMirror_Write
+ * Function Name : fuseMirror_Write
  * Description   : This function writes a fuse mirror register of a BCC device
  *                 specified by CID.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_FuseMirror_Write(bcc_drv_config_t *const drvConfig,
-                                       const bcc_cid_t cid, const uint8_t fuseAddr, const uint16_t value)
+bcc_status_t BCC::fuseMirror_Write(const uint8_t fuseAddr, const uint16_t value)
 {
     bcc_status_t status;
 
-    BCC_MCU_Assert(drvConfig != NULL);
-
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    if (fuseAddr > ((drvConfig->device[(uint8_t)cid - 1U] == BCC_DEVICE_MC33771C) ? MC33771C_MAX_FUSE_WRITE_ADDR : MC33772C_MAX_FUSE_WRITE_ADDR))
+    if (fuseAddr > ((mDevice == BCC_DEVICE_MC33771C) ? MC33771C_MAX_FUSE_WRITE_ADDR : MC33772C_MAX_FUSE_WRITE_ADDR))
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
     /* FUSE_MIRROR_CNTL to enable writing. */
-    status = BCC_Communication::regWrite(cid, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
+    status = BCC_Communication::regWrite(mCID, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
                            MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(0U) |
                                MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_UNLOCKED_ENUM_VAL) |
                                MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_SPI_WRITE_ENABLE_ENUM_VAL));
@@ -1451,7 +997,7 @@ bcc_status_t BCC::BCC_FuseMirror_Write(bcc_drv_config_t *const drvConfig,
     }
 
     /* Send the fuse address. */
-    status = BCC_Communication::regWrite(cid, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
+    status = BCC_Communication::regWrite(mCID, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
                            MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(fuseAddr) |
                                MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_UNLOCKED_ENUM_VAL) |
                                MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_SPI_WRITE_ENABLE_ENUM_VAL));
@@ -1460,14 +1006,14 @@ bcc_status_t BCC::BCC_FuseMirror_Write(bcc_drv_config_t *const drvConfig,
         return status;
     }
 
-    status = BCC_Communication::regWrite(cid, MC33771C_FUSE_MIRROR_DATA_OFFSET, value);
+    status = BCC_Communication::regWrite(mCID, MC33771C_FUSE_MIRROR_DATA_OFFSET, value);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* FUSE_MIRROR_CNTL to low power. */
-    return BCC_Communication::regWrite(cid, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
+    return BCC_Communication::regWrite(mCID, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
                          MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(0U) |
                              MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_UNLOCKED_ENUM_VAL) |
                              MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_LP_ENUM_VAL));
@@ -1475,13 +1021,12 @@ bcc_status_t BCC::BCC_FuseMirror_Write(bcc_drv_config_t *const drvConfig,
 
 /*FUNCTION**********************************************************************
  *
- * Function Name : BCC_GUID_Read
+ * Function Name : GUID_Read
  * Description   : This function reads an unique serial number of the BCC device
  *                 from the content of mirror registers.
  *
  *END**************************************************************************/
-bcc_status_t BCC::BCC_GUID_Read(bcc_drv_config_t *const drvConfig,
-                                const bcc_cid_t cid, uint64_t *const guid)
+bcc_status_t BCC::GUID_Read(uint64_t *const guid)
 {
     const uint8_t addr771c[3] = {
         MC33771C_FUSE_TR_0_OFFSET,
@@ -1496,19 +1041,13 @@ bcc_status_t BCC::BCC_GUID_Read(bcc_drv_config_t *const drvConfig,
     uint8_t i;
     bcc_status_t status;
 
-    BCC_MCU_Assert(drvConfig != NULL);
     BCC_MCU_Assert(guid != NULL);
 
-    if ((cid == BCC_CID_UNASSIG) || (((uint8_t)cid) > drvConfig->devicesCnt))
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-
-    readAddr = (drvConfig->device[(uint8_t)cid - 1] == BCC_DEVICE_MC33771C) ? addr771c : addr772c;
+    readAddr = (mDevice == BCC_DEVICE_MC33771C) ? addr771c : addr772c;
 
     for (i = 0; i < 3; i++)
     {
-        status = BCC_FuseMirror_Read(drvConfig, cid, readAddr[i], &(readData[i]));
+        status = fuseMirror_Read(readAddr[i], &(readData[i]));
         if (status != BCC_STATUS_SUCCESS)
         {
             return status;
@@ -1520,4 +1059,40 @@ bcc_status_t BCC::BCC_GUID_Read(bcc_drv_config_t *const drvConfig,
             ((uint64_t)(readData[2] & BCC_FUSE_TR_2_MASK));
 
     return BCC_STATUS_SUCCESS;
+}
+
+
+/*FUNCTION**********************************************************************
+ *
+ * Function Name : hasValidConfig
+ * Description   : This function checks if the BCC has a valid configuration.
+ *
+ *END**************************************************************************/
+bool BCC::hasValidConfig() {
+    if (mDevice == NULL || mCellCount == 0) {
+        return false;
+    }
+
+    if (mDevice == BCC_DEVICE_MC33771C)
+        {
+            if (!BCC_IS_IN_RANGE(mCellCount, MC33771C_MIN_CELLS, MC33771C_MAX_CELLS))
+            {
+                return false;
+            }
+  
+        }
+        else if (mDevice == BCC_DEVICE_MC33772C)
+        {
+            if (!BCC_IS_IN_RANGE(mCellCount, MC33772C_MIN_CELLS, MC33772C_MAX_CELLS))
+            {
+                return false;
+            }
+
+        }
+        else
+        {
+            return false;
+        }
+
+    return true
 }

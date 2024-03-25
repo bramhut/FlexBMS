@@ -11,6 +11,8 @@
 
 #include "bcc/bcc_communication.h"
 #include "cmsis_os.h" // Needed for assert
+#include "SPIwrapper.h"
+
 
 /*******************************************************************************
  * Definitions
@@ -34,6 +36,23 @@
 #define BCC_CMD_WRITE 0x02U
 /*! @brief Global write command. */
 #define BCC_CMD_GLOB_WRITE 0x03U
+
+/*! @brief CSB_TX LOW period in CSB_TX wake-up pulse sequence in [us]. */
+#define BCC_WAKE_PULSE_US 25U
+
+/*! @brief Time between wake pulses (t_WAKE_DELAY, typ.) in [us]. */
+#define BCC_T_WAKE_DELAY_US 600U
+
+/*! @brief Time the MCU shall wait after sending first wake-up message
+ * per 33771C/33772C IC (t_WU_Wait, min.) in [us]. */
+#define BCC_T_WU_WAIT_US 750U
+
+/*! @brief EN LOW to HIGH transition to INTB verification pulse
+ * (t_INTB_PULSE_DELAY, max.) in [us]. */
+#define BCC_T_INTB_PULSE_DELAY_US 100U
+
+/*! @brief INTB verification pulse duration (t_INTB_PULSE, typ.) in [us]. */
+#define BCC_T_INTB_PULSE_US 100U
 
 /*!
  * @brief Returns data field of the communication frame.
@@ -131,9 +150,7 @@ namespace BCC_Communication
         SPI spiTX(&BCC_TX_HSPI, SPI::MASTER_TX, BCC_SPI_TX_CS_PORT, SPI_TX_CS_PIN);
         SPI spiRX(&BCC_RX_HSPI, SPI::SLAVE_RX);
 
-        uint8_t rxBuf[BCC_RX_BUF_SIZE_TPL]; /* Buffer for received data. */
-        uint8_t msgCntr[BCC_DEVICE_CNT_MAX + 1]; /*!< Last received value of Message counter (values 0-15).
-                                                  MsgCntr[0] contains Message counter of CID=0. */
+        uint8_t rxBuf[BCC_RX_BUF_SIZE_TPL];      /* Buffer for received data. */
 
         /*******************************************************************************
          * Private functions
@@ -141,7 +158,7 @@ namespace BCC_Communication
 
         /*FUNCTION**********************************************************************
          *
-         * Function Name : BCC_CalcCRC
+         * Function Name : CalcCRC
          * Description   : This function calculates CRC value of passed data array.
          *
          *END**************************************************************************/
@@ -171,7 +188,7 @@ namespace BCC_Communication
 
         /*FUNCTION**********************************************************************
          *
-         * Function Name : BCC_CheckCRC
+         * Function Name : CheckCRC
          * Description   : This function calculates CRC of a received frame and compares
          *                 it with CRC field of the frame.
          *
@@ -191,23 +208,23 @@ namespace BCC_Communication
 
         /*FUNCTION**********************************************************************
          *
-         * Function Name : BCC_CheckMsgCnt
+         * Function Name : CheckMsgCnt
          * Description   : This function checks value of the Message counter field of
          *                 a frame.
          *
          *END**************************************************************************/
-        bcc_status_t CheckMsgCntr(const bcc_cid_t cid, const uint8_t *const resp)
+        bcc_status_t CheckMsgCnt(uint8_t &msgCnt, const bcc_cid_t cid, const uint8_t *const resp)
         {
             uint8_t msgCntPrev; /* Previously received message counter value. */
             uint8_t msgCntRcv;  /* Currently received message counter value. */
 
             configASSERT(resp != NULL);
 
-            msgCntPrev = msgCntr[(uint8_t)cid];
+            msgCntPrev = msgCnt;
             msgCntRcv = (resp[BCC_MSG_IDX_CNT_CMD] & BCC_MSG_MSG_CNT_MASK) >> BCC_MSG_MSG_CNT_SHIFT;
 
             /* Store the Message counter value. */
-            msgCntr[(uint8_t)cid] = msgCntRcv;
+            msgCnt = msgCntRcv;
 
             /* Check the Message counter value.
              * Note: Do not perform a check for CID=0. */
@@ -221,12 +238,12 @@ namespace BCC_Communication
 
         /*FUNCTION**********************************************************************
          *
-         * Function Name : BCC_CheckEchoFrame
+         * Function Name : CheckEchoFrame
          * Description   : This function checks content of the echo frame.
          *
          *END**************************************************************************/
         bcc_status_t CheckEchoFrame(const uint8_t *const txBuf,
-                                        const uint8_t *const resp)
+                                    const uint8_t *const resp)
         {
             configASSERT(resp != NULL);
             configASSERT(txBuf != NULL);
@@ -248,13 +265,13 @@ namespace BCC_Communication
 
         /*FUNCTION**********************************************************************
          *
-         * Function Name : BCC_PackFrame
+         * Function Name : PackFrame
          * Description   : This function packs all the parameters into a frame according
          *                 to the BCC frame format (see BCC datasheet).
          *
          *END**************************************************************************/
         void PackFrame(const uint16_t data, const uint8_t addr,
-                           const bcc_cid_t cid, const uint8_t cmdCnt, uint8_t *const frame)
+                       const bcc_cid_t cid, const uint8_t cmdCnt, uint8_t *const frame)
         {
             configASSERT(frame != NULL);
 
@@ -277,13 +294,13 @@ namespace BCC_Communication
 
         /*FUNCTION**********************************************************************
          *
-         * Function Name : BCC_MCU_TransferTpl
+         * Function Name : MCU_TransferTpl
          * Description   : This function sends and receives data via TX and RX SPI buses.
          *                 Intended for TPL mode only.
          *
          *END**************************************************************************/
         bcc_status_t MCU_TransferTpl(uint8_t txBuf[],
-                                         uint8_t rxBuf[], const uint16_t rxTrCnt)
+                                     uint8_t rxBuf[], const uint16_t rxTrCnt)
 
         {
             BCC_MCU_Assert(txBuf != NULL);
@@ -314,7 +331,7 @@ namespace BCC_Communication
 
     /*FUNCTION**********************************************************************
      *
-     * Function Name : Setup
+     * Function Name : setup
      * Description   : Setup the SPI communication.
      *
      *END**************************************************************************/
@@ -326,12 +343,12 @@ namespace BCC_Communication
 
     /*FUNCTION**********************************************************************
      *
-     * Function Name : BCC_Reg_ReadTpl
+     * Function Name : reg_ReadTpl
      * Description   : This function reads desired number of registers of the BCC
      *                 device. Intended for TPL mode only.
      *
      *END**************************************************************************/
-    bcc_status_t regRead(const bcc_cid_t cid, const uint8_t regAddr, const uint8_t regCnt, uint16_t *regVal)
+    bcc_status_t regRead(uint8_t &msgCnt, const bcc_cid_t cid, const uint8_t regAddr, const uint8_t regCnt, uint16_t *regVal)
     {
         uint8_t txBuf[BCC_MSG_SIZE]; /* TX buffer. */
         uint8_t regIdx;              /* Index of a received register. */
@@ -374,7 +391,7 @@ namespace BCC_Communication
             }
 
             /* Check the Message counter value. */
-            if ((status = CheckMsgCntr(cid, rxBufMsgIdx)) != BCC_STATUS_SUCCESS)
+            if ((status = CheckMsgCnt(msgCnt, cid, rxBufMsgIdx)) != BCC_STATUS_SUCCESS)
             {
                 return status;
             }
@@ -388,7 +405,7 @@ namespace BCC_Communication
 
     /*FUNCTION**********************************************************************
      *
-     * Function Name : BCC_Reg_Write
+     * Function Name : reg_Write
      * Description   : This function writes a value to addressed register of the
      *                 BCC device. Intended for TPL mode only.
      *
@@ -418,7 +435,7 @@ namespace BCC_Communication
 
     /*FUNCTION**********************************************************************
      *
-     * Function Name : BCC_Reg_WriteGlobalTpl
+     * Function Name : reg_WriteGlobalTpl
      * Description   : This function writes a value to addressed register of all
      *                 configured BCC devices in the chain. Intended for TPL mode
      *                 only.
@@ -450,17 +467,17 @@ namespace BCC_Communication
 
     /*FUNCTION**********************************************************************
      *
-     * Function Name : BCC_Reg_Update
+     * Function Name : reg_Update
      * Description   : This function updates content of a selected register; affects
      *                 bits specified by a bit mask only.
      *
      *END**************************************************************************/
-    bcc_status_t regUpdate(const bcc_cid_t cid, const uint8_t regAddr, const uint16_t regMask, const uint16_t regVal)
+    bcc_status_t regUpdate(uint8_t &msgCnt, const bcc_cid_t cid, const uint8_t regAddr, const uint16_t regMask, const uint16_t regVal)
     {
         uint16_t regValTemp;
         bcc_status_t status;
 
-        status = regRead(cid, regAddr, 1U, &regValTemp);
+        status = regRead(msgCnt, cid, regAddr, 1U, &regValTemp);
         if (status != BCC_STATUS_SUCCESS)
         {
             return status;
@@ -475,7 +492,7 @@ namespace BCC_Communication
 
     /*FUNCTION**********************************************************************
      *
-     * Function Name : BCC_SendNopTpl
+     * Function Name : sendNop
      * Description   : This function sends a No Operation command (NOP) to the
      *                 BCC device. Intended for TPL mode only.
      *
@@ -498,6 +515,95 @@ namespace BCC_Communication
 
         /* Check the echo frame. */
         return CheckEchoFrame(txBuf, rxBuf);
+    }
+
+    /*FUNCTION**********************************************************************
+     *
+     * Function Name : wakeUpPattern
+     * Description   : This function does two consecutive transitions of CSB_TX from
+     *                 low to high.
+     *
+     *END**************************************************************************/
+    void wakeUpPattern(size_t devicesCnt)
+    {
+        /* CSB_TX low for 25 us. */
+        BCC_MCU_WriteCsbPin(0);
+        BCC_MCU_WaitUs(BCC_WAKE_PULSE_US);
+
+        /* CSB_TX high for 600 us. */
+        BCC_MCU_WriteCsbPin(1);
+        BCC_MCU_WaitUs(BCC_T_WAKE_DELAY_US);
+
+        /* CSB_TX low for 25 us. */
+        BCC_MCU_WriteCsbPin(0);
+        BCC_MCU_WaitUs(BCC_WAKE_PULSE_US);
+
+        /* CSB_TX high. */
+        BCC_MCU_WriteCsbPin(1);
+        /* Time to switch Sleep mode to normal mode after TPL bus wake-up. */
+        BCC_MCU_WaitUs(BCC_T_WU_WAIT_US * devicesCnt);
+    }
+
+    /*FUNCTION**********************************************************************
+     *
+     * Function Name : TPL_Enable
+     * Description   : This function enables MC33664 TPL device. It uses EN and
+     *                 INTB pins. Intended for TPL mode only!
+     *
+     *END**************************************************************************/
+    bcc_status_t TPL_Enable()
+    {
+        int32_t timeout;
+
+        /* Set normal state (transition from low to high). */
+        BCC_MCU_WriteEnPin(0);
+        /* Wait at least 100 us. */
+        BCC_MCU_WaitUs(150);
+        BCC_MCU_WriteEnPin(1);
+
+        /* Note: MC33664 has time t_Ready/t_INTB_PULSE_DELAY (max. 100 us) to take effect.
+         * Wait for INTB transition from high to low (max. 100 us). */
+        timeout = BCC_T_INTB_PULSE_DELAY_US;
+        while ((BCC_MCU_ReadIntbPin() > 0) && (timeout > 0))
+        {
+            timeout -= 5;
+            BCC_MCU_WaitUs(5U);
+        }
+        if ((timeout <= 0) && (BCC_MCU_ReadIntbPin() > 0))
+        {
+            return BCC_STATUS_COM_TIMEOUT;
+        }
+
+        /* Wait for INTB transition from low to high (typ. 100 us).
+         * Wait for at most 200 us. */
+        timeout = BCC_T_INTB_PULSE_US * 2;
+        while ((BCC_MCU_ReadIntbPin() == 0) && (timeout > 0))
+        {
+            timeout -= 10;
+            BCC_MCU_WaitUs(10U);
+        }
+        if ((timeout <= 0) && (BCC_MCU_ReadIntbPin() == 0))
+        {
+            return BCC_STATUS_COM_TIMEOUT;
+        }
+
+        /* Now the device should be in normal mode (i.e. after INTB low to high
+         * transition). For sure wait for 150 us. */
+        BCC_MCU_WaitUs(150U);
+
+        return BCC_STATUS_SUCCESS;
+    }
+
+    /*FUNCTION**********************************************************************
+     *
+     * Function Name : TPL_Disable
+     * Description   : This function puts MC33664 device into the sleep mode.
+     *                 Intended for TPL mode only!
+     *
+     *END**************************************************************************/
+    void TPL_Disable()
+    {
+        BCC_MCU_WriteEnPin(0);
     }
 
 }
