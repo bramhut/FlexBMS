@@ -2,29 +2,11 @@
 
 #include "bcc_utils.h"
 
-/* IMPORTANT SETTINGS */
-
-/*! @brief HAL SPI handlers. */
-#define BCC_TX_HSPI hspi2
-#define BCC_RX_HSPI hspi3
-
-/*! @brief SPI TX CS pins. */
-#define BCC_SPI_TX_CS_PORT SPI2_CS_GPIO_Port
-#define BCC_SPI_TX_CS_PIN SPI2_CS_Pin
-
-/*! @brief EN and INT pins. */
-#define BCC_EN_PORT MC_EN_GPIO_Port
-#define BCC_EN_PIN MC_EN_Pin
-#define BCC_INT_PORT MC_INT_GPIO_Port
-#define BCC_INT_PIN MC_INT_Pin
-
 /* MACROS */
 
 #define BCC_MCU_WriteCsbPin(value) HAL_GPIO_WritePin(BCC_SPI_TX_CS_PORT, BCC_SPI_TX_CS_PIN, value ? GPIO_PIN_SET : GPIO_PIN_RESET)
 #define BCC_MCU_WriteEnPin(value) HAL_GPIO_WritePin(BCC_EN_PORT, BCC_EN_PIN, value ? GPIO_PIN_SET : GPIO_PIN_RESET)
 #define BCC_MCU_ReadIntbPin() HAL_GPIO_ReadPin(BCC_INT_PORT, BCC_INT_PIN)
-
-
 
 namespace BCC_Communication
 {
