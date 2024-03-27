@@ -300,6 +300,9 @@ namespace SlaveController
             return BCC_Communication::regWriteGlobal(MC33771C_ADC_CFG_OFFSET, adcCfgValue);
         }
 
+        /**
+         * @brief freeRTOS task for SlaveController 
+        */
         void task(void *argument)
         {
             while (true)
