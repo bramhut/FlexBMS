@@ -14,18 +14,12 @@
 #include "bcc/bcc_utils.h"
 #include "bcc/bcc_communication.h"
 #include "bcc/MC33771C.h"
+#include <vector>
+#include "bcc/UserSettings.h"
 
 /*******************************************************************************
  * Definitions
  ******************************************************************************/
-
-/* CRITICAL SETTINGS */
-
-/*! @brief Number of slaves connected to the TPL Chain. Maximum of 64 */
-#define BMS_SLAVE_COUNT 2
-
-/*! @brief Loopback mode used */
-#define BMS_LOOPBACK_MODE false
 
 /* NO NEED TO CHANGE THE SETTINGS BELOW */
 
@@ -37,22 +31,151 @@ namespace SlaveController
 {
     namespace
     {
+
         /*******************************************************************************
-         * Private static objects
+            FreeRTOS Task stuff
+        ******************************************************************************/
+        osThreadId_t bmsTaskHandle;
+        const osThreadAttr_t bmsTask_attributes = {
+            .name = "bmsTask",
+            .stack_size = configMINIMAL_STACK_SIZE * 4,
+            .priority = (osPriority_t)osPriorityNormal,
+        };
+
+        /*******************************************************************************
+         * Private variables
          ******************************************************************************/
 
         BMSFault mCurrentFault = NO_FAULT; /* Current fault state */
 
-        BCC mSlaves[BMS_SLAVE_COUNT] = { /* Array of all BCCs */
-            BCC(BCC_DEVICE_MC33771C, 12),
-            BCC(BCC_DEVICE_MC33771C, 12)
-        };
+        std::vector<BCC> mSlaves; /* Array of BCC devices */
+
+        bool loopbackMode;
+
+        double shuntResistance; // [Ohm]
+
+        SafetyLimits_t safetyLimits;
 
         /*******************************************************************************
          * Private functions
          ******************************************************************************/
+        
+        /**
+         * @brief Convert temperature to millivolts
+        */
+        uint16_t convertTempToVoltage(double temp)
+        {
+            // TODO implement this
+            return 2000U;
+        }
 
-        bool initializeRegisters();
+        std::vector<bcc_init_reg_t> getInitGlobalRegisterMapping()
+        {
+
+            uint16_t ov_limit_mv = (unsigned int) safetyLimits.OVERVOLTAGE_LIMIT * 1000;
+            uint16_t uv_limit_mv = (unsigned int) safetyLimits.UNDERVOLTAGE_LIMIT * 1000;
+            
+            uint16_t ot_limit_mv = convertTempToVoltage(safetyLimits.OVERTEMPERATURE_LIMIT);
+            uint16_t ut_limit_mv = convertTempToVoltage(safetyLimits.UNDERTEMPERATURE_LIMIT);
+
+            return {
+                {MC33771C_GPIO_CFG1_OFFSET, MC33771C_GPIO_CFG1_POR_VAL, MC33771C_GPIO_CFG1_VALUE},
+                {MC33771C_GPIO_CFG2_OFFSET, MC33771C_GPIO_CFG2_POR_VAL, MC33771C_GPIO_CFG2_VALUE},
+                {MC33771C_TH_ALL_CT_OFFSET, MC33771C_TH_ALL_CT_POR_VAL, (uint16_t) MC33771C_TH_ALL_CT_VALUE(ov_limit_mv, uv_limit_mv)},
+                {MC33771C_TH_AN6_OT_OFFSET, MC33771C_TH_AN6_OT_POR_VAL, (uint16_t) MC33771C_TH_ANX_OT_VALUE(ot_limit_mv)},
+                {MC33771C_TH_AN5_OT_OFFSET, MC33771C_TH_AN5_OT_POR_VAL, (uint16_t) MC33771C_TH_ANX_OT_VALUE(ot_limit_mv)},
+                {MC33771C_TH_AN4_OT_OFFSET, MC33771C_TH_AN4_OT_POR_VAL, (uint16_t) MC33771C_TH_ANX_OT_VALUE(ot_limit_mv)},
+                {MC33771C_TH_AN3_OT_OFFSET, MC33771C_TH_AN3_OT_POR_VAL, (uint16_t) MC33771C_TH_ANX_OT_VALUE(ot_limit_mv)},
+                {MC33771C_TH_AN2_OT_OFFSET, MC33771C_TH_AN2_OT_POR_VAL, (uint16_t) MC33771C_TH_ANX_OT_VALUE(ot_limit_mv)},
+                {MC33771C_TH_AN1_OT_OFFSET, MC33771C_TH_AN1_OT_POR_VAL, (uint16_t) MC33771C_TH_ANX_OT_VALUE(ot_limit_mv)},
+                {MC33771C_TH_AN0_OT_OFFSET, MC33771C_TH_AN0_OT_POR_VAL, (uint16_t) MC33771C_TH_ANX_OT_VALUE(ot_limit_mv)},
+                {MC33771C_TH_AN6_UT_OFFSET, MC33771C_TH_AN6_UT_POR_VAL, (uint16_t) MC33771C_TH_ANX_UT_VALUE(ut_limit_mv)},
+                {MC33771C_TH_AN5_UT_OFFSET, MC33771C_TH_AN5_UT_POR_VAL, (uint16_t) MC33771C_TH_ANX_UT_VALUE(ut_limit_mv)},
+                {MC33771C_TH_AN4_UT_OFFSET, MC33771C_TH_AN4_UT_POR_VAL, (uint16_t) MC33771C_TH_ANX_UT_VALUE(ut_limit_mv)},
+                {MC33771C_TH_AN3_UT_OFFSET, MC33771C_TH_AN3_UT_POR_VAL, (uint16_t) MC33771C_TH_ANX_UT_VALUE(ut_limit_mv)},
+                {MC33771C_TH_AN2_UT_OFFSET, MC33771C_TH_AN2_UT_POR_VAL, (uint16_t) MC33771C_TH_ANX_UT_VALUE(ut_limit_mv)},
+                {MC33771C_TH_AN1_UT_OFFSET, MC33771C_TH_AN1_UT_POR_VAL, (uint16_t) MC33771C_TH_ANX_UT_VALUE(ut_limit_mv)},
+                {MC33771C_TH_AN0_UT_OFFSET, MC33771C_TH_AN0_UT_POR_VAL, (uint16_t) MC33771C_TH_ANX_UT_VALUE(ut_limit_mv)},
+                {MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_POR_VAL, MC33771C_SYS_CFG1_VALUE(false)}, // Slave with Current measurement should have different initial register
+                {MC33771C_SYS_CFG2_OFFSET, MC33771C_SYS_CFG2_POR_VAL, MC33771C_SYS_CFG2_VALUE},
+                {MC33771C_ADC_CFG_OFFSET, MC33771C_ADC_CFG_POR_VAL, MC33771C_ADC_CFG_VALUE},
+                {MC33771C_ADC2_OFFSET_COMP_OFFSET, MC33771C_ADC2_OFFSET_COMP_POR_VAL, MC33771C_ADC2_OFFSET_COMP_VALUE}, // Only useful if I_MEAS is enabled, but global write is probably fine
+                {MC33771C_FAULT_MASK1_OFFSET, MC33771C_FAULT_MASK1_POR_VAL, MC33771C_FAULT_MASK1_VALUE},
+                {MC33771C_FAULT_MASK2_OFFSET, MC33771C_FAULT_MASK2_POR_VAL, MC33771C_FAULT_MASK2_VALUE},
+                {MC33771C_FAULT_MASK3_OFFSET, MC33771C_FAULT_MASK3_POR_VAL, MC33771C_FAULT_MASK3_VALUE},
+            };
+        }
+
+        /*! @brief This function initializes registers of all devices in the TPL chain.
+         *  Based on the example in the programming guide.
+         *
+         * @return bool True if the initialization was successful, false otherwise.
+         */
+        bool initializeRegisters()
+        {
+
+            std::vector<bcc_init_reg_t> globalRegisters = getInitGlobalRegisterMapping();
+
+            // Write global registers
+            for (uint16_t i; i < globalRegisters.size(); i++)
+            {
+                if (globalRegisters[i].value != globalRegisters[i].defaultVal)
+                {
+                    if (BCC_Communication::regWriteGlobal(globalRegisters[i].address, globalRegisters[i].value) != BCC_STATUS_SUCCESS)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            // Loop trough all devices to set slave specific registers based on config
+            for (auto &slave : mSlaves)
+            {
+                if (slave.currentSenseEnabled())
+                {
+                    // Set I_MEAS_EN in SYS_CFG1
+                    if (BCC_Communication::regWrite(slave.getCID(), MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_VALUE(true)) != BCC_STATUS_SUCCESS) {
+                        return false;
+                    }
+                }
+
+                // Depending on number of NTCs used, set unused GPIOs to digital in, (and highest bits to 0) 
+                uint16_t regValue = (0x2AAA << 2 * slave.getNTCCount()) & 0x3FFF;
+                if (BCC_Communication::regWrite(slave.getCID(), MC33771C_GPIO_CFG1_OFFSET, regValue) != BCC_STATUS_SUCCESS) {
+                    return false;
+                }
+
+                // Disable OV/UV detection for unused cells  (reg OV_UV_EN)
+                uint8_t maxCellCount = slave.getDeviceType() == BCC_DEVICE_MC33771C ? MC33771C_MAX_CELLS : MC33772C_MAX_CELLS;
+
+                uint16_t regValue = 0;
+                for (uint8_t i = 0; i < slave.getCellCount(); i++) {
+                    regValue |= (1 << i);
+                }
+
+                // Set Common OV/UV threshold bits
+                regValue |= 0xC000;
+
+                if (BCC_Communication::regWrite(slave.getCID(), MC33771C_OV_UV_EN_OFFSET, regValue) != BCC_STATUS_SUCCESS) {
+                    return false;
+                }
+
+                
+            }
+
+            // Clear fault bits
+            if (BCC_Communication::regWriteGlobal(MC33771C_CELL_OV_FLT_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
+                || BCC_Communication::regWriteGlobal(MC33771C_CELL_UV_FLT_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
+                || BCC_Communication::regWriteGlobal(MC33771C_AN_OT_UT_FLT_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \ 
+                || BCC_Communication::regWriteGlobal(MC33771C_FAULT1_STATUS_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
+                || BCC_Communication::regWriteGlobal(MC33771C_FAULT2_STATUS_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
+                || BCC_Communication::regWriteGlobal(MC33771C_FAULT3_STATUS_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS) {
+                return false;
+            }
+
+            return true;
+        };
+
         bool ADCConversions();
         bool performCellBalancing();
         bool diagnostics();
@@ -100,7 +223,7 @@ namespace SlaveController
             /* Wake-up all configured devices (in case they are in SLEEP mode) or
              * move the first device (device closest to MC33664) from IDLE mode to
              * NORMAL mode (in case devices are in IDLE mode). */
-            BCC_Communication::wakeUpPattern(BMS_SLAVE_COUNT);
+            BCC_Communication::wakeUpPattern(mSlaves.size());
 
             /* Software Reset all configured devices (in case they are already initialized).
              * If the devices are not initialized (CID is equal to 000000b), a write
@@ -114,14 +237,14 @@ namespace SlaveController
             /* Assign CID to the first node and terminate its RDTX_OUT if only one
              * device is utilised and if loop-back is not required. */
 
-            status = mSlaves[0].assignCid(BMS_LOOPBACK_MODE, BMS_SLAVE_COUNT);
+            status = mSlaves[0].assignCid(loopbackMode, mSlaves.size());
             if (status != BCC_STATUS_SUCCESS)
             {
                 return status;
             }
 
             /* Init the rest of devices. */
-            for (uint8_t i = 1; i <= BMS_SLAVE_COUNT; i++)
+            for (uint8_t i = 1; i <= mSlaves.size(); i++)
             {
                 BCC_MCU_WaitMs(2U);
 
@@ -130,9 +253,9 @@ namespace SlaveController
                  * Note that the WAKE-UP sequence is recognised as two wrong SPI
                  * transfers in devices which are already in the NORMAL mode. That will
                  * increase their COM_STATUS[COM_ERR_COUNT]. */
-                BCC_Communication::wakeUpPattern(BMS_SLAVE_COUNT);
+                BCC_Communication::wakeUpPattern(mSlaves.size());
 
-                status = mSlaves[i].assignCid(BMS_LOOPBACK_MODE, BMS_SLAVE_COUNT);
+                status = mSlaves[i].assignCid(loopbackMode, mSlaves.size());
                 if (status != BCC_STATUS_SUCCESS)
                 {
                     return status;
@@ -140,40 +263,6 @@ namespace SlaveController
             }
 
             return status;
-        }
-
-        /*!
-         * @brief This function initializes the battery cell controller device(s),
-         * assigns CID and initializes internal driver data.
-         *
-         * Note that this function initializes only the INIT register of connected
-         * BCC device(s).
-         *
-         * Note that the function is implemented for an universal use. It is capable to
-         * move BCC devices into the NORMAL mode from all modes (INIT, IDLE, SLEEP and
-         * NORMAL) except the RESET mode. Such implementation can generate more wake-up
-         * sequences via CSB_TX pin than required for the current mode. These extra
-         * sequences project to the COM_ERR_COUNT bit field in COM_STATUS register.
-         * Therefore, it is recommended to clear the COM_STATUS register after calling
-         * of this function.
-         *
-         *
-         * @return bcc_status_t Error code.
-         */
-        bcc_status_t Init()
-        {
-            uint8_t dev;
-
-            for (uint8_t i; i < BMS_SLAVE_COUNT; i++)
-            {
-                if (!&mSlaves[i]->hasValidConfig())
-                {
-                    return BCC_STATUS_PARAM_RANGE;
-                }
-            }
-
-            /* Enable MC33664 device in TPL mode. */
-            return BCC_Communication::TPL_Enable();
         }
 
         /*!
@@ -210,34 +299,85 @@ namespace SlaveController
 
             return BCC_Communication::regWriteGlobal(MC33771C_ADC_CFG_OFFSET, adcCfgValue);
         }
+
+        void task(void *argument)
+        {
+            while (true)
+            {
+                // 1. Daisy chain / CID initialization
+                if (!InitDevices() != BCC_STATUS_SUCCESS)
+                {
+                    mCurrentFault = CID_INITIALIZATION_FAULT;
+                    break;
+                }
+                mCurrentFault = NO_FAULT;
+
+                // 2. Register initialization
+                if (!initializeRegisters()) {
+                    mCurrentFault = REGISTER_INITIALIZATION_FAULT;
+                }
+
+                // main loop
+                runningLoop();
+            }
+        }
+
+        /**
+         * @brief Load the configuration from the UserSettings.h file
+         * @return true if the configuration is valid, false otherwise
+         */
+        bool loadConfig()
+        {
+            loopbackMode = DEFAULT_SETTINGS.LOOPBACK_MODE;
+            safetyLimits = DEFAULT_SETTINGS.SAFETY_LIMITS;
+
+            // TODO implement check if shunt resistance value is within spec
+            shuntResistance = DEFAULT_SETTINGS.SHUNT_RESISTANCE_OHM;
+
+            uint8_t cid = 1U;
+            for (int i = 0; i < DEFAULT_SETTINGS.SLAVE_CONFIG.size(); i++)
+            {
+                SlaveConfig_t slaveConfig = DEFAULT_SETTINGS.SLAVE_CONFIG[i];
+
+                mSlaves.push_back(
+                    BCC(
+                        slaveConfig.DEVICE_TYPE,
+                        slaveConfig.CELL_COUNT,
+                        slaveConfig.NTC_COUNT,
+                        slaveConfig.CURRENT_SENSING_ENABLED,
+                        (bcc_cid_t)cid++));
+
+                // Check config of slave last pushed to the array
+                if (!mSlaves.back().hasValidConfig())
+                {
+                    return false;
+                }
+            }
+        }
     }
 
     /*******************************************************************************
      * Public functions
      ******************************************************************************/
-
-    void mainTask()
+    void SlaveController::setup()
     {
-        // First attempt mirrors recommend flow according to Programming guide
-        if (Init() != BCC_STATUS_SUCCESS)
+        bcc_status_t status;
+        if (!loadConfig())
         {
-            // TODO invalid config or something, exit!
+            mCurrentFault = INVALID_SLAVE_CONFIG;
+
+            return;
         }
 
-        while (true)
+        status = BCC_Communication::TPL_Enable();
+
+        if (status != BCC_STATUS_SUCCESS)
         {
-            // 1. Daisy chain / CID initialization
-            while (!InitDevices() != BCC_STATUS_SUCCESS)
-            {
-                mCurrentFault = CID_INITIALIZATION_FAULT;
-            }
-            mCurrentFault = NO_FAULT;
-
-            // 2. Register initialization
-            initializeRegisters();
-
-            // main loop
-            runningLoop();
+            mCurrentFault = TPL_FAULT;
+            return;
         }
+
+        // Create task 'n stuff
+        bmsTaskHandle = osThreadNew(task, NULL, &bmsTask_attributes);
     }
 }

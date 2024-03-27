@@ -5803,7 +5803,6 @@ extern "C"
 #define MC33771C_FUSE_MIRROR_CNTL_SEC_ERR_FLT_ERROR_ENUM_VAL (0x1U)
 
 
-
 #ifdef __cplusplus
 }
 #endif

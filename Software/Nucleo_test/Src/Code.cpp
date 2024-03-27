@@ -10,6 +10,7 @@
 #define DEBUG_LVL 2
 #include "Debug.h"
 #include "bcc/bcc.h"
+#include "bcc/SlaveController.h"
 
 /*
 	Main task handler and attributes. Don't edit if you are unsure what EXACTLY you are doing.
@@ -33,7 +34,6 @@ void mainTask(void *argument)
 	bool pinState = false;
 
 	AIN::begin();
-	BCC bcc = BCC(&spiTX, &spiRX);
 
 	IO::setup();
 
@@ -90,4 +90,5 @@ void mainTask(void *argument)
 void MX_FREERTOS_Init() {
 	// Start up the main task. If necessary you can add other tasks here as well.
 	mainTaskHandle = osThreadNew(mainTask, NULL, &mainTask_attributes);
+	SlaveController::setup();
 }

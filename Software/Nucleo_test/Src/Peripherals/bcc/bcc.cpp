@@ -11,7 +11,7 @@
  ******************************************************************************/
 
 #include "bcc/bcc_communication.h"
-#include "bcc.h"
+#include "bcc/bcc.h"
 
 /*******************************************************************************
  * Definitions
@@ -105,7 +105,7 @@ static const uint16_t s_cellMap[2][MC33771C_MAX_CELLS + 1] = {{
     0x0023, /* 3 cells. */
     0x0033, /* 4 cells. */
     0x003B, /* 5 cells. */
-    0x003F  /* 6 cells. */
+    0x003F,  /* 6 cells. */
     0x0000, /* Unsupported number of cells. */
     0x0000, /* Unsupported number of cells. */
     0x0000, /* Unsupported number of cells. */
@@ -123,7 +123,7 @@ static const uint16_t s_cellMap[2][MC33771C_MAX_CELLS + 1] = {{
  *                 to zero.
  *
  *END**************************************************************************/
-bcc_status_t BCC::assignCid(bool loopback, uint8_t devicesCnt)
+bcc_status_t BCC::assignCid(bool loopBack, uint8_t devicesCnt)
 {
     uint16_t writeVal, readVal;
     bcc_status_t status;
@@ -244,7 +244,7 @@ bcc_status_t BCC::setGpioCfg(const uint8_t gpioSel, const bcc_pin_mode_t mode)
  * Description   : Sets correct parameters
  *
  *END**************************************************************************/
-BCC::BCC(bcc_device_t device, uint16_t cellCount, bcc_cid_t cid) : mDevice(device), mCellCount(cellCount), mCID(cid), mCellMap(s_cellMap[device][cellCount]){}
+BCC::BCC(bcc_device_t device, uint8_t cellCount, uint8_t ntcCount, bool currentSenseEnable, bcc_cid_t cid) : mDevice(device), mCellCount(cellCount), mNTCCount(ntcCount), mCurrentSenseEnabled(currentSenseEnable), mCID(cid), mCellMap(s_cellMap[device][cellCount]){}
 
 
 /*FUNCTION**********************************************************************
@@ -256,7 +256,7 @@ BCC::BCC(bcc_device_t device, uint16_t cellCount, bcc_cid_t cid) : mDevice(devic
  *END**************************************************************************/
 bcc_status_t BCC::softwareReset()
 {
-    return BCC_Communication::regWrite(mCid, MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_SOFT_RST(MC33771C_SYS_CFG1_SOFT_RST_ACTIVE_ENUM_VAL));
+    return BCC_Communication::regWrite(this->mCID, MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_SOFT_RST(MC33771C_SYS_CFG1_SOFT_RST_ACTIVE_ENUM_VAL));
 }
 
 /*FUNCTION**********************************************************************
@@ -274,7 +274,7 @@ bcc_status_t BCC::meas_StartConversion(const bcc_avg_t avg)
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    return BCC_Communication::regUpdate(mMsgCnt, mCid, MC33771C_ADC_CFG_OFFSET,
+    return BCC_Communication::regUpdate(mMsgCnt, mCID, MC33771C_ADC_CFG_OFFSET,
                           MC33771C_ADC_CFG_SOC_MASK | MC33771C_ADC_CFG_AVG_MASK,
                           MC33771C_ADC_CFG_SOC(MC33771C_ADC_CFG_SOC_ENABLED_ENUM_VAL) |
                               MC33771C_ADC_CFG_AVG(avg));
@@ -296,7 +296,7 @@ bcc_status_t BCC::meas_IsConverting(bool *const completed)
 
     BCC_MCU_Assert(completed != NULL);
 
-    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_ADC_CFG_OFFSET, 1U, &adcCfgVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_ADC_CFG_OFFSET, 1U, &adcCfgVal);
 
     *(completed) = ((adcCfgVal & MC33771C_ADC_CFG_EOC_N_MASK) ==
                     MC33771C_ADC_CFG_EOC_N(MC33771C_ADC_CFG_EOC_N_COMPLETED_ENUM_VAL));
@@ -342,8 +342,7 @@ bcc_status_t BCC::meas_StartAndWait(const bcc_avg_t avg)
     //     return status;
     // }
 
-    do
-    {
+    do {
         status = meas_IsConverting(&complete);
         if (status != BCC_STATUS_SUCCESS)
         {
@@ -386,12 +385,12 @@ bcc_status_t BCC::meas_GetRawValues(uint16_t *const measurements)
      * values in Measurements array, see enumeration bcc_measurements_t. */
     if (mDevice == BCC_DEVICE_MC33771C)
     {
-        status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_CC_NB_SAMPLES_OFFSET,
+        status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_CC_NB_SAMPLES_OFFSET,
                               BCC_MEAS_CNT, measurements);
     }
     else
     {
-        status = BCC_Communication::regRead(mMsgCnt, mCid, MC33772C_CC_NB_SAMPLES_OFFSET,
+        status = BCC_Communication::regRead(mMsgCnt, mCID, MC33772C_CC_NB_SAMPLES_OFFSET,
                               (MC33772C_MEAS_STACK_OFFSET - MC33772C_CC_NB_SAMPLES_OFFSET) + 1, measurements);
         if (status != BCC_STATUS_SUCCESS)
         {
@@ -408,7 +407,7 @@ bcc_status_t BCC::meas_GetRawValues(uint16_t *const measurements)
         measurements[BCC_MSR_CELL_VOLT8] = 0x0000;
         measurements[BCC_MSR_CELL_VOLT7] = 0x0000;
 
-        status = BCC_Communication::regRead(mMsgCnt, mCid, MC33772C_MEAS_CELL6_OFFSET,
+        status = BCC_Communication::regRead(mMsgCnt, mCID, MC33772C_MEAS_CELL6_OFFSET,
                               (MC33772C_MEAS_VBG_DIAG_ADC1B_OFFSET - MC33772C_MEAS_CELL6_OFFSET) + 1,
                               (uint16_t *)(measurements + ((uint8_t)BCC_MSR_CELL_VOLT6)));
     }
@@ -440,7 +439,7 @@ bcc_status_t BCC::meas_GetCoulombCounter(bcc_cc_data_t *const cc)
 
     BCC_MCU_Assert(cc != NULL);
 
-    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_CC_NB_SAMPLES_OFFSET, 3U, readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_CC_NB_SAMPLES_OFFSET, 3U, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -466,7 +465,7 @@ bcc_status_t BCC::meas_GetIsenseVoltage(int32_t *const isenseVolt)
 
     BCC_MCU_Assert(isenseVolt != NULL);
 
-    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_ISENSE1_OFFSET, 2U, readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_ISENSE1_OFFSET, 2U, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -496,7 +495,7 @@ bcc_status_t BCC::meas_GetStackVoltage(uint32_t *const stackVolt)
 
     BCC_MCU_Assert(stackVolt != NULL);
 
-    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_STACK_OFFSET, 1U, &readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_STACK_OFFSET, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -527,11 +526,11 @@ bcc_status_t BCC::meas_GetCellVoltages(uint32_t *const cellVolt)
 
     BCC_MCU_Assert(cellVolt != NULL);
 
-    cellCnt = BCC_MAX_CELLS_DEV(device);
+    cellCnt = BCC_MAX_CELLS_DEV(mDevice);
 
     /* Read the measurement registers. */
-    status = BCC_Communication::regRead(mMsgCnt, mCid,
-                          (device == BCC_DEVICE_MC33771C) ? MC33771C_MEAS_CELL14_OFFSET : MC33771C_MEAS_CELL6_OFFSET,
+    status = BCC_Communication::regRead(mMsgCnt, mCID,
+                          (mDevice == BCC_DEVICE_MC33771C) ? MC33771C_MEAS_CELL14_OFFSET : MC33771C_MEAS_CELL6_OFFSET,
                           cellCnt, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
@@ -567,12 +566,12 @@ bcc_status_t BCC::meas_GetCellVoltage(uint8_t cellIndex, uint32_t *const cellVol
 
     BCC_MCU_Assert(cellVolt != NULL);
 
-    if (cellIndex >= BCC_MAX_CELLS_DEV(device))
+    if (cellIndex >= BCC_MAX_CELLS_DEV(mDevice))
     {
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_CELL1_OFFSET - cellIndex, 1U, &readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_CELL1_OFFSET - cellIndex, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -605,7 +604,7 @@ bcc_status_t BCC::meas_GetAnVoltages(uint32_t *const anVolt)
     BCC_MCU_Assert(anVolt != NULL);
 
     /* Read the measurement registers. */
-    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_AN6_OFFSET,
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_AN6_OFFSET,
                           BCC_GPIO_INPUT_CNT, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
@@ -647,7 +646,7 @@ bcc_status_t BCC::meas_GetAnVoltage(uint8_t anIndex, uint32_t *const anVolt)
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_AN0_OFFSET - anIndex, 1U, &readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_AN0_OFFSET - anIndex, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -682,7 +681,7 @@ bcc_status_t BCC::meas_GetIcTemperature(bcc_temp_unit_t unit, int16_t *const icT
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_MEAS_IC_TEMP_OFFSET, 1U, &readVal);
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_IC_TEMP_OFFSET, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -723,28 +722,28 @@ bcc_status_t BCC::fault_GetStatus(uint16_t *const fltStatus)
     BCC_MCU_Assert(fltStatus != NULL);
 
     /* Read CELL_OV_FLT and CELL_UV_FLT. */
-    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_CELL_OV_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CELL_OV]);
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_CELL_OV_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CELL_OV]);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* Read CB_OPEN_FLT, CB_SHORT_FLT. */
-    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_CB_OPEN_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CB_OPEN]);
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_CB_OPEN_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CB_OPEN]);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* Read GPIO_STS, AN_OT_UT_FLT, GPIO_SHORT_Anx_OPEN_STS. */
-    status = BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_GPIO_STS_OFFSET, 3U, &fltStatus[BCC_FS_GPIO_STATUS]);
+    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_GPIO_STS_OFFSET, 3U, &fltStatus[BCC_FS_GPIO_STATUS]);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* Read COM_STATUS, FAULT1_STATUS, FAULT2_STATUS and FAULT3_STATUS. */
-    return BCC_Communication::regRead(mMsgCnt, mCid, MC33771C_COM_STATUS_OFFSET, 4U, &fltStatus[BCC_FS_COMM]);
+    return BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_COM_STATUS_OFFSET, 4U, &fltStatus[BCC_FS_COMM]);
 }
 
 /*FUNCTION**********************************************************************
@@ -1073,6 +1072,10 @@ bool BCC::hasValidConfig() {
         return false;
     }
 
+    if (mNTCCount > 7) {
+        return false;
+    }
+
     if (mDevice == BCC_DEVICE_MC33771C)
         {
             if (!BCC_IS_IN_RANGE(mCellCount, MC33771C_MIN_CELLS, MC33771C_MAX_CELLS))
@@ -1094,5 +1097,35 @@ bool BCC::hasValidConfig() {
             return false;
         }
 
-    return true
+    return true;
+}
+
+/*FUNCTION**********************************************************************
+ *
+ * Function Name : currentSenseEnabled
+ * Description   : This function returns if current sensing is enabled.
+ *
+ *END**************************************************************************/
+bool BCC::currentSenseEnabled() {
+    return mCurrentSenseEnabled;
+}
+
+/*FUNCTION**********************************************************************
+ *
+ * Function Name : getCellCount
+ * Description   : This function returns the number of cells.
+ *
+ *END**************************************************************************/
+uint8_t BCC::getCellCount() {
+    return mCellCount;
+}
+
+/*FUNCTION**********************************************************************
+ *
+ * Function Name : getNTCCount
+ * Description   : This function returns the number of NTCs.
+ *
+ *END**************************************************************************/
+uint8_t BCC::getNTCCount() {
+    return mNTCCount;
 }

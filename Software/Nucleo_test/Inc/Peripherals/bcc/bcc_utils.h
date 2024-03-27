@@ -56,7 +56,6 @@
 #define BCC_MCU_GetUs() micros()
 #define BCC_MCU_Assert(x) configASSERT(x)
 
-
 /*******************************************************************************
  * Macros for conversion of the measurement results
  ******************************************************************************/
@@ -68,9 +67,9 @@
  * @param coulombCnt1 Content of register COULOMB_CNT1.
  * @param coulombCnt2 Content of register COULOMB_CNT2.
  */
-#define BCC_GET_COULOMB_CNT(coulombCnt1, coulombCnt2) \
-  ((int32_t)(((uint32_t)((coulombCnt1) & MC33771C_TH_COULOMB_CNT_MSB_TH_COULOMB_CNT_MSB_MASK) << 16U) | \
-             ((uint32_t)(coulombCnt2) & MC33771C_TH_COULOMB_CNT_LSB_TH_COULOMB_CNT_LSB_MASK)))
+#define BCC_GET_COULOMB_CNT(coulombCnt1, coulombCnt2)                                                     \
+    ((int32_t)(((uint32_t)((coulombCnt1) & MC33771C_TH_COULOMB_CNT_MSB_TH_COULOMB_CNT_MSB_MASK) << 16U) | \
+               ((uint32_t)(coulombCnt2) & MC33771C_TH_COULOMB_CNT_LSB_TH_COULOMB_CNT_LSB_MASK)))
 
 /*!
  * @brief Returns a raw value of ISENSE measurement composed from values
@@ -79,9 +78,9 @@
  * @param measISense1 Content of register MEAS_ISENSE1.
  * @param measISense2 Content of register MEAS_ISENSE2.
  */
-#define BCC_GET_ISENSE_RAW(measISense1, measISense2) \
+#define BCC_GET_ISENSE_RAW(measISense1, measISense2)                             \
     ((((uint32_t)(measISense1) & MC33771C_MEAS_ISENSE1_MEAS_I_MSB_MASK) << 4U) | \
-      ((uint32_t)(measISense2) & MC33771C_MEAS_ISENSE2_MEAS_I_LSB_MASK))
+     ((uint32_t)(measISense2) & MC33771C_MEAS_ISENSE2_MEAS_I_LSB_MASK))
 
 /*!
  * @brief Performed a sign extension on the raw value of ISENSE measurement
@@ -123,8 +122,7 @@
  * @return ISENSE current in [mA]; int32_t type.
  */
 #define BCC_GET_ISENSE_AMP(rShunt, iSense1, iSense2) ( \
-    (BCC_GET_ISENSE_RAW_SIGN(BCC_GET_ISENSE_RAW(iSense1, iSense2)) * 600) / (int32_t)(rShunt) \
-)
+    (BCC_GET_ISENSE_RAW_SIGN(BCC_GET_ISENSE_RAW(iSense1, iSense2)) * 600) / (int32_t)(rShunt))
 
 /*!
  * @brief Masks a register value and returns a raw measured value.
@@ -186,21 +184,21 @@
 #define MC33771C_GET_AN_RATIO_VOLT(reg, vCom) \
     (((((uint32_t)BCC_GET_MEAS_RAW(reg) * 3922U) / 251U) * (vCom)) >> 9)
 
- /*!
-  * @brief Converts a value of MEAS_ANx (ratiometric measurement) MC33771C
-  * registers to [uV].
-  *
-  * Resolution of these registers is: VCOM*30.5176 uV/LSB.
-  * Result is in the range of 0 and (999970 * VCOM) uV.
-  *
-  * Note: Instead of operation ((reg * 30.5176) * VCOM) / 1000, which could
-  * overflow, ((reg * 15.6250112) * VCOM) / 512 is used.
-  *
-  * @param reg  Value of a measurement register.
-  * @param vCom VCOM voltage in [mV], max 5800 mV.
-  *
-  * @return Converted value in [uV]; uint32_t type.
-  */
+/*!
+ * @brief Converts a value of MEAS_ANx (ratiometric measurement) MC33771C
+ * registers to [uV].
+ *
+ * Resolution of these registers is: VCOM*30.5176 uV/LSB.
+ * Result is in the range of 0 and (999970 * VCOM) uV.
+ *
+ * Note: Instead of operation ((reg * 30.5176) * VCOM) / 1000, which could
+ * overflow, ((reg * 15.6250112) * VCOM) / 512 is used.
+ *
+ * @param reg  Value of a measurement register.
+ * @param vCom VCOM voltage in [mV], max 5800 mV.
+ *
+ * @return Converted value in [uV]; uint32_t type.
+ */
 #define MC33772C_GET_AN_RATIO_VOLT(reg, vCom) \
     (((((uint32_t)BCC_GET_MEAS_RAW(reg) * 39422U) / 2523U) * (vCom)) >> 9)
 
@@ -265,7 +263,7 @@
  *                  resolution).
  */
 #define BCC_GET_TH_COULOMB_CNT_LSB(threshold) \
-  ((uint16_t)((threshold) && 0xFFFF))
+    ((uint16_t)((threshold) && 0xFFFF))
 
 /*!
  * @brief Converts an overcurrent threshold voltage (in sleep mode) to a raw
@@ -273,7 +271,7 @@
  *
  * @param threshold Threshold value in [uV].
  */
-#define BCC_GET_TH_ISENSE_OC(threshold)                                  \
+#define BCC_GET_TH_ISENSE_OC(threshold) \
     (((((threshold) * 5U) / 6U) > 0xFFFU) ? 0xFFFU : (((threshold) * 5U) / 6U))
 
 /*!
@@ -296,8 +294,7 @@
  * @param threshold Threshold value in [mV].
  */
 #define BCC_GET_TH_ANX(threshold) \
-    (uint16_t)((((((uint32_t)(threshold)) * 100U) / 488U) > 0x3FFU) ?  \
-            0x3FFU : ((((uint32_t)(threshold)) * 100U) / 488U))
+    (uint16_t)((((((uint32_t)(threshold)) * 100U) / 488U) > 0x3FFU) ? 0x3FFU : ((((uint32_t)(threshold)) * 100U) / 488U))
 
 /*******************************************************************************
  * User definitions
@@ -446,16 +443,11 @@
  * @param offset Offset value in [uV] as 2's complement in int16_t.
  */
 #define BCC_GET_ADC2_OFFSET(offset) \
-    ((uint16_t) ((((((int16_t)(offset)) * 10) / 6) > 127) ? 127 :      \
-                 ((((((int16_t)(offset)) * 10) / 6) < -128) ? -128 :   \
-                  ((((int16_t)(offset)) * 10) / 6))))
-
-
+    ((uint16_t)((((((int16_t)(offset)) * 10) / 6) > 127) ? 127 : ((((((int16_t)(offset)) * 10) / 6) < -128) ? -128 : ((((int16_t)(offset)) * 10) / 6))))
 
 /*******************************************************************************
  * ENUMS
  ******************************************************************************/
-
 
 /* Enum types definition. */
 /*!
@@ -482,8 +474,7 @@ enum bcc_status_t
     BCC_STATUS_EEPROM_ERROR = 9U,    /*!< An error occurred during the communication to EEPROM. */
     BCC_STATUS_EEPROM_PRESENT = 10U, /*!< No EEPROM detected. */
     BCC_STATUS_DATA_RDY = 11U,       /*!< A new sequence of conversions is currently running. */
-    BCC_STATUS_TIMEOUT_START = 12U   /*!< An error reported in BCC_MCU_StartTimeout function. */
-    BCC_STATUS_
+    BCC_STATUS_TIMEOUT_START = 12U,   /*!< An error reported in BCC_MCU_StartTimeout function. */
 };
 
 /*! @brief Cluster Identification Address.
@@ -680,10 +671,10 @@ struct bcc_cc_data_t
  */
 struct bcc_drv_data_t
 {
-    uint16_t cellMap[BCC_DEVICE_CNT_MAX];    /*!< Bit map of used cells of each BCC device. */ // MOVED TO BCC
-    uint8_t msgCntr[BCC_DEVICE_CNT_MAX + 1]; /*!< Last received value of Message counter (values 0-15). // MOVED TO COMM
-                                                  MsgCntr[0] contains Message counter of CID=0. */
-    uint8_t rxBuf[BCC_RX_BUF_SIZE_TPL];      /*!< Buffer for receiving data in TPL mode. */ // MOVED TO COMM
+    uint16_t cellMap[BCC_DEVICE_CNT_MAX]; /*!< Bit map of used cells of each BCC device. */ // MOVED TO BCC
+    uint8_t msgCntr[BCC_DEVICE_CNT_MAX + 1];                                                /*!< Last received value of Message counter (values 0-15). // MOVED TO COMM
+                                                                                                 MsgCntr[0] contains Message counter of CID=0. */
+    uint8_t rxBuf[BCC_RX_BUF_SIZE_TPL]; /*!< Buffer for receiving data in TPL mode. */      // MOVED TO COMM
 };
 
 /*!
@@ -706,6 +697,16 @@ struct bcc_drv_config_t
                                                   This configuration item is ignored in SPI mode. */
 
     bcc_drv_data_t drvData; /*!< Internal driver data. */
+};
+
+/*!
+ *   @brief Initial register value struct
+ */
+struct bcc_init_reg_t
+{
+    const uint8_t address;
+    const uint16_t defaultVal;
+    uint16_t value;
 };
 /*******************************************************************************
  * EOF;

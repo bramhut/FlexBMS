@@ -57,14 +57,20 @@ class BCC
 {
 private:
     /*******************************************************************************
-     * DEVICE SPECIFIC VARIABLES
+     * DEVICE_TYPE SPECIFIC VARIABLES
      ******************************************************************************/
 
     // Device type
     const bcc_device_t mDevice;
 
     // Number of connected cells
-    const uint16_t mCellCount;
+    const uint8_t mCellCount;
+
+    // Number of connected NTCs
+    const uint8_t mNTCCount;
+
+    // Current sensing enabled
+    const bool mCurrentSenseEnabled;
 
     // Map of connected cells
     const uint16_t mCellMap;
@@ -80,19 +86,6 @@ private:
      ******************************************************************************/
 
     /*!
-     * @brief This function assigns CID to a BCC device that has CID equal to zero.
-     * It also stores the MsgCntr value for appropriate CID, terminates the RDTX_OUT
-     * of the last node if loop-back is not required (in the TPL mode) and checks
-     * if the node with newly set CID replies.
-     *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster ID to be set to the BCC device with CID=0.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t assignCid(bool loopback, uint8_t devicesCnt);
-
-    /*!
      * @brief This function configures selected GPIO/AN pin as analog input, digital
      * input or digital output by writing the GPIO_CFG1[GPIOx_CFG] bit field.
      *
@@ -106,7 +99,20 @@ private:
     bcc_status_t setGpioCfg(const uint8_t gpioSel, const bcc_pin_mode_t mode);
 
 public:
-    BCC(bcc_device_t device, uint16_t cellCount, bcc_cid_t cid);
+    BCC(bcc_device_t device, uint8_t cellCount, uint8_t ntcCount, bool currentSenseEnabled, bcc_cid_t cid);
+
+        /*!
+     * @brief This function assigns CID to a BCC device that has CID equal to zero.
+     * It also stores the MsgCntr value for appropriate CID, terminates the RDTX_OUT
+     * of the last node if loop-back is not required (in the TPL mode) and checks
+     * if the node with newly set CID replies.
+     *
+     * @param drvConfig Pointer to driver instance configuration.
+     * @param cid       Cluster ID to be set to the BCC device with CID=0.
+     *
+     * @return bcc_status_t Error code.
+     */
+    bcc_status_t assignCid(bool loopback, uint8_t devicesCnt);
 
 
     /*!
@@ -422,5 +428,19 @@ public:
     * Check if the BCC has a valid configuration
     */
     bool hasValidConfig();
+
+    /**
+     * Returns true if current sensing is enabled. False if disabled
+    */
+    bool currentSenseEnabled();
+
+    /**
+     * Returns the number of connected cells
+    */
+    uint8_t getCellCount();
     
+    /**
+     * Returns the number of connected NTCs
+    */
+    uint8_t getNTCCount();
 };
