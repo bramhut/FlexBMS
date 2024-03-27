@@ -1,4 +1,3 @@
-#include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
@@ -34,6 +33,7 @@ void mainTask(void *argument)
 	bool pinState = false;
 
 	AIN::begin();
+	// BCC bcc = BCC(&spiTX, &spiRX);
 
 	IO::setup();
 
