@@ -148,7 +148,7 @@ namespace SlaveController
                 // Disable OV/UV detection for unused cells  (reg OV_UV_EN)
                 uint8_t maxCellCount = slave.getDeviceType() == BCC_DEVICE_MC33771C ? MC33771C_MAX_CELLS : MC33772C_MAX_CELLS;
 
-                uint16_t regValue = 0;
+                regValue = 0;
                 for (uint8_t i = 0; i < slave.getCellCount(); i++) {
                     regValue |= (1 << i);
                 }
@@ -178,6 +178,7 @@ namespace SlaveController
 
         bool ADCConversions();
         bool performCellBalancing();
+        bool faultDetection();
         bool diagnostics();
         bool allCIDsPresence();
 
@@ -192,8 +193,8 @@ namespace SlaveController
                 // 4. Cell balancing
                 performCellBalancing();
 
-                // 5. Diagnostics
-                diagnostics();
+                faultDetection();
+
 
                 // 6. CID presence check
                 if (!allCIDsPresence())
@@ -320,6 +321,9 @@ namespace SlaveController
                     mCurrentFault = REGISTER_INITIALIZATION_FAULT;
                 }
 
+                // 5. Diagnostics
+                diagnostics();
+
                 // main loop
                 runningLoop();
             }
@@ -362,7 +366,7 @@ namespace SlaveController
     /*******************************************************************************
      * Public functions
      ******************************************************************************/
-    void SlaveController::setup()
+    void setup()
     {
         bcc_status_t status;
         if (!loadConfig())

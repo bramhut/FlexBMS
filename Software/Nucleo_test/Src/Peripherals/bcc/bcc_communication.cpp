@@ -147,7 +147,7 @@ namespace BCC_Communication
         /*******************************************************************************
          * Private static objects
          ******************************************************************************/
-        SPI spiTX(&BCC_TX_HSPI, SPI::MASTER_TX, BCC_SPI_TX_CS_PORT, SPI_TX_CS_PIN);
+        SPI spiTX(&BCC_TX_HSPI, SPI::MASTER_TX, BCC_SPI_TX_CS_PORT, BCC_SPI_TX_CS_PIN);
         SPI spiRX(&BCC_RX_HSPI, SPI::SLAVE_RX);
 
         uint8_t rxBuf[BCC_RX_BUF_SIZE_TPL];      /* Buffer for received data. */
