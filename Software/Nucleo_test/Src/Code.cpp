@@ -1,4 +1,3 @@
-#include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
@@ -9,7 +8,12 @@
 
 #define DEBUG_LVL 2
 #include "Debug.h"
+#include "bcc/bcc.h"
+#include "bcc/SlaveController.h"
 
+/*
+	Main task handler and attributes. Don't edit if you are unsure what EXACTLY you are doing.
+*/
 osThreadId_t mainTaskHandle;
 const osThreadAttr_t mainTask_attributes = {
 	.name = "mainTask",
@@ -20,7 +24,8 @@ const osThreadAttr_t mainTask_attributes = {
 SPI spiTX(&hspi2, SPI::MASTER_TX, SPI2_CS_GPIO_Port, SPI2_CS_Pin);
 SPI spiRX(&hspi3, SPI::SLAVE_RX);
 
-void mainTask(void *argument)	
+
+void mainTask(void *argument)
 {
 	uint8_t test_arr[] = {0x01, 0x01, 0x08, 0x01, 0x30, 0x3C};
 	uint8_t recv_arr[6];
@@ -28,6 +33,8 @@ void mainTask(void *argument)
 	bool pinState = false;
 
 	AIN::begin();
+	// BCC bcc = BCC(&spiTX, &spiRX);
+
 	IO::setup();
 
 	IO::onSwitchChange([](bool state) {
@@ -80,7 +87,8 @@ void mainTask(void *argument)
 }
 
 // Don't change the function name, it is called from the generated code
-// Start up tasks
 void MX_FREERTOS_Init() {
+	// Start up the main task. If necessary you can add other tasks here as well.
 	mainTaskHandle = osThreadNew(mainTask, NULL, &mainTask_attributes);
+	SlaveController::setup();
 }
