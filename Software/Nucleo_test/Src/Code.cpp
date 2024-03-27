@@ -32,7 +32,7 @@ void mainTask(void *argument)
 	bool pinState = false;
 
 	AIN::begin();
-	BCC bcc = BCC(&spiTX, &spiRX);
+	// BCC bcc = BCC(&spiTX, &spiRX);
 
 	IO::setup();
 
