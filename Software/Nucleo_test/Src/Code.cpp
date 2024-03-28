@@ -1,4 +1,3 @@
-#include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
 #include "AIN.h"
@@ -8,7 +7,6 @@
 
 #define DEBUG_LVL 2
 #include "Debug.h"
-#include "bcc/bcc.h"
 #include "bcc/SlaveController.h"
 
 /*

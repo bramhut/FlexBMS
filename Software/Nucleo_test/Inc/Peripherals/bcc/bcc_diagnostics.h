@@ -102,320 +102,210 @@
  *  This value can be used also as negative. */
 #define MC33772C_DIAG_VLEAK 15000U
 
-/* Enum types definition. */
-/*!
- * @addtogroup enum_group
- * @{
- */
-/*! @brief Selection between Cell terminal and Cell balancing diagnostic
-    switches. */
-typedef enum
+namespace BCC_Diagnostics
 {
-    BCC_SWITCH_SEL_CT = 0U, /*!< Cell terminal switches. */
-    BCC_SWITCH_SEL_CB = 1U  /*!< Cell balancing switches. */
-} bcc_diag_switch_sel_t;
 
-/*! @brief Selection between opened and closed diagnostic switches. */
-typedef enum
-{
-    BCC_SWITCH_POS_OPEN = 0U,  /*!< Opened switches. */
-    BCC_SWITCH_POS_CLOSED = 1U /*!< Closed switches. */
-} bcc_diag_switch_pos_t;
-
-/*! @brief Selection of diagnostic type and source of ADC2 for Current
- *  measurement diagnostics. */
-typedef enum
-{
-    BCC_DCM_PGA_SHORTED = 0U, /*!< Measuring the PGA with shorted input (SM37). */
-    BCC_DCM_VREF_GAIN4 = 1U   /*!< Measuring of VREF_DIAG, with the PGA having
-                                   the gain fixed to 4 (SM38). */
-} bcc_diag_current_meas_t;
-/*! @} */
-
-/*!
- * @addtogroup struct_group
- * @{
- */
-/*! @brief Diagnostic time constants. See MC3377xC safety manuals for more information. */
-typedef struct
-{
-    uint32_t sm01twait;     /*!< SM01 time constant T_wait (in [us]). */
-    uint32_t sm01trecv;     /*!< SM01 time constant T_recv (in [us]). */
-    uint16_t sm01uvTh;      /*!< SM01 diagnostic UV threshold (in [mV]).
-                                 You can use BCC_DIAG_CTX_UV_TH_* macros. */
-    uint16_t sm01ovTh;      /*!< SM01 diagnostic OV threshold (in [mV]).
-                                 You can use *_DIAG_CTX_OV_TH_* macros. */
-    uint32_t sm02twait;     /*!< SM02 time constant T_wait (in [us]). */
-    uint32_t sm02trecv;     /*!< SM02 time constant T_recv (in [us]). */
-    uint32_t sm02uvTh;      /*!< SM02 diagnostic UV threshold (in [uV]). */
-    uint32_t sm02vcellMin;  /*!< SM02 min(Vcell) (in [uV]). */
-    uint32_t sm02voldetect; /*!< SM02 V_OL_DETECT threshold (Cell terminal
-                                 open load V detection threshold) (in [uV]).
-                                 You can use BCC_DIAG_V_OL_DETECT_* macros. */
-    uint32_t sm34uvTh;      /*!< SM34 UV detection threshold (in [uV]). May be
-                                 equal to the minimum cell voltage minus 50 mV. */
-    uint32_t sm34ovTh;      /*!< SM34 OV detection threshold (in [uV]). May be
-                                 equal to the maximum cell voltage plus 50 mV. */
-    uint32_t sm36tdiag;     /*!< SM36 time constant t_diag (in [us]). */
-    uint32_t sm36trecv;     /*!< SM36 time constant K * tau_I (in [us]). */
-} bcc_diag_const_t;
-
-/*! @brief Result of ADC1-A and ADC1-B functional verification. */
-typedef struct
-{
-    uint32_t adc1aAvg; /*!< Average of ADC1-A measured values (in [uV]). */
-    uint32_t adc1bAvg; /*!< Average of ADC1-B measured values (in [uV]). */
-    bool error;        /*!< True if error detected, False otherwise. */
-} bcc_diag_adc1x_res_t;
-
-/*! @brief Result of overvoltage and undervoltage functional verification. */
-typedef struct
-{
-    uint16_t ovOdd;  /*!< Content of CELL_OV_FLT register,
-                          OV fault is expected on odd cells. */
-    uint16_t uvEven; /*!< Content of CELL_UV_FLT register,
-                          UV fault is expected on even cells. */
-    uint16_t ovEven; /*!< Content of CELL_OV_FLT register,
-                          OV fault is expected on even cells. */
-    uint16_t uvOdd;  /*!< Content of CELL_UV_FLT register,
-                          UV fault is expected on odd cells. */
-    bool error;      /*!< True if error detected, False otherwise. */
-} bcc_diag_ov_uv_ver_res_t;
-
-/*! @brief Result overvoltage and undervoltage detection. */
-typedef struct
-{
-    uint32_t cellVoltCbOff[BCC_MAX_CELLS]; /*!< Measured cell voltages (in [uV]) when CB off.
-                                                MC33771C: [0] Cell 1, .., [13] Cell 14.
-                                                MC33772C: [0] Cell 1, .., [5] Cell 6. */
-    uint32_t cellVoltCbOn[BCC_MAX_CELLS];  /*!< Measured cell voltages (in [uV]) when CB on.
-                                                MC33771C: [0] Cell 1, .., [13] Cell 14.
-                                                MC33772C: [0] Cell 1, .., [5] Cell 6. */
-    bool error;                            /*!< True if error detected, False otherwise. */
-} bcc_diag_ov_uv_det_res_t;
-
-/*! @brief Result of the CTx open detect and open detect functional verification. */
-typedef struct
-{
-    uint32_t measOddClosed[BCC_MAX_CELLS];  /*!< Measured cell voltages (in [uV]) when odd CT open
-                                                 terminal switches are closed.
-                                                 MC33771C: [0] Cell 1, .., [13] Cell 14.
-                                                 MC33772C: [0] Cell 1, .., [5] Cell 6. */
-    uint32_t measEvenClosed[BCC_MAX_CELLS]; /*!< Measured cell voltages (in [uV]) when even CT open
-                                                 terminal switches are closed.
-                                                 MC33771C: [0] Cell 1, .., [13] Cell 14.
-                                                 MC33772C: [0] Cell 1, .., [5] Cell 6. */
-    uint16_t ctxOpen;                       /*!< Bit map representing open terminal status. Zero if no
-                                                 CTx was detected open, non-zero otherwise.
-                                                 Bit value "1" at 0th bit means open CT1,
-                                                 Bit value "1" at 1st bit means open CT2, etc.
-                                                 Faults at CTx of unused cells are ignored. */
-    uint16_t swxOpen;                       /*!< Bit map representing open SWx. Zero if no
-                                                 error, non-zero otherwise.
-                                                 0th bit is related to CT1, 1st to CT2, etc.
-                                                 Faults at CTx of unused cells are ignored. */
-    uint16_t swxShort;                      /*!< Bit map representing short SWx. Zero if no
-                                                 error, non-zero otherwise.
-                                                 0th bit is related to CT1, 1st to CT2, etc.
-                                                 Faults at CTx of unused cells are ignored. */
-} bcc_diag_ctx_open_res_t;
-
-/*! @brief Result of the cell voltage channel functional verification. */
-typedef struct
-{
-    int32_t vErrX[BCC_MAX_CELLS];  /*!< Computed V_err_x errors (in [uV]).
-                                        MC33771C: [0] V_err_1, .., [13] V_err_14.
-                                          If an error in V_err_x is detected, vX and vDiffX
-                                          are not relevant in this structure.
-                                        MC33772C: [0] V_err_3, .., [13] V_err_5. */
-    int32_t vX[BCC_MAX_CELLS];     /*!< Computed V_x errors (in [uV]).
-                                        MC33771C: [0] V_1, .., [13] V_14.
-                                        MC33772C: Not used. */
-    int32_t vDiffX[BCC_MAX_CELLS]; /*!< Computed (V_err_x - V_x) in [uV].
-                                        MC33771C: [0] (V_err_1 - V_1), .., [13] (V_err_14 - V_14).
-                                        MC33772C: Not used. */
-    uint16_t result;               /*!< Bit map representing errors detected in V_err_x
-                                        or |V_err_x - V_x|.
-                                        MC33771C:
-                                          0th bit: V_err_1 or |V_err_1 - V_1|, ...
-                                          13th bit: V_err_14 or |V_err_14 - V_14|
-                                        MC33772:
-                                          0th bit: V_err_3,
-                                          1st bit: V_err_5.
-                                        Bit value 0: OK. Bit value 1: Error detected.
-                                        If result is zero, no error was detected. */
-} bcc_diag_cell_volt_res_t;
-
-/*! @brief Result of the procedure for detecting a connector having
- * an abnormally high contact resistance. */
-typedef struct
-{
-    int32_t diff[BCC_MAX_CELLS]; /*!< Voltage difference between CB ON and CB OFF
-                                      (Vcell(CB=ON) - Vcell(CB=OFF)) in [uV].
-                                      MC33771C: [0] Cell 1, .., [13] Cell 14.
-                                      MC33772C: [0] Cell 1, .., [5] Cell 6. */
-    uint16_t result;             /*!< Bit map representing cells with a high cell voltage
-                                      difference between CB ON and CB OFF.
-                                      0th bit: Cell 1, ...,
-                                      MC33771C: 13th bit: Cell 14.
-                                      MC33772C: 5th bit: Cell 6.
-                                      Bit value 0: OK. Bit value 1: High resistance.
-                                      If result is zero, no error was detected. */
-} bcc_diag_conn_res_res_t;
-
-/*! @brief Result of the cell terminal leakage diagnostics. */
-typedef struct
-{
-    uint32_t vLeakX[BCC_MAX_CELLS + 1U]; /*!< Vleak_x in [uV].
-                                              [0] CT_REF (Vleak_1), [1] CT1 (Vleak_2), ...,
-                                              MC33771C: [14] CT14 (Vleak_15).
-                                              MC33772C: [6] CT6 (Vleak_7). */
-    uint16_t result;                     /*!< Bit map representing leakage status on CTx terminals.
-                                              0th bit: CT_REF, 1st bit: CT_1, ...,
-                                              MC33771C: 14th bit: CT14.
-                                              MC33772C: 6th bit: CT6.
-                                              Bit value 0: CT not leaky. Bit value 1: CT is leaky.
-                                              If result is zero, no error was detected. */
-} bcc_diag_ctx_leak_res_t;
-
-/*! @brief Result of GPIOx OT/UT functional verification. */
-typedef struct
-{
-    uint16_t untStat; /*!< Contains value of AN_OT_UT_FLT register when
-                           under-temperature is expected for all GPIOs). */
-    uint16_t ovtStat; /*!< Contains value of AN_OT_UT_FLT register when
-                           over-temperature is expected for all GPIOs). */
-    bool error;       /*!< True if error detected, False otherwise. */
-} bcc_diag_gpiox_otut_res_t;
-
-/*! @brief Result of the cell balance fault diagnostics. */
-typedef struct
-{
-    uint16_t cbxOpenStatusEven; /*!< Contains CB_OPEN_FLT register when even
-                                     CB open detection switches are closed. */
-    uint16_t cbxOpenStatusOdd;  /*!< Contains CB_OPEN_FLT register when odd
-                                     CB open detection switches are closed. */
-    bool error;                 /*!< True if error detected, False otherwise.
-                                     Faults at CBx of unused cells are ignored. */
-} bcc_diag_cbx_open_res_t;
-/*! @} */
-
-class BCC_Diagnostics
-{
-private:
-    BCC *bcc;
-
+    /* Enum types definition. */
     /*!
-     * @brief This function fills SYS_CFG2[NUMB_ODD] according to the number of
-     * cells.
-     *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
-     *
-     * @return bcc_status_t Error code.
+     * @addtogroup enum_group
+     * @{
      */
-     bcc_status_t BCC_SetNumbOdd(bcc_drv_config_t *const drvConfig,
-                                       const bcc_cid_t cid);
-
-    /*!
-     * @brief This function enters diagnostic mode.
-     *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t BCC_EnterDiagnostics(bcc_drv_config_t *const drvConfig,
-                                             const bcc_cid_t cid);
-
-    /*!
-     * @brief This function exits diagnostic mode.
-     *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t BCC_ExitDiagnostics(bcc_drv_config_t *const drvConfig,
-                                            const bcc_cid_t cid);
-
-    /*!
-     * @brief This function commands CT or CB diagnostic switches.
-     *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
-     * @param switches  Selection of CT or CB switches.
-     * @param odd       State of odd diagnostic switches.
-     * @param even      State of even diagnostic switches.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t BCC_CommandSwitches(bcc_drv_config_t *const drvConfig,
-                                            const bcc_cid_t cid, const bcc_diag_switch_sel_t switches,
-                                            const bcc_diag_switch_pos_t odd, const bcc_diag_switch_pos_t even);
-
-    /*!
-     * @brief This function is part of the overvoltage and undervoltage functional
-     * verification. It commands CT switches and measures cell voltages.
-     *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
-     * @param odd       State of odd switches.
-     * @param even      State of even switches.
-     * @param sm01twait Diagnostic time Twait for SM01 (in [us]).
-     * @param fltOvrv   Result of the function containing CELL_OV_FLT register value.
-     * @param fltUndv   Result of the function containing CELL_UV_FLT register value.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t BCC_DiagOvuvPart(bcc_drv_config_t *const drvConfig,
-                                         const bcc_cid_t cid, const bcc_diag_switch_pos_t odd,
-                                         const bcc_diag_switch_pos_t even, const uint32_t sm01twait,
-                                         uint16_t *const fltOvrv, uint16_t *const fltUndv);
-
-    /*!
-     * @brief This function is part of the CTx open detect verification. It clear
-     * OV and UV fault registers, commands CT switches, measures cell voltages opens
-     * switches and waits for the recovery time.
-     *
-     * @param drvConfig     Pointer to driver instance configuration.
-     * @param cid           Cluster Identification Address of the BCC device.
-     * @param odd           State of odd switches.
-     * @param even          State of even switches.
-     * @param diagTimeConst Diagnostic time constants.
-     * @param measVal       Result of the function containing measured values for
-     *                      CT1 - CT14/CT6 (in [uV]).
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t BCC_DiagCtxopenPart(bcc_drv_config_t *const drvConfig,
-                                            const bcc_cid_t cid, const bcc_diag_switch_pos_t odd,
-                                            const bcc_diag_switch_pos_t even,
-                                            const bcc_diag_const_t *const diagTimeConst,
-                                            uint32_t *const measVal);
-
-    /*!
-     * @brief This function is part of the GPIO OT and UT functional verification.
-     *
-     * Writes value given in parameter to GPIO_CFG2 register, initiates conversion,
-     * reads AN_OT_UT_FLT register and clears OT/UT faults.
-     *
-     * @param drvConfig   Pointer to driver instance configuration.
-     * @param cid         Cluster Identification Address of the BCC device.
-     * @param gpioCFG2Val Value of GPIO_CFG2 GPIO configuration register.
-     * @param otUtStat    Over/Under-temperature status for GPIOs (expected for all
-     *                    GPIOs). It contains value of AN_OT_UT_FLT register.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t BCC_GpioOtUtPart(bcc_drv_config_t *const drvConfig,
-                                         const bcc_cid_t cid, const uint16_t gpioCfg2Val, uint16_t *const otUtStat);
-
-public:
-    BCC_Diagnostics(BCC *bcc)
+    /*! @brief Selection between Cell terminal and Cell balancing diagnostic
+        switches. */
+    enum switch_sel_t
     {
-        this->bcc = bcc;
-    }
+        BCC_SWITCH_SEL_CT = 0U, /*!< Cell terminal switches. */
+        BCC_SWITCH_SEL_CB = 1U  /*!< Cell balancing switches. */
+    };
+
+    /*! @brief Selection between opened and closed diagnostic switches. */
+    enum switch_pos_t
+    {
+        BCC_SWITCH_POS_OPEN = 0U,  /*!< Opened switches. */
+        BCC_SWITCH_POS_CLOSED = 1U /*!< Closed switches. */
+    };
+
+    /*! @brief Selection of diagnostic type and source of ADC2 for Current
+     *  measurement diagnostics. */
+    enum current_meas_t
+    {
+        BCC_DCM_PGA_SHORTED = 0U, /*!< Measuring the PGA with shorted input (SM37). */
+        BCC_DCM_VREF_GAIN4 = 1U   /*!< Measuring of VREF_DIAG, with the PGA having
+                                       the gain fixed to 4 (SM38). */
+    };
+    /*! @} */
+
+    /*!
+     * @addtogroup struct_group
+     * @{
+     */
+    /*! @brief Diagnostic time constants. See MC3377xC safety manuals for more information. */
+    struct const_t
+    {
+        uint32_t sm01twait;     /*!< SM01 time constant T_wait (in [us]). */
+        uint32_t sm01trecv;     /*!< SM01 time constant T_recv (in [us]). */
+        uint16_t sm01uvTh;      /*!< SM01 diagnostic UV threshold (in [mV]).
+                                     You can use BCC_DIAG_CTX_UV_TH_* macros. */
+        uint16_t sm01ovTh;      /*!< SM01 diagnostic OV threshold (in [mV]).
+                                     You can use *_DIAG_CTX_OV_TH_* macros. */
+        uint32_t sm02twait;     /*!< SM02 time constant T_wait (in [us]). */
+        uint32_t sm02trecv;     /*!< SM02 time constant T_recv (in [us]). */
+        uint32_t sm02uvTh;      /*!< SM02 diagnostic UV threshold (in [uV]). */
+        uint32_t sm02vcellMin;  /*!< SM02 min(Vcell) (in [uV]). */
+        uint32_t sm02voldetect; /*!< SM02 V_OL_DETECT threshold (Cell terminal
+                                     open load V detection threshold) (in [uV]).
+                                     You can use BCC_DIAG_V_OL_DETECT_* macros. */
+        uint32_t sm34uvTh;      /*!< SM34 UV detection threshold (in [uV]). May be
+                                     equal to the minimum cell voltage minus 50 mV. */
+        uint32_t sm34ovTh;      /*!< SM34 OV detection threshold (in [uV]). May be
+                                     equal to the maximum cell voltage plus 50 mV. */
+        uint32_t sm36tdiag;     /*!< SM36 time constant t_diag (in [us]). */
+        uint32_t sm36trecv;     /*!< SM36 time constant K * tau_I (in [us]). */
+    };
+
+    /*! @brief Result of ADC1-A and ADC1-B functional verification. */
+    struct adc1x_res_t
+    {
+        uint32_t adc1aAvg; /*!< Average of ADC1-A measured values (in [uV]). */
+        uint32_t adc1bAvg; /*!< Average of ADC1-B measured values (in [uV]). */
+        bool error;        /*!< True if error detected, False otherwise. */
+    };
+
+    /*! @brief Result of overvoltage and undervoltage functional verification. */
+    struct ov_uv_ver_res_t
+    {
+        uint16_t ovOdd;  /*!< Content of CELL_OV_FLT register,
+                              OV fault is expected on odd cells. */
+        uint16_t uvEven; /*!< Content of CELL_UV_FLT register,
+                              UV fault is expected on even cells. */
+        uint16_t ovEven; /*!< Content of CELL_OV_FLT register,
+                              OV fault is expected on even cells. */
+        uint16_t uvOdd;  /*!< Content of CELL_UV_FLT register,
+                              UV fault is expected on odd cells. */
+        bool error;      /*!< True if error detected, False otherwise. */
+    };
+
+    /*! @brief Result overvoltage and undervoltage detection. */
+    struct ov_uv_det_res_t
+    {
+        uint32_t cellVoltCbOff[BCC_MAX_CELLS]; /*!< Measured cell voltages (in [uV]) when CB off.
+                                                    MC33771C: [0] Cell 1, .., [13] Cell 14.
+                                                    MC33772C: [0] Cell 1, .., [5] Cell 6. */
+        uint32_t cellVoltCbOn[BCC_MAX_CELLS];  /*!< Measured cell voltages (in [uV]) when CB on.
+                                                    MC33771C: [0] Cell 1, .., [13] Cell 14.
+                                                    MC33772C: [0] Cell 1, .., [5] Cell 6. */
+        bool error;                            /*!< True if error detected, False otherwise. */
+    };
+
+    /*! @brief Result of the CTx open detect and open detect functional verification. */
+    struct ctx_open_res_t
+    {
+        uint32_t measOddClosed[BCC_MAX_CELLS];  /*!< Measured cell voltages (in [uV]) when odd CT open
+                                                     terminal switches are closed.
+                                                     MC33771C: [0] Cell 1, .., [13] Cell 14.
+                                                     MC33772C: [0] Cell 1, .., [5] Cell 6. */
+        uint32_t measEvenClosed[BCC_MAX_CELLS]; /*!< Measured cell voltages (in [uV]) when even CT open
+                                                     terminal switches are closed.
+                                                     MC33771C: [0] Cell 1, .., [13] Cell 14.
+                                                     MC33772C: [0] Cell 1, .., [5] Cell 6. */
+        uint16_t ctxOpen;                       /*!< Bit map representing open terminal status. Zero if no
+                                                     CTx was detected open, non-zero otherwise.
+                                                     Bit value "1" at 0th bit means open CT1,
+                                                     Bit value "1" at 1st bit means open CT2, etc.
+                                                     Faults at CTx of unused cells are ignored. */
+        uint16_t swxOpen;                       /*!< Bit map representing open SWx. Zero if no
+                                                     error, non-zero otherwise.
+                                                     0th bit is related to CT1, 1st to CT2, etc.
+                                                     Faults at CTx of unused cells are ignored. */
+        uint16_t swxShort;                      /*!< Bit map representing short SWx. Zero if no
+                                                     error, non-zero otherwise.
+                                                     0th bit is related to CT1, 1st to CT2, etc.
+                                                     Faults at CTx of unused cells are ignored. */
+    };
+
+    /*! @brief Result of the cell voltage channel functional verification. */
+    struct cell_volt_res_t
+    {
+        int32_t vErrX[BCC_MAX_CELLS];  /*!< Computed V_err_x errors (in [uV]).
+                                            MC33771C: [0] V_err_1, .., [13] V_err_14.
+                                              If an error in V_err_x is detected, vX and vDiffX
+                                              are not relevant in this structure.
+                                            MC33772C: [0] V_err_3, .., [13] V_err_5. */
+        int32_t vX[BCC_MAX_CELLS];     /*!< Computed V_x errors (in [uV]).
+                                            MC33771C: [0] V_1, .., [13] V_14.
+                                            MC33772C: Not used. */
+        int32_t vDiffX[BCC_MAX_CELLS]; /*!< Computed (V_err_x - V_x) in [uV].
+                                            MC33771C: [0] (V_err_1 - V_1), .., [13] (V_err_14 - V_14).
+                                            MC33772C: Not used. */
+        uint16_t result;               /*!< Bit map representing errors detected in V_err_x
+                                            or |V_err_x - V_x|.
+                                            MC33771C:
+                                              0th bit: V_err_1 or |V_err_1 - V_1|, ...
+                                              13th bit: V_err_14 or |V_err_14 - V_14|
+                                            MC33772:
+                                              0th bit: V_err_3,
+                                              1st bit: V_err_5.
+                                            Bit value 0: OK. Bit value 1: Error detected.
+                                            If result is zero, no error was detected. */
+    };
+
+    /*! @brief Result of the procedure for detecting a connector having
+     * an abnormally high contact resistance. */
+    struct conn_res_res_t
+    {
+        int32_t diff[BCC_MAX_CELLS]; /*!< Voltage difference between CB ON and CB OFF
+                                          (Vcell(CB=ON) - Vcell(CB=OFF)) in [uV].
+                                          MC33771C: [0] Cell 1, .., [13] Cell 14.
+                                          MC33772C: [0] Cell 1, .., [5] Cell 6. */
+        uint16_t result;             /*!< Bit map representing cells with a high cell voltage
+                                          difference between CB ON and CB OFF.
+                                          0th bit: Cell 1, ...,
+                                          MC33771C: 13th bit: Cell 14.
+                                          MC33772C: 5th bit: Cell 6.
+                                          Bit value 0: OK. Bit value 1: High resistance.
+                                          If result is zero, no error was detected. */
+    };
+
+    /*! @brief Result of the cell terminal leakage diagnostics. */
+    struct ctx_leak_res_t
+    {
+        uint32_t vLeakX[BCC_MAX_CELLS + 1U]; /*!< Vleak_x in [uV].
+                                                  [0] CT_REF (Vleak_1), [1] CT1 (Vleak_2), ...,
+                                                  MC33771C: [14] CT14 (Vleak_15).
+                                                  MC33772C: [6] CT6 (Vleak_7). */
+        uint16_t result;                     /*!< Bit map representing leakage status on CTx terminals.
+                                                  0th bit: CT_REF, 1st bit: CT_1, ...,
+                                                  MC33771C: 14th bit: CT14.
+                                                  MC33772C: 6th bit: CT6.
+                                                  Bit value 0: CT not leaky. Bit value 1: CT is leaky.
+                                                  If result is zero, no error was detected. */
+    };
+
+    /*! @brief Result of GPIOx OT/UT functional verification. */
+    struct gpiox_otut_res_t
+    {
+        uint16_t untStat; /*!< Contains value of AN_OT_UT_FLT register when
+                               under-temperature is expected for all GPIOs). */
+        uint16_t ovtStat; /*!< Contains value of AN_OT_UT_FLT register when
+                               over-temperature is expected for all GPIOs). */
+        bool error;       /*!< True if error detected, False otherwise. */
+    };
+
+    /*! @brief Result of the cell balance fault diagnostics. */
+    struct cbx_open_res_t
+    {
+        uint16_t cbxOpenStatusEven; /*!< Contains CB_OPEN_FLT register when even
+                                         CB open detection switches are closed. */
+        uint16_t cbxOpenStatusOdd;  /*!< Contains CB_OPEN_FLT register when odd
+                                         CB open detection switches are closed. */
+        bool error;                 /*!< True if error detected, False otherwise.
+                                         Faults at CBx of unused cells are ignored. */
+    };
+
+    /*******************************************************************************
+     * Public Functions
+     ******************************************************************************/
+
 
     /*!
      * @brief This function implements the ADC1-A and ADC1-B functional verification
@@ -423,15 +313,13 @@ public:
      * and the measured values from  MEAS_VBG_DIAG_ADC1A and MEAS_VBG_DIAG_ADC1B
      * registers are compared with the expected ones.
      *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param results   Pointer to structure with results of diagnostics. See
      *                  definition of this structure in this header file.
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_ADC1(bcc_drv_config_t *const drvConfig,
-                               const bcc_cid_t cid, bcc_diag_adc1x_res_t *const results);
+    bcc_status_t diag_ADC1(BCC* bcc, adc1x_res_t *const results);
 
     /*!
      * @brief This function implements OV/UV functional verification (SM01) through
@@ -443,17 +331,15 @@ public:
      *
      * Ensure that the safety mechanism runs with deactivated cell balancing.
      *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param diagConst Pointer to structure with diagnostic time constants.
      * @param results   Pointer to structure with results of diagnostics. See
      *                  definition of this structure in this header file.
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_OvUvVer(bcc_drv_config_t *const drvConfig,
-                                  const bcc_cid_t cid, const bcc_diag_const_t *const diagConst,
-                                  bcc_diag_ov_uv_ver_res_t *const results);
+    bcc_status_t diag_OvUvVer(BCC* bcc, const const_t *const diagConst,
+                                  ov_uv_ver_res_t *const results);
 
     /*!
      * @brief This function implements OV and UV detection in the pack controller
@@ -467,17 +353,15 @@ public:
      * B. With all CB switches turned on, to detect the CT_2N pin shorted to the
      * CB_2N pin.
      *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param diagConst Pointer to structure with diagnostic constants.
      * @param results   Pointer to structure with results of diagnostics. See
      *                  definition of this structure in this header file.
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_OvUvDet(bcc_drv_config_t *const drvConfig,
-                                  const bcc_cid_t cid, const bcc_diag_const_t *const diagConst,
-                                  bcc_diag_ov_uv_det_res_t *const results);
+    bcc_status_t diag_OvUvDet(BCC* bcc, const const_t *const diagConst,
+                                  ov_uv_det_res_t *const results);
 
     /*!
      * @brief This function implements CTx open detection and functional
@@ -485,17 +369,15 @@ public:
      * by measuring the cell voltages separately for even SWx short and odd SWx
      * short and by comparing the measured values with diagnostic thresholds.
      *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param diagConst Pointer to structure with diagnostic constants.
      * @param results   Pointer to structure with results of diagnostics. See
      *                  definition of this structure in this header file.
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_CTxOpen(bcc_drv_config_t *const drvConfig,
-                                  const bcc_cid_t cid, const bcc_diag_const_t *const diagConst,
-                                  bcc_diag_ctx_open_res_t *const results);
+    bcc_status_t diag_CTxOpen(BCC* bcc, const const_t *const diagConst,
+                                  ctx_open_res_t *const results);
 
     /*!
      * @brief This function implements Cell Voltage Channel functional verification
@@ -510,15 +392,13 @@ public:
      * See the MC33771C safety manual for assumption of minimum cell voltage for
      * this verification.
      *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param results   Pointer to structure with results of diagnostics. See
      *                  definition of this structure in this header file.
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_CellVolt(bcc_drv_config_t *const drvConfig,
-                                   const bcc_cid_t cid, bcc_diag_cell_volt_res_t *const results);
+    bcc_status_t diag_CellVolt(BCC* bcc, cell_volt_res_t *const results);
 
     /*!
      * @brief This function detects a connector having an abnormally high contact
@@ -527,15 +407,13 @@ public:
      *
      * The second part of SM04 is implemented in function BCC_Diag_CTxLeak.
      *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param result    Pointer to structure with results of diagnostics.
      *                  See definition of this structure in this header file.
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_ConnResistance(bcc_drv_config_t *const drvConfig,
-                                         const bcc_cid_t cid, bcc_diag_conn_res_res_t *const result);
+    bcc_status_t diag_ConnResistance(BCC* bcc, conn_res_res_t *const result);
 
     /*!
      * @brief This function detects a leakage current. It is a part of cell
@@ -543,15 +421,13 @@ public:
      *
      * The first part of SM04 is implemented in function BCC_Diag_ConnResistance.
      *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param result    Pointer to structure with results of diagnostics.
      *                  See definition of this structure in this header file.
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_CTxLeak(bcc_drv_config_t *const drvConfig,
-                                  const bcc_cid_t cid, bcc_diag_ctx_leak_res_t *const result);
+    bcc_status_t diag_CTxLeak(BCC* bcc, ctx_leak_res_t *const result);
 
     /*!
      * @brief This function implements diagnostics of IC internal resources for
@@ -565,8 +441,7 @@ public:
      * Note that this diagnostics resets the coulomb counter. Read coulomb counter
      * COULOMB_CNT to retain count information before calling this function.
      *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param sel       Selection of the diagnostics. See definition of this
      *                  enumeration in bcc_diagnostics.h header file.
      * @param current   Measured ISENSE voltage (in [uV]).
@@ -574,8 +449,7 @@ public:
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_CurrentMeas(bcc_drv_config_t *const drvConfig,
-                                      const bcc_cid_t cid, const bcc_diag_current_meas_t sel,
+    bcc_status_t diag_CurrentMeas(BCC* bcc, const current_meas_t sel,
                                       int32_t *const current, bool *const fault);
 
     /*!
@@ -585,16 +459,14 @@ public:
      * Note that this diagnostics resets the coulomb counter. Read coulomb counter
      * COULOMB_CNT to retain count information before calling this function.
      *
-     * @param drvConfig     Pointer to driver instance configuration.
-     * @param cid           Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param diagTimeConst Pointer to structure with diagnostic time constants.
      * @param shuntConn     True (shunt resistor is connected) or false
      *                      (shunt is not connected).
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_ShuntConn(bcc_drv_config_t *const drvConfig,
-                                    const bcc_cid_t cid, const bcc_diag_const_t *const diagTimeConst,
+    bcc_status_t diag_ShuntConn(BCC* bcc, const const_t *const diagTimeConst,
                                     bool *const shuntConn);
 
     /*!
@@ -603,15 +475,13 @@ public:
      * simulates OT/UT condition. Note that programmed OT/UT thresholds are used to
      * verify functionality.
      *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param results   Pointer to structure with results of diagnostics. See
      *                  definition of this structure in this header file above.
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_GPIOxOtUt(bcc_drv_config_t *const drvConfig,
-                                    const bcc_cid_t cid, bcc_diag_gpiox_otut_res_t *const results);
+    bcc_status_t diag_GPIOxOtUt(BCC* bcc, gpiox_otut_res_t *const results);
 
     /*!
      * @brief This function implements GPIOx open terminal diagnostics (SM06).
@@ -619,16 +489,14 @@ public:
      * commanded ON and OFF. Voltages below the VOL(TH) threshold are considered
      * open terminals.
      *
-     * @param drvConfig  Pointer to driver instance configuration.
-     * @param cid        Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param openStatus Open terminal status for each GPIOx terminal (ANx_OPEN bits
      *                   in OPEN GPIO_SHORT_ANx_OPEN_STS register). If the value is
      *                   zero, no GPIOx terminal is opened.
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_GPIOxOpen(bcc_drv_config_t *const drvConfig,
-                                    const bcc_cid_t cid, uint16_t *const openStatus);
+    bcc_status_t diag_GPIOxOpen(BCC* bcc, uint16_t *const openStatus);
 
     /*!
      * @brief This function implements Cell balance open load detection (SM40).
@@ -638,15 +506,11 @@ public:
      * short detection are not part of this diagnostics. It is diagnosed
      * continuously with the cell balance FET active.
      *
-     * @param drvConfig Pointer to driver instance configuration.
-     * @param cid       Cluster Identification Address of the BCC device.
+     * @param bcc       Pointer to the BCC structure.
      * @param results   Pointer to structure with results of diagnostics. See
      *                  definition of this structure in this header file above.
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t BCC_Diag_CBxOpen(bcc_drv_config_t *const drvConfig,
-                                  const bcc_cid_t cid, bcc_diag_cbx_open_res_t *const results);
-
-    /*! @} */
-};
+    bcc_status_t diag_CBxOpen(BCC* bcc, cbx_open_res_t *const results);
+}

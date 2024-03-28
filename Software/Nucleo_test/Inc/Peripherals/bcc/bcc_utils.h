@@ -428,8 +428,8 @@
  *
  * @return Non-zero value if cell is connected, zero otherwise.
  */
-#define BCC_IS_CELL_CONN(drvConfig, cid, cellNo) \
-    ((drvConfig)->drvData.cellMap[(cid)-1U] & (1U << ((cellNo)-1U)))
+#define BCC_IS_CELL_CONN(bcc, cellNo) \
+    (bcc->getCellMap() & (1U << ((cellNo)-1U)))
 
 /*******************************************************************************
  * Macros for other configuration
