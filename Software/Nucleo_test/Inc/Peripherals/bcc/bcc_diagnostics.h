@@ -133,6 +133,14 @@ namespace BCC_Diagnostics
         BCC_DCM_VREF_GAIN4 = 1U   /*!< Measuring of VREF_DIAG, with the PGA having
                                        the gain fixed to 4 (SM38). */
     };
+
+    /*! @brief */
+    enum diag_map_t
+    {
+        BCC_DIAG_ADC1 = 1, /*!< Cell terminal diagnostics. */
+        BCC_DIAG_OVUV = 2,  /*!< Cell balancing diagnostics. */
+        
+    };
     /*! @} */
 
     /*!
@@ -338,8 +346,7 @@ namespace BCC_Diagnostics
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t diag_OvUvVer(BCC* bcc, const const_t *const diagConst,
-                                  ov_uv_ver_res_t *const results);
+    bcc_status_t diag_OvUvVer(BCC* bcc, const const_t *const diagConst, ov_uv_ver_res_t *const results);
 
     /*!
      * @brief This function implements OV and UV detection in the pack controller
@@ -360,8 +367,7 @@ namespace BCC_Diagnostics
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t diag_OvUvDet(BCC* bcc, const const_t *const diagConst,
-                                  ov_uv_det_res_t *const results);
+    bcc_status_t diag_OvUvDet(BCC* bcc, const const_t *const diagConst, ov_uv_det_res_t *const results);
 
     /*!
      * @brief This function implements CTx open detection and functional
@@ -376,8 +382,7 @@ namespace BCC_Diagnostics
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t diag_CTxOpen(BCC* bcc, const const_t *const diagConst,
-                                  ctx_open_res_t *const results);
+    bcc_status_t diag_CTxOpen(BCC* bcc, const const_t *const diagConst, ctx_open_res_t *const results);
 
     /*!
      * @brief This function implements Cell Voltage Channel functional verification
@@ -449,8 +454,7 @@ namespace BCC_Diagnostics
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t diag_CurrentMeas(BCC* bcc, const current_meas_t sel,
-                                      int32_t *const current, bool *const fault);
+    bcc_status_t diag_CurrentMeas(BCC* bcc, const current_meas_t sel, int32_t *const current, bool *const fault);
 
     /*!
      * @brief This function verifies whether the shunt resistor is properly
@@ -466,8 +470,7 @@ namespace BCC_Diagnostics
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t diag_ShuntConn(BCC* bcc, const const_t *const diagTimeConst,
-                                    bool *const shuntConn);
+    bcc_status_t diag_ShuntConn(BCC* bcc, const const_t *const diagTimeConst, bool *const shuntConn);
 
     /*!
      * @brief This function implements GPIOx OT/UT functional verification (SM05).

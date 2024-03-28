@@ -185,8 +185,7 @@ namespace BCC_Diagnostics
          *
          * @return bcc_status_t Error code.
          */
-        bcc_status_t commandSwitches(BCC *bcc, const switch_sel_t switches,
-                                     const switch_pos_t odd, const switch_pos_t even)
+        bcc_status_t commandSwitches(BCC *bcc, const switch_sel_t switches, const switch_pos_t odd, const switch_pos_t even)
         {
             uint16_t mask;  /* SYS_DIAG register mask. */
             uint16_t value; /* New value. */
@@ -221,9 +220,7 @@ namespace BCC_Diagnostics
          *
          * @return bcc_status_t Error code.
          */
-        bcc_status_t diagOvuvPart(BCC *bcc, const switch_pos_t odd,
-                                  const switch_pos_t even, const uint32_t sm01twait,
-                                  uint16_t *const fltOvrv, uint16_t *const fltUndv)
+        bcc_status_t diagOvuvPart(BCC *bcc, const switch_pos_t odd, const switch_pos_t even, const uint32_t sm01twait, uint16_t *const fltOvrv, uint16_t *const fltUndv)
         {
             uint16_t fault[2]; /* Value of OV and UV fault registers. */
             bcc_status_t status;
@@ -285,10 +282,7 @@ namespace BCC_Diagnostics
          *
          * @return bcc_status_t Error code.
          */
-        bcc_status_t diagCtxopenPart(BCC *bcc, const switch_pos_t odd,
-                                     const switch_pos_t even,
-                                     const const_t *const diagTimeConst,
-                                     uint32_t *const measVal)
+        bcc_status_t diagCtxopenPart(BCC *bcc, const switch_pos_t odd, const switch_pos_t even, const const_t *const diagTimeConst, uint32_t *const measVal)
         {
             bcc_status_t status;
 
@@ -532,8 +526,7 @@ namespace BCC_Diagnostics
      *                 (SM01).
      *
      *END**************************************************************************/
-    bcc_status_t diag_OvUvVer(BCC *bcc, const const_t *const diagConst,
-                              ov_uv_ver_res_t *const results)
+    bcc_status_t diag_OvUvVer(BCC *bcc, const const_t *const diagConst, ov_uv_ver_res_t *const results)
     {
         uint16_t fault1MaskVal; /* Original value of FAULT_MASK1 register. */
         uint16_t ovUvEnVal;     /* Original value of OV_UV_EN register. */
@@ -731,8 +724,7 @@ namespace BCC_Diagnostics
      *                 controller (SM34).
      *
      *END**************************************************************************/
-    bcc_status_t diag_OvUvDet(BCC *bcc, const const_t *const diagConst,
-                              ov_uv_det_res_t *const results)
+    bcc_status_t diag_OvUvDet(BCC *bcc, const const_t *const diagConst, ov_uv_det_res_t *const results)
     {
         uint16_t cbxCfgRegs[BCC_MAX_CELLS]; /* Array for read registers. */
         bool cbOn[BCC_MAX_CELLS];           /* State of CB (true: on). */
@@ -906,8 +898,7 @@ namespace BCC_Diagnostics
      *                 verification (SM02).
      *
      *END**************************************************************************/
-    bcc_status_t diag_CTxOpen(BCC *bcc, const const_t *const diagConst,
-                              ctx_open_res_t *const results)
+    bcc_status_t diag_CTxOpen(BCC *bcc, const const_t *const diagConst, ctx_open_res_t *const results)
     {
         uint32_t vSwOpen, vSwShort;
         uint16_t faultMask1Val; /* Value of FAULT_MASK1 register. */
@@ -1588,8 +1579,7 @@ namespace BCC_Diagnostics
      *                 for current measurement (SM37, SM38).
      *
      *END**************************************************************************/
-    bcc_status_t diag_CurrentMeas(BCC *bcc, const current_meas_t sel,
-                                  int32_t *const current, bool *const fault)
+    bcc_status_t diag_CurrentMeas(BCC *bcc, const current_meas_t sel, int32_t *const current, bool *const fault)
     {
         uint16_t measCurrentRaw[2]; /* Value of MEAS_ISENSE 1 and 2 registers. */
         uint16_t regVal[4];         /* Original value of $03 - $06 registers. */
@@ -1761,8 +1751,7 @@ namespace BCC_Diagnostics
      *                 connected to the current channel low-pass filter (SM36).
      *
      *END**************************************************************************/
-    bcc_status_t diag_ShuntConn(BCC *bcc, const const_t *const diagTimeConst,
-                                bool *const shuntConn)
+    bcc_status_t diag_ShuntConn(BCC *bcc, const const_t *const diagTimeConst, bool *const shuntConn)
     {
         uint16_t fault1stVal; /* Read value of FAULT1_STATUS register. */
         uint16_t sysCfg1Val;
@@ -2226,4 +2215,14 @@ namespace BCC_Diagnostics
         return BCC_STATUS_SUCCESS;
     }
 
+    /*FUNCTION**********************************************************************
+     *
+     * Function Name : startupChecks
+     * Description   : This function performs basic startup checks on the BCC device.
+     *
+     *END**************************************************************************/
+    bcc_status_t startupChecks(BCC *bcc)
+    {
+        
+    }
 }

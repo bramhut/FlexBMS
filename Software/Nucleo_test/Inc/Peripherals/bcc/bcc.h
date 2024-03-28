@@ -103,7 +103,7 @@ public:
     BCC(bcc_device_t device, uint8_t cellCount, uint8_t ntcCount, bool currentSenseEnabled, bcc_cid_t cid);
 
     /*******************************************************************************
-     * PUBLIC FUNCTIONS
+     * PUBLIC FUNCTIONS - REGISTER OPERATIONS
      ******************************************************************************/
 
     /*!
@@ -173,6 +173,10 @@ public:
      * @return bcc_status_t Error code.
      */
     bcc_status_t checkMsgCnt(const uint8_t *const resp);
+
+    /*******************************************************************************
+     * PUBLIC FUNCTIONS - API
+     ******************************************************************************/
 
     /*!
      * @brief This function assigns CID to a BCC device that has CID equal to zero.
