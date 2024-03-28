@@ -121,7 +121,7 @@ namespace SlaveController
             {
                 if (globalRegisters[i].value != globalRegisters[i].defaultVal)
                 {
-                    if (BCC_Communication::regWriteGlobal(globalRegisters[i].address, globalRegisters[i].value) != BCC_STATUS_SUCCESS)
+                    if (BCC::regWriteGlobal(globalRegisters[i].address, globalRegisters[i].value) != BCC_STATUS_SUCCESS)
                     {
                         return false;
                     }
@@ -134,14 +134,14 @@ namespace SlaveController
                 if (slave.currentSenseEnabled())
                 {
                     // Set I_MEAS_EN in SYS_CFG1
-                    if (BCC_Communication::regWrite(slave.getCID(), MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_VALUE(true)) != BCC_STATUS_SUCCESS) {
+                    if (slave.regWrite(MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_VALUE(true)) != BCC_STATUS_SUCCESS) {
                         return false;
                     }
                 }
 
                 // Depending on number of NTCs used, set unused GPIOs to digital in, (and highest bits to 0) 
                 uint16_t regValue = (0x2AAA << 2 * slave.getNTCCount()) & 0x3FFF;
-                if (BCC_Communication::regWrite(slave.getCID(), MC33771C_GPIO_CFG1_OFFSET, regValue) != BCC_STATUS_SUCCESS) {
+                if (slave.regWrite(MC33771C_GPIO_CFG1_OFFSET, regValue) != BCC_STATUS_SUCCESS) {
                     return false;
                 }
 
@@ -156,7 +156,7 @@ namespace SlaveController
                 // Set Common OV/UV threshold bits
                 regValue |= 0xC000;
 
-                if (BCC_Communication::regWrite(slave.getCID(), MC33771C_OV_UV_EN_OFFSET, regValue) != BCC_STATUS_SUCCESS) {
+                if (slave.regWrite(MC33771C_OV_UV_EN_OFFSET, regValue) != BCC_STATUS_SUCCESS) {
                     return false;
                 }
 
@@ -164,12 +164,12 @@ namespace SlaveController
             }
 
             // Clear fault bits
-            if (BCC_Communication::regWriteGlobal(MC33771C_CELL_OV_FLT_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
-                || BCC_Communication::regWriteGlobal(MC33771C_CELL_UV_FLT_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
-                || BCC_Communication::regWriteGlobal(MC33771C_AN_OT_UT_FLT_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \ 
-                || BCC_Communication::regWriteGlobal(MC33771C_FAULT1_STATUS_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
-                || BCC_Communication::regWriteGlobal(MC33771C_FAULT2_STATUS_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
-                || BCC_Communication::regWriteGlobal(MC33771C_FAULT3_STATUS_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS) {
+            if (BCC::regWriteGlobal(MC33771C_CELL_OV_FLT_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
+                || BCC::regWriteGlobal(MC33771C_CELL_UV_FLT_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
+                || BCC::regWriteGlobal(MC33771C_AN_OT_UT_FLT_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \ 
+                || BCC::regWriteGlobal(MC33771C_FAULT1_STATUS_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
+                || BCC::regWriteGlobal(MC33771C_FAULT2_STATUS_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS \
+                || BCC::regWriteGlobal(MC33771C_FAULT3_STATUS_OFFSET, 0x0000U) != BCC_STATUS_SUCCESS) {
                 return false;
             }
 
@@ -206,7 +206,7 @@ namespace SlaveController
 
         bcc_status_t globalSoftwareReset()
         {
-            return BCC_Communication::regWriteGlobal(MC33771C_SYS_CFG1_OFFSET,
+            return BCC::regWriteGlobal(MC33771C_SYS_CFG1_OFFSET,
                                                      MC33771C_SYS_CFG1_SOFT_RST(MC33771C_SYS_CFG1_SOFT_RST_ACTIVE_ENUM_VAL));
         }
 
@@ -276,7 +276,7 @@ namespace SlaveController
          */
         bcc_status_t Sleep()
         {
-            return BCC_Communication::regWriteGlobal(MC33771C_SYS_CFG_GLOBAL_OFFSET, MC33771C_SYS_CFG_GLOBAL_GO2SLEEP(MC33771C_SYS_CFG_GLOBAL_GO2SLEEP_ENABLED_ENUM_VAL));
+            return BCC::regWriteGlobal(MC33771C_SYS_CFG_GLOBAL_OFFSET, MC33771C_SYS_CFG_GLOBAL_GO2SLEEP(MC33771C_SYS_CFG_GLOBAL_GO2SLEEP_ENABLED_ENUM_VAL));
         }
 
         /*!
@@ -298,7 +298,7 @@ namespace SlaveController
             /* Set Start of Conversion bit in case it is not. */
             adcCfgValue |= MC33771C_ADC_CFG_SOC(MC33771C_ADC_CFG_SOC_ENABLED_ENUM_VAL);
 
-            return BCC_Communication::regWriteGlobal(MC33771C_ADC_CFG_OFFSET, adcCfgValue);
+            return BCC::regWriteGlobal(MC33771C_ADC_CFG_OFFSET, adcCfgValue);
         }
 
         /**

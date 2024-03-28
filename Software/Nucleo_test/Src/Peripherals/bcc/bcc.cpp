@@ -17,6 +17,45 @@
  * Definitions
  ******************************************************************************/
 
+/** BCC Commands. */
+/*! @brief No operation command. */
+#define BCC_CMD_NOOP 0x00U
+/*! @brief Read command. */
+#define BCC_CMD_READ 0x01U
+/*! @brief Write command. */
+#define BCC_CMD_WRITE 0x02U
+/*! @brief Global write command. */
+#define BCC_CMD_GLOB_WRITE 0x03U
+
+/*!
+ * @brief Returns data field of the communication frame.
+ *
+ * @param msg Pointer to the frame.
+ * @return Data field.
+ */
+#define BCC_GET_MSG_DATA(msg)                            \
+    (((uint16_t) * ((msg) + BCC_MSG_IDX_DATA_H) << 8U) | \
+     (uint16_t) * ((msg) + BCC_MSG_IDX_DATA_L))
+
+/*! @brief Mask of the message counter bit field within the BCC_MSG_IDX_CNT_CMD
+ *  byte. */
+#define BCC_MSG_MSG_CNT_MASK 0xF0U
+/*! @brief Shift of the message counter bit field within the BCC_MSG_IDX_CNT_CMD
+ *  byte. */
+#define BCC_MSG_MSG_CNT_SHIFT 4U
+
+/*!
+ * @brief Increments message counter value and executes modulo 16.
+ *
+ * @param msgCntr Message counter to be incremented.
+ * @return Incremented value.
+ */
+#define BCC_INC_MSG_CNTR(msgCntr) \
+    (((msgCntr) + 1U) & 0x0FU)
+
+/*! @brief Address of the last register. */
+#define BCC_MAX_REG_ADDR 0x7FU
+
 /*! @brief RESET de-glitch filter (t_RESETFLT, typ.) in [us]. */
 #define BCC_T_RESETFLT_US 100U
 
@@ -83,38 +122,39 @@
 /*! @brief Array containing cell maps for different numbers of cells connected
  * to the MC33771C (0) or MC33771C (1). */
 static const uint16_t s_cellMap[2][MC33771C_MAX_CELLS + 1] = {{
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x380F, /* 7 cells. */
-    0x3C0F, /* 8 cells. */
-    0x3E0F, /* 9 cells. */
-    0x3F0F, /* 10 cells. */
-    0x3F8F, /* 11 cells. */
-    0x3FCF, /* 12 cells. */
-    0x3FEF, /* 13 cells. */
-    0x3FFF  /* 14 cells. */
-},{
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0023, /* 3 cells. */
-    0x0033, /* 4 cells. */
-    0x003B, /* 5 cells. */
-    0x003F,  /* 6 cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-    0x0000, /* Unsupported number of cells. */
-}};
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x380F, /* 7 cells. */
+                                                                  0x3C0F, /* 8 cells. */
+                                                                  0x3E0F, /* 9 cells. */
+                                                                  0x3F0F, /* 10 cells. */
+                                                                  0x3F8F, /* 11 cells. */
+                                                                  0x3FCF, /* 12 cells. */
+                                                                  0x3FEF, /* 13 cells. */
+                                                                  0x3FFF  /* 14 cells. */
+                                                              },
+                                                              {
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0023, /* 3 cells. */
+                                                                  0x0033, /* 4 cells. */
+                                                                  0x003B, /* 5 cells. */
+                                                                  0x003F, /* 6 cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                                  0x0000, /* Unsupported number of cells. */
+                                                              }};
 
 /*FUNCTION**********************************************************************
  *
@@ -133,11 +173,10 @@ bcc_status_t BCC::assignCid(bool loopBack, uint8_t devicesCnt)
     /* Note: In SPI communication mode, the device responds with all bit filed
      * set to zero except message counter and the correct CRC to the very first
      * MCU <-> MC33771C/772C message. */
-    status = BCC_Communication::regRead(mMsgCnt, BCC_CID_UNASSIG, MC33771C_INIT_OFFSET, 1U, &readVal);
+    status = regRead(MC33771C_INIT_OFFSET, 1U, &readVal, true);
     if ((status != BCC_STATUS_SUCCESS) && (status != BCC_STATUS_COM_NULL))
     {
         return status;
-            
     }
 
     /* Assign CID;
@@ -174,13 +213,12 @@ bcc_status_t BCC::assignCid(bool loopBack, uint8_t devicesCnt)
         }
     }
 
-    status = BCC_Communication::regWrite(BCC_CID_UNASSIG, MC33771C_INIT_OFFSET, writeVal);
+    status = regWrite(MC33771C_INIT_OFFSET, writeVal, true);
     if (status == BCC_STATUS_SUCCESS)
     {
 
-
         /* Check if assigned node replies. */
-        status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_INIT_OFFSET, 1U, &readVal);
+        status = regRead(MC33771C_INIT_OFFSET, 1U, &readVal);
 
         /* Check the written data. */
         if ((status == BCC_STATUS_SUCCESS) && (writeVal != readVal))
@@ -194,12 +232,11 @@ bcc_status_t BCC::assignCid(bool loopBack, uint8_t devicesCnt)
         /* Wait and try to assign CID once again. */
         BCC_MCU_WaitUs(750U);
 
-        status = BCC_Communication::regWrite(BCC_CID_UNASSIG, MC33771C_INIT_OFFSET, writeVal);
+        status = regWrite(MC33771C_INIT_OFFSET, writeVal, true);
         if (status == BCC_STATUS_SUCCESS)
         {
 
-
-            status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_INIT_OFFSET, 1U, &readVal);
+            status = regRead(MC33771C_INIT_OFFSET, 1U, &readVal);
 
             /* Check the written data. */
             if ((status == BCC_STATUS_SUCCESS) && (writeVal != readVal))
@@ -228,10 +265,9 @@ bcc_status_t BCC::setGpioCfg(const uint8_t gpioSel, const bcc_pin_mode_t mode)
     }
 
     /* Update the content of GPIO_CFG1 register. */
-    return BCC_Communication::regUpdate(mMsgCnt, mCID,
-                          MC33771C_GPIO_CFG1_OFFSET,
-                          (uint16_t)(MC33771C_GPIO_CFG1_GPIO0_CFG_MASK << (gpioSel * 2U)),
-                          (uint16_t)(((uint16_t)mode) << (gpioSel * 2U)));
+    return regUpdate(MC33771C_GPIO_CFG1_OFFSET,
+                                        (uint16_t)(MC33771C_GPIO_CFG1_GPIO0_CFG_MASK << (gpioSel * 2U)),
+                                        (uint16_t)(((uint16_t)mode) << (gpioSel * 2U)));
 }
 
 /*******************************************************************************
@@ -244,8 +280,213 @@ bcc_status_t BCC::setGpioCfg(const uint8_t gpioSel, const bcc_pin_mode_t mode)
  * Description   : Sets correct parameters
  *
  *END**************************************************************************/
-BCC::BCC(bcc_device_t device, uint8_t cellCount, uint8_t ntcCount, bool currentSenseEnable, bcc_cid_t cid) : mDevice(device), mCellCount(cellCount), mNTCCount(ntcCount), mCurrentSenseEnabled(currentSenseEnable), mCID(cid), mCellMap(s_cellMap[device][cellCount]){}
+BCC::BCC(bcc_device_t device, uint8_t cellCount, uint8_t ntcCount, bool currentSenseEnable, bcc_cid_t cid) : mDevice(device), mCellCount(cellCount), mNTCCount(ntcCount), mCurrentSenseEnabled(currentSenseEnable), mCID(cid), mCellMap(s_cellMap[device][cellCount]) {}
 
+/*FUNCTION**********************************************************************
+ *
+ * Function Name : regRead
+ * Description   : This function reads desired number of registers of the BCC
+ *                 device. Intended for TPL mode only.
+ *
+ *END**************************************************************************/
+bcc_status_t BCC::regRead(const uint8_t regAddr, const uint8_t regCnt, uint16_t *regVal, const bool toUnassigned)
+{
+    uint8_t txBuf[BCC_MSG_SIZE]; /* TX buffer. */
+    uint8_t regIdx;              /* Index of a received register. */
+    bcc_status_t status;
+
+    configASSERT(regVal != NULL);
+
+    if ((regAddr > BCC_MAX_REG_ADDR) ||
+        (regCnt == 0U) || ((regAddr + regCnt - 1U) > BCC_MAX_REG_ADDR))
+    {
+        return BCC_STATUS_PARAM_RANGE;
+    }
+
+    /* Create frame for request. */
+    BCC_Communication::packFrame((uint16_t)regCnt, regAddr, toUnassigned ? BCC_CID_UNASSIG : mCID, BCC_CMD_READ, txBuf);
+
+    status = BCC_Communication::transfer(txBuf, regCnt + 1);
+    if (status != BCC_STATUS_SUCCESS)
+    {
+        return status;
+    }
+
+    /* Check the echo frame. */
+    status = BCC_Communication::checkEchoFrame(txBuf);
+    if (status != BCC_STATUS_SUCCESS)
+    {
+        return status;
+    }
+
+    /* Check and store responses. */
+    const uint8_t *rxBufMsgIdx = BCC_Communication::getRxBuf();
+    for (regIdx = 0U; regIdx < regCnt; regIdx++)
+    {
+        rxBufMsgIdx += BCC_MSG_SIZE;
+
+        /* Check CRC. */
+        if ((status = BCC_Communication::checkCRC(rxBufMsgIdx)) != BCC_STATUS_SUCCESS)
+        {
+            return status;
+        }
+
+        /* Check the Message counter value. */
+        if ((status = checkMsgCnt(rxBufMsgIdx)) != BCC_STATUS_SUCCESS)
+        {
+            return status;
+        }
+
+        /* Store data. */
+        *regVal++ = BCC_GET_MSG_DATA(BCC_Communication::getRxBuf());
+    }
+
+    return BCC_STATUS_SUCCESS;
+}
+
+/*FUNCTION**********************************************************************
+ *
+ * Function Name : reg_Write
+ * Description   : This function writes a value to addressed register of the
+ *                 BCC device. Intended for TPL mode only.
+ *
+ *END**************************************************************************/
+bcc_status_t BCC::regWrite(const uint8_t regAddr, const uint16_t regVal, const bool toUnassigned)
+{
+    uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
+    bcc_status_t status;
+
+    if (regAddr > BCC_MAX_REG_ADDR)
+    {
+        return BCC_STATUS_PARAM_RANGE;
+    }
+
+    /* Create frame for writing. */
+    BCC_Communication::packFrame(regVal, regAddr, toUnassigned ? BCC_CID_UNASSIG : mCID, BCC_CMD_WRITE, txBuf);
+
+    status = BCC_Communication::transfer(txBuf, 1);
+    if (status != BCC_STATUS_SUCCESS)
+    {
+        return status;
+    }
+
+    /* Check the echo frame. */
+    return BCC_Communication::checkEchoFrame(txBuf);
+}
+
+/*FUNCTION**********************************************************************
+ *
+ * Function Name : reg_WriteGlobalTpl
+ * Description   : This function writes a value to addressed register of all
+ *                 configured BCC devices in the chain. Intended for TPL mode
+ *                 only.
+ *
+ *END**************************************************************************/
+bcc_status_t BCC::regWriteGlobal(const uint8_t regAddr, const uint16_t regVal)
+{
+    uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
+    bcc_status_t status;
+
+    /* Check input parameters. */
+    if (regAddr > BCC_MAX_REG_ADDR)
+    {
+        return BCC_STATUS_PARAM_RANGE;
+    }
+
+    /* Create frame for writing. */
+    BCC_Communication::packFrame(regVal, regAddr, BCC_CID_UNASSIG, BCC_CMD_GLOB_WRITE, txBuf);
+
+    status = BCC_Communication::transfer(txBuf, 1);
+    if (status != BCC_STATUS_SUCCESS)
+    {
+        return status;
+    }
+
+    /* Check the echo frame. */
+    return BCC_Communication::checkEchoFrame(txBuf);
+}
+
+/*FUNCTION**********************************************************************
+ *
+ * Function Name : reg_Update
+ * Description   : This function updates content of a selected register; affects
+ *                 bits specified by a bit mask only.
+ *
+ *END**************************************************************************/
+bcc_status_t BCC::regUpdate(const uint8_t regAddr, const uint16_t regMask, const uint16_t regVal)
+{
+    uint16_t regValTemp;
+    bcc_status_t status;
+
+    status = regRead(regAddr, 1U, &regValTemp);
+    if (status != BCC_STATUS_SUCCESS)
+    {
+        return status;
+    }
+
+    /* Update register value. */
+    regValTemp = regValTemp & ~(regMask);
+    regValTemp = regValTemp | (regVal & regMask);
+
+    return regWrite(regAddr, regValTemp);
+}
+
+/*FUNCTION**********************************************************************
+ *
+ * Function Name : sendNop
+ * Description   : This function sends a No Operation command (NOP) to the
+ *                 BCC device. Intended for TPL mode only.
+ *
+ *END**************************************************************************/
+bcc_status_t BCC::sendNop()
+{
+    uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
+    bcc_status_t status;
+
+    /* Create frame for writing.
+     * Note: Register Data, Register Address and Message counter fields can
+     * contain any value. */
+    BCC_Communication::packFrame(0x0000U, 0x00U, mCID, BCC_CMD_NOOP, txBuf);
+
+    status = BCC_Communication::transfer(txBuf, 1);
+    if (status != BCC_STATUS_SUCCESS)
+    {
+        return status;
+    }
+
+    /* Check the echo frame. */
+    return BCC_Communication::checkEchoFrame(txBuf);
+}
+
+/*FUNCTION**********************************************************************
+ *
+ * Function Name : CheckMsgCnt
+ * Description   : This function checks value of the Message counter field of
+ *                 a frame.
+ *
+ *END**************************************************************************/
+bcc_status_t BCC::checkMsgCnt(const uint8_t *const resp)
+{
+    uint8_t msgCntPrev; /* Previously received message counter value. */
+    uint8_t msgCntRcv;  /* Currently received message counter value. */
+
+    configASSERT(resp != NULL);
+
+    msgCntPrev = mMsgCnt;
+    msgCntRcv = (resp[BCC_MSG_IDX_CNT_CMD] & BCC_MSG_MSG_CNT_MASK) >> BCC_MSG_MSG_CNT_SHIFT;
+
+    /* Store the Message counter value. */
+    mMsgCnt = msgCntRcv;
+
+    /* Check the Message counter value.
+     * Note: Do not perform a check for CID=0. */
+    if ((mCID != BCC_CID_UNASSIG) && (msgCntRcv != BCC_INC_MSG_CNTR(msgCntPrev)))
+    {
+        return BCC_STATUS_COM_MSG_CNT;
+    }
+
+    return BCC_STATUS_SUCCESS;
+}
 
 /*FUNCTION**********************************************************************
  *
@@ -256,7 +497,7 @@ BCC::BCC(bcc_device_t device, uint8_t cellCount, uint8_t ntcCount, bool currentS
  *END**************************************************************************/
 bcc_status_t BCC::softwareReset()
 {
-    return BCC_Communication::regWrite(this->mCID, MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_SOFT_RST(MC33771C_SYS_CFG1_SOFT_RST_ACTIVE_ENUM_VAL));
+    return regWrite(MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_SOFT_RST(MC33771C_SYS_CFG1_SOFT_RST_ACTIVE_ENUM_VAL));
 }
 
 /*FUNCTION**********************************************************************
@@ -274,13 +515,11 @@ bcc_status_t BCC::meas_StartConversion(const bcc_avg_t avg)
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    return BCC_Communication::regUpdate(mMsgCnt, mCID, MC33771C_ADC_CFG_OFFSET,
-                          MC33771C_ADC_CFG_SOC_MASK | MC33771C_ADC_CFG_AVG_MASK,
-                          MC33771C_ADC_CFG_SOC(MC33771C_ADC_CFG_SOC_ENABLED_ENUM_VAL) |
-                              MC33771C_ADC_CFG_AVG(avg));
+    return regUpdate(MC33771C_ADC_CFG_OFFSET,
+                                        MC33771C_ADC_CFG_SOC_MASK | MC33771C_ADC_CFG_AVG_MASK,
+                                        MC33771C_ADC_CFG_SOC(MC33771C_ADC_CFG_SOC_ENABLED_ENUM_VAL) |
+                                            MC33771C_ADC_CFG_AVG(avg));
 }
-
-
 
 /*FUNCTION**********************************************************************
  *
@@ -296,7 +535,7 @@ bcc_status_t BCC::meas_IsConverting(bool *const completed)
 
     BCC_MCU_Assert(completed != NULL);
 
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_ADC_CFG_OFFSET, 1U, &adcCfgVal);
+    status = regRead(MC33771C_ADC_CFG_OFFSET, 1U, &adcCfgVal);
 
     *(completed) = ((adcCfgVal & MC33771C_ADC_CFG_EOC_N_MASK) ==
                     MC33771C_ADC_CFG_EOC_N(MC33771C_ADC_CFG_EOC_N_COMPLETED_ENUM_VAL));
@@ -342,7 +581,8 @@ bcc_status_t BCC::meas_StartAndWait(const bcc_avg_t avg)
     //     return status;
     // }
 
-    do {
+    do
+    {
         status = meas_IsConverting(&complete);
         if (status != BCC_STATUS_SUCCESS)
         {
@@ -385,13 +625,13 @@ bcc_status_t BCC::meas_GetRawValues(uint16_t *const measurements)
      * values in Measurements array, see enumeration bcc_measurements_t. */
     if (mDevice == BCC_DEVICE_MC33771C)
     {
-        status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_CC_NB_SAMPLES_OFFSET,
-                              BCC_MEAS_CNT, measurements);
+        status = regRead(MC33771C_CC_NB_SAMPLES_OFFSET,
+                                            BCC_MEAS_CNT, measurements);
     }
     else
     {
-        status = BCC_Communication::regRead(mMsgCnt, mCID, MC33772C_CC_NB_SAMPLES_OFFSET,
-                              (MC33772C_MEAS_STACK_OFFSET - MC33772C_CC_NB_SAMPLES_OFFSET) + 1, measurements);
+        status = regRead(MC33772C_CC_NB_SAMPLES_OFFSET,
+                                            (MC33772C_MEAS_STACK_OFFSET - MC33772C_CC_NB_SAMPLES_OFFSET) + 1, measurements);
         if (status != BCC_STATUS_SUCCESS)
         {
             return status;
@@ -407,9 +647,9 @@ bcc_status_t BCC::meas_GetRawValues(uint16_t *const measurements)
         measurements[BCC_MSR_CELL_VOLT8] = 0x0000;
         measurements[BCC_MSR_CELL_VOLT7] = 0x0000;
 
-        status = BCC_Communication::regRead(mMsgCnt, mCID, MC33772C_MEAS_CELL6_OFFSET,
-                              (MC33772C_MEAS_VBG_DIAG_ADC1B_OFFSET - MC33772C_MEAS_CELL6_OFFSET) + 1,
-                              (uint16_t *)(measurements + ((uint8_t)BCC_MSR_CELL_VOLT6)));
+        status = regRead(MC33772C_MEAS_CELL6_OFFSET,
+                                            (MC33772C_MEAS_VBG_DIAG_ADC1B_OFFSET - MC33772C_MEAS_CELL6_OFFSET) + 1,
+                                            (uint16_t *)(measurements + ((uint8_t)BCC_MSR_CELL_VOLT6)));
     }
 
     /* Mask the read registers.
@@ -439,7 +679,7 @@ bcc_status_t BCC::meas_GetCoulombCounter(bcc_cc_data_t *const cc)
 
     BCC_MCU_Assert(cc != NULL);
 
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_CC_NB_SAMPLES_OFFSET, 3U, readVal);
+    status = regRead(MC33771C_CC_NB_SAMPLES_OFFSET, 3U, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -465,7 +705,7 @@ bcc_status_t BCC::meas_GetIsenseVoltage(int32_t *const isenseVolt)
 
     BCC_MCU_Assert(isenseVolt != NULL);
 
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_ISENSE1_OFFSET, 2U, readVal);
+    status = regRead(MC33771C_MEAS_ISENSE1_OFFSET, 2U, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -495,7 +735,7 @@ bcc_status_t BCC::meas_GetStackVoltage(uint32_t *const stackVolt)
 
     BCC_MCU_Assert(stackVolt != NULL);
 
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_STACK_OFFSET, 1U, &readVal);
+    status = regRead(MC33771C_MEAS_STACK_OFFSET, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -529,9 +769,8 @@ bcc_status_t BCC::meas_GetCellVoltages(uint32_t *const cellVolt)
     cellCnt = BCC_MAX_CELLS_DEV(mDevice);
 
     /* Read the measurement registers. */
-    status = BCC_Communication::regRead(mMsgCnt, mCID,
-                          (mDevice == BCC_DEVICE_MC33771C) ? MC33771C_MEAS_CELL14_OFFSET : MC33771C_MEAS_CELL6_OFFSET,
-                          cellCnt, readVal);
+    status = regRead((mDevice == BCC_DEVICE_MC33771C) ? MC33771C_MEAS_CELL14_OFFSET : MC33771C_MEAS_CELL6_OFFSET,
+                                        cellCnt, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -571,7 +810,7 @@ bcc_status_t BCC::meas_GetCellVoltage(uint8_t cellIndex, uint32_t *const cellVol
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_CELL1_OFFSET - cellIndex, 1U, &readVal);
+    status = regRead(MC33771C_MEAS_CELL1_OFFSET - cellIndex, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -604,8 +843,8 @@ bcc_status_t BCC::meas_GetAnVoltages(uint32_t *const anVolt)
     BCC_MCU_Assert(anVolt != NULL);
 
     /* Read the measurement registers. */
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_AN6_OFFSET,
-                          BCC_GPIO_INPUT_CNT, readVal);
+    status = regRead(MC33771C_MEAS_AN6_OFFSET,
+                                        BCC_GPIO_INPUT_CNT, readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -646,7 +885,7 @@ bcc_status_t BCC::meas_GetAnVoltage(uint8_t anIndex, uint32_t *const anVolt)
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_AN0_OFFSET - anIndex, 1U, &readVal);
+    status = regRead(MC33771C_MEAS_AN0_OFFSET - anIndex, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -681,7 +920,7 @@ bcc_status_t BCC::meas_GetIcTemperature(bcc_temp_unit_t unit, int16_t *const icT
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_MEAS_IC_TEMP_OFFSET, 1U, &readVal);
+    status = regRead(MC33771C_MEAS_IC_TEMP_OFFSET, 1U, &readVal);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -722,28 +961,28 @@ bcc_status_t BCC::fault_GetStatus(uint16_t *const fltStatus)
     BCC_MCU_Assert(fltStatus != NULL);
 
     /* Read CELL_OV_FLT and CELL_UV_FLT. */
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_CELL_OV_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CELL_OV]);
+    status = regRead( MC33771C_CELL_OV_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CELL_OV]);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* Read CB_OPEN_FLT, CB_SHORT_FLT. */
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_CB_OPEN_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CB_OPEN]);
+    status = regRead(MC33771C_CB_OPEN_FLT_OFFSET, 2U, &fltStatus[BCC_FS_CB_OPEN]);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* Read GPIO_STS, AN_OT_UT_FLT, GPIO_SHORT_Anx_OPEN_STS. */
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_GPIO_STS_OFFSET, 3U, &fltStatus[BCC_FS_GPIO_STATUS]);
+    status = regRead(MC33771C_GPIO_STS_OFFSET, 3U, &fltStatus[BCC_FS_GPIO_STATUS]);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* Read COM_STATUS, FAULT1_STATUS, FAULT2_STATUS and FAULT3_STATUS. */
-    return BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_COM_STATUS_OFFSET, 4U, &fltStatus[BCC_FS_COMM]);
+    return regRead(MC33771C_COM_STATUS_OFFSET, 4U, &fltStatus[BCC_FS_COMM]);
 }
 
 /*FUNCTION**********************************************************************
@@ -769,7 +1008,7 @@ bcc_status_t BCC::fault_ClearStatus(const bcc_fault_status_t statSel)
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    return BCC_Communication::regWrite(mCID, regAddrMap[statSel], 0x0000U);
+    return regWrite(regAddrMap[statSel], 0x0000U);
 }
 
 /*FUNCTION**********************************************************************
@@ -793,10 +1032,9 @@ bcc_status_t BCC::GPIO_SetMode(const uint8_t gpioSel, const bcc_pin_mode_t mode)
         status = setGpioCfg(0U, BCC_PIN_DIGITAL_IN);
         if (status == BCC_STATUS_SUCCESS)
         {
-            status = BCC_Communication::regUpdate(mMsgCnt, mCID,
-                                    MC33771C_GPIO_CFG2_OFFSET,
-                                    MC33771C_GPIO_CFG2_GPIO0_WU_MASK,
-                                    MC33771C_GPIO_CFG2_GPIO0_WU(MC33771C_GPIO_CFG2_GPIO0_WU_WAKEUP_ENUM_VAL));
+            status = regUpdate(MC33771C_GPIO_CFG2_OFFSET,
+                                                  MC33771C_GPIO_CFG2_GPIO0_WU_MASK,
+                                                  MC33771C_GPIO_CFG2_GPIO0_WU(MC33771C_GPIO_CFG2_GPIO0_WU_WAKEUP_ENUM_VAL));
         }
     }
     else if ((mode == BCC_PIN_CONVERT_TR_IN) && (gpioSel == 2U))
@@ -805,10 +1043,9 @@ bcc_status_t BCC::GPIO_SetMode(const uint8_t gpioSel, const bcc_pin_mode_t mode)
         status = setGpioCfg(2U, BCC_PIN_DIGITAL_IN);
         if (status == BCC_STATUS_SUCCESS)
         {
-            status = BCC_Communication::regUpdate(mMsgCnt, mCID,
-                                    MC33771C_GPIO_CFG2_OFFSET,
-                                    MC33771C_GPIO_CFG2_GPIO2_SOC_MASK,
-                                    MC33771C_GPIO_CFG2_GPIO2_SOC(MC33771C_GPIO_CFG2_GPIO2_SOC_ADC_TRG_ENABLED_ENUM_VAL));
+            status = regUpdate(MC33771C_GPIO_CFG2_OFFSET,
+                                                  MC33771C_GPIO_CFG2_GPIO2_SOC_MASK,
+                                                  MC33771C_GPIO_CFG2_GPIO2_SOC(MC33771C_GPIO_CFG2_GPIO2_SOC_ADC_TRG_ENABLED_ENUM_VAL));
         }
     }
     else if (mode <= BCC_PIN_DIGITAL_OUT)
@@ -817,18 +1054,16 @@ bcc_status_t BCC::GPIO_SetMode(const uint8_t gpioSel, const bcc_pin_mode_t mode)
         if (gpioSel == 0U)
         {
             /* Disable the wake-up capability. */
-            status = BCC_Communication::regUpdate(mMsgCnt, mCID,
-                                    MC33771C_GPIO_CFG2_OFFSET,
-                                    MC33771C_GPIO_CFG2_GPIO0_WU_MASK,
-                                    MC33771C_GPIO_CFG2_GPIO0_WU(MC33771C_GPIO_CFG2_GPIO0_WU_NO_WAKEUP_ENUM_VAL));
+            status = regUpdate(MC33771C_GPIO_CFG2_OFFSET,
+                                                  MC33771C_GPIO_CFG2_GPIO0_WU_MASK,
+                                                  MC33771C_GPIO_CFG2_GPIO0_WU(MC33771C_GPIO_CFG2_GPIO0_WU_NO_WAKEUP_ENUM_VAL));
         }
         else if (gpioSel == 2U)
         {
             /* Disable the conversion trigger. */
-            status = BCC_Communication::regUpdate(mMsgCnt, mCID,
-                                    MC33771C_GPIO_CFG2_OFFSET,
-                                    MC33771C_GPIO_CFG2_GPIO2_SOC_MASK,
-                                    MC33771C_GPIO_CFG2_GPIO2_SOC(MC33771C_GPIO_CFG2_GPIO2_SOC_ADC_TRG_DISABLED_ENUM_VAL));
+            status = regUpdate(MC33771C_GPIO_CFG2_OFFSET,
+                                                  MC33771C_GPIO_CFG2_GPIO2_SOC_MASK,
+                                                  MC33771C_GPIO_CFG2_GPIO2_SOC(MC33771C_GPIO_CFG2_GPIO2_SOC_ADC_TRG_DISABLED_ENUM_VAL));
         }
 
         if (status == BCC_STATUS_SUCCESS)
@@ -859,7 +1094,7 @@ bcc_status_t BCC::GPIO_ReadPin(const uint8_t gpioSel, bool *const val)
     }
 
     /* Read and update content of GPIO_CFG2 register. */
-    status = BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_GPIO_STS_OFFSET, 1U, &gpioStsVal);
+    status = regRead(MC33771C_GPIO_STS_OFFSET, 1U, &gpioStsVal);
     *val = (gpioStsVal & (1U << gpioSel)) > 0U;
 
     return status;
@@ -879,9 +1114,9 @@ bcc_status_t BCC::GPIO_SetOutput(const uint8_t gpioSel, const bool val)
     }
 
     /* Update the content of GPIO_CFG2 register. */
-    return BCC_Communication::regUpdate(mMsgCnt, mCID, MC33771C_GPIO_CFG2_OFFSET,
-                          (uint16_t)(1U << gpioSel),
-                          (uint16_t)((val ? 1U : 0U) << gpioSel));
+    return regUpdate(MC33771C_GPIO_CFG2_OFFSET,
+                                        (uint16_t)(1U << gpioSel),
+                                        (uint16_t)((val ? 1U : 0U) << gpioSel));
 }
 
 /*FUNCTION**********************************************************************
@@ -893,9 +1128,9 @@ bcc_status_t BCC::GPIO_SetOutput(const uint8_t gpioSel, const bool val)
  *END**************************************************************************/
 bcc_status_t BCC::CB_Enable(const bool enable)
 {
-    return BCC_Communication::regUpdate(mMsgCnt, mCID, MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_CB_DRVEN_MASK,
-                          enable ? MC33771C_SYS_CFG1_CB_DRVEN(MC33771C_SYS_CFG1_CB_DRVEN_ENABLED_ENUM_VAL)
-                                 : MC33771C_SYS_CFG1_CB_DRVEN(MC33771C_SYS_CFG1_CB_DRVEN_DISABLED_ENUM_VAL));
+    return regUpdate(MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_CB_DRVEN_MASK,
+                                        enable ? MC33771C_SYS_CFG1_CB_DRVEN(MC33771C_SYS_CFG1_CB_DRVEN_ENABLED_ENUM_VAL)
+                                               : MC33771C_SYS_CFG1_CB_DRVEN(MC33771C_SYS_CFG1_CB_DRVEN_DISABLED_ENUM_VAL));
 }
 
 /*FUNCTION**********************************************************************
@@ -923,7 +1158,7 @@ bcc_status_t BCC::CB_SetIndividual(const uint8_t cellIndex, const bool enable, c
                        : MC33771C_CB1_CFG_CB_EN(MC33771C_CB1_CFG_CB_EN_DISABLED_ENUM_VAL);
     cbxCfgVal |= MC33771C_CB1_CFG_CB_TIMER(timer);
 
-    return BCC_Communication::regWrite(mCID, MC33771C_CB1_CFG_OFFSET + cellIndex, cbxCfgVal);
+    return regWrite(MC33771C_CB1_CFG_OFFSET + cellIndex, cbxCfgVal);
 }
 
 /*FUNCTION**********************************************************************
@@ -934,9 +1169,9 @@ bcc_status_t BCC::CB_SetIndividual(const uint8_t cellIndex, const bool enable, c
  *END**************************************************************************/
 bcc_status_t BCC::CB_Pause(const bool pause)
 {
-    return BCC_Communication::regUpdate(mMsgCnt, mCID, MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_CB_MANUAL_PAUSE_MASK,
-                          (pause) ? MC33771C_SYS_CFG1_CB_MANUAL_PAUSE(MC33771C_SYS_CFG1_CB_MANUAL_PAUSE_ENABLED_ENUM_VAL)
-                                  : MC33771C_SYS_CFG1_CB_MANUAL_PAUSE(MC33771C_SYS_CFG1_CB_MANUAL_PAUSE_DISABLED_ENUM_VAL));
+    return regUpdate(MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_CB_MANUAL_PAUSE_MASK,
+                                        (pause) ? MC33771C_SYS_CFG1_CB_MANUAL_PAUSE(MC33771C_SYS_CFG1_CB_MANUAL_PAUSE_ENABLED_ENUM_VAL)
+                                                : MC33771C_SYS_CFG1_CB_MANUAL_PAUSE(MC33771C_SYS_CFG1_CB_MANUAL_PAUSE_DISABLED_ENUM_VAL));
 }
 
 /*FUNCTION**********************************************************************
@@ -957,16 +1192,16 @@ bcc_status_t BCC::fuseMirror_Read(const uint8_t fuseAddr, uint16_t *const value)
         return BCC_STATUS_PARAM_RANGE;
     }
 
-    status = BCC_Communication::regWrite(mCID, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
-                           MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(fuseAddr) |
-                               MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_LOCKED_ENUM_VAL) |
-                               MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_SPI_WRITE_ENABLE_ENUM_VAL));
+    status = regWrite(MC33771C_FUSE_MIRROR_CNTL_OFFSET,
+                                         MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(fuseAddr) |
+                                             MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_LOCKED_ENUM_VAL) |
+                                             MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_SPI_WRITE_ENABLE_ENUM_VAL));
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
-    return BCC_Communication::regRead(mMsgCnt, mCID, MC33771C_FUSE_MIRROR_DATA_OFFSET, 1U, value);
+    return regRead(MC33771C_FUSE_MIRROR_DATA_OFFSET, 1U, value);
 }
 
 /*FUNCTION**********************************************************************
@@ -986,36 +1221,36 @@ bcc_status_t BCC::fuseMirror_Write(const uint8_t fuseAddr, const uint16_t value)
     }
 
     /* FUSE_MIRROR_CNTL to enable writing. */
-    status = BCC_Communication::regWrite(mCID, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
-                           MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(0U) |
-                               MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_UNLOCKED_ENUM_VAL) |
-                               MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_SPI_WRITE_ENABLE_ENUM_VAL));
+    status = regWrite(MC33771C_FUSE_MIRROR_CNTL_OFFSET,
+                                         MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(0U) |
+                                             MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_UNLOCKED_ENUM_VAL) |
+                                             MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_SPI_WRITE_ENABLE_ENUM_VAL));
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* Send the fuse address. */
-    status = BCC_Communication::regWrite(mCID, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
-                           MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(fuseAddr) |
-                               MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_UNLOCKED_ENUM_VAL) |
-                               MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_SPI_WRITE_ENABLE_ENUM_VAL));
+    status = regWrite(MC33771C_FUSE_MIRROR_CNTL_OFFSET,
+                                         MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(fuseAddr) |
+                                             MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_UNLOCKED_ENUM_VAL) |
+                                             MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_SPI_WRITE_ENABLE_ENUM_VAL));
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
-    status = BCC_Communication::regWrite(mCID, MC33771C_FUSE_MIRROR_DATA_OFFSET, value);
+    status = regWrite(MC33771C_FUSE_MIRROR_DATA_OFFSET, value);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
     }
 
     /* FUSE_MIRROR_CNTL to low power. */
-    return BCC_Communication::regWrite(mCID, MC33771C_FUSE_MIRROR_CNTL_OFFSET,
-                         MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(0U) |
-                             MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_UNLOCKED_ENUM_VAL) |
-                             MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_LP_ENUM_VAL));
+    return regWrite(MC33771C_FUSE_MIRROR_CNTL_OFFSET,
+                                       MC33771C_FUSE_MIRROR_CNTL_FMR_ADDR(0U) |
+                                           MC33771C_FUSE_MIRROR_CNTL_FSTM(MC33771C_FUSE_MIRROR_CNTL_FSTM_UNLOCKED_ENUM_VAL) |
+                                           MC33771C_FUSE_MIRROR_CNTL_FST(MC33771C_FUSE_MIRROR_CNTL_FST_LP_ENUM_VAL));
 }
 
 /*FUNCTION**********************************************************************
@@ -1060,42 +1295,42 @@ bcc_status_t BCC::GUID_Read(uint64_t *const guid)
     return BCC_STATUS_SUCCESS;
 }
 
-
 /*FUNCTION**********************************************************************
  *
  * Function Name : hasValidConfig
  * Description   : This function checks if the BCC has a valid configuration.
  *
  *END**************************************************************************/
-bool BCC::hasValidConfig() {
-    if (mDevice == NULL || mCellCount == 0) {
+bool BCC::hasValidConfig()
+{
+    if (mDevice == NULL || mCellCount == 0)
+    {
         return false;
     }
 
-    if (mNTCCount > 7) {
+    if (mNTCCount > 7)
+    {
         return false;
     }
 
     if (mDevice == BCC_DEVICE_MC33771C)
-        {
-            if (!BCC_IS_IN_RANGE(mCellCount, MC33771C_MIN_CELLS, MC33771C_MAX_CELLS))
-            {
-                return false;
-            }
-  
-        }
-        else if (mDevice == BCC_DEVICE_MC33772C)
-        {
-            if (!BCC_IS_IN_RANGE(mCellCount, MC33772C_MIN_CELLS, MC33772C_MAX_CELLS))
-            {
-                return false;
-            }
-
-        }
-        else
+    {
+        if (!BCC_IS_IN_RANGE(mCellCount, MC33771C_MIN_CELLS, MC33771C_MAX_CELLS))
         {
             return false;
         }
+    }
+    else if (mDevice == BCC_DEVICE_MC33772C)
+    {
+        if (!BCC_IS_IN_RANGE(mCellCount, MC33772C_MIN_CELLS, MC33772C_MAX_CELLS))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        return false;
+    }
 
     return true;
 }
@@ -1106,7 +1341,8 @@ bool BCC::hasValidConfig() {
  * Description   : This function returns if current sensing is enabled.
  *
  *END**************************************************************************/
-bool BCC::currentSenseEnabled() {
+bool BCC::currentSenseEnabled()
+{
     return mCurrentSenseEnabled;
 }
 
@@ -1116,7 +1352,8 @@ bool BCC::currentSenseEnabled() {
  * Description   : This function returns the number of cells.
  *
  *END**************************************************************************/
-uint8_t BCC::getCellCount() {
+uint8_t BCC::getCellCount()
+{
     return mCellCount;
 }
 
@@ -1126,6 +1363,7 @@ uint8_t BCC::getCellCount() {
  * Description   : This function returns the number of NTCs.
  *
  *END**************************************************************************/
-uint8_t BCC::getNTCCount() {
+uint8_t BCC::getNTCCount()
+{
     return mNTCCount;
 }

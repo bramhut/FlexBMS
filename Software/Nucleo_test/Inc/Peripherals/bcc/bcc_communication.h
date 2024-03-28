@@ -15,69 +15,72 @@ namespace BCC_Communication
      */
     void setup();
 
-    /*!
-     * @brief This function reads desired number of registers of the BCC device.
+
+    /**
+     * @brief Calculates the CRC for the given data.
      *
-     * In case of simultaneous read of more registers, address is incremented
-     * in ascending manner.
+     * This function takes a pointer to an array of uint8_t data and calculates the CRC value
+     * using a specific algorithm.
      *
-     * @param cid       Cluster Identification Address of the BCC device.
-     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
-     *                  for possible values (MC3377*C_*_OFFSET macros).
-     * @param regCnt    Number of registers to read.
-     * @param regVal    Pointer to memory where content of selected 16 bit registers
-     *                  will be stored.
-     *
-     * @return bcc_status_t Error code.
+     * @param data Pointer to the data array for which the CRC needs to be calculated.
+     * 
+     * @return The calculated CRC value as a uint8_t.
      */
-    bcc_status_t regRead(uint8_t &msgCnt, const bcc_cid_t cid, const uint8_t regAddr, const uint8_t regCnt, uint16_t *regVal);
+    uint8_t calcCRC(const uint8_t *const data);
+
+    /**
+     * @brief Checks the CRC of the given response.
+     *
+     * This function takes a pointer to an array of uint8_t response data and checks the CRC value
+     * using a specific algorithm.
+     *
+     * @param resp Pointer to the response array for which the CRC needs to be checked.
+     * 
+     * @return The status of the CRC check as a bcc_status_t.
+     */
+    bcc_status_t checkCRC(const uint8_t *const resp);
+
+    /**
+     * @brief Checks the echo frame of the given response.
+     *
+     * This function takes a pointer to an array of uint8_t response data and checks the echo frame
+     * using a specific algorithm.
+     *
+     * @param txBuf Pointer to the transmit buffer.
+     * 
+     * @return The status of the echo frame check as a bcc_status_t.
+     */
+    bcc_status_t checkEchoFrame(const uint8_t *const txBuf);
 
     /*!
-     * @brief This function writes a value to addressed register of the BCC device.
+     * @brief This function packs the frame to be sent to the BCC device.
      *
-     * @param cid       Cluster Identification Address of the BCC device.
-     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
-     *                  for possible values (MC3377*C_*_OFFSET macros).
-     * @param regVal    New value of selected register.
+     * @param data       Data to be send.
+     * @param addr       Address of the BCC device.
+     * @param cid        CID.
+     * @param cmdCnt     Command counter.
+     * @param frame      Pointer to memory where the frame will be stored.
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t regWrite(const bcc_cid_t cid, const uint8_t regAddr, const uint16_t regVal);
+    void packFrame(const uint16_t data, const uint8_t addr, const bcc_cid_t cid, const uint8_t cmdCnt, uint8_t *const frame);
 
     /*!
-     * @brief This function writes a value to addressed register of all configured
-     * BCC devices in the chain.
+     * @brief This function transfers data over TPL.
      *
-     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
-     *                  for possible values (MC3377*C_*_OFFSET macros).
-     * @param regVal    New value of selected register.
-     *
+     * @param txBuf Pointer to the transmit buffer.
+     * @param rxTrCnt Number of RX messages to expect. 
+     * 
      * @return bcc_status_t Error code.
      */
-    bcc_status_t regWriteGlobal(const uint8_t regAddr, const uint16_t regVal);
+    bcc_status_t transfer(uint8_t txBuf[], const uint16_t rxTrCnt);
 
     /*!
-     * @brief This function updates content of a selected register; affects bits
-     * specified by a bit mask only.
-     *
-     * @param cid       Cluster Identification Address of the BCC device.
-     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
-     *                  for possible values (MC3377*C_*_OFFSET macros).
-     * @param regMask   Bit mask. Bits set to 1 will be updated.
-     * @param regVal    New value of register bits defined by bit mask.
-     *
-     * @return bcc_status_t Error code.
+     * @brief This function returns a pointer to the received data.
+     * 
+     * @return const uint8_t* Pointer to the received data.
      */
-    bcc_status_t regUpdate(uint8_t &msgCnt, const bcc_cid_t cid, const uint8_t regAddr, const uint16_t regMask, const uint16_t regVal);
-
-    /*!
-     * @brief This function sends a No Operation command to the BCC device.
-     *
-     * @param cid       Cluster Identification Address of the BCC device.
-     *
-     * @return bcc_status_t Error code.
-     */
-    bcc_status_t sendNop(const bcc_cid_t cid);
+    const uint8_t* getRxBuf();
 
     /*!
      * @brief This function does two consecutive transitions of CSB_TX from low to

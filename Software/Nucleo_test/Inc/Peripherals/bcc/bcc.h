@@ -72,14 +72,14 @@ private:
     // Current sensing enabled
     const bool mCurrentSenseEnabled;
 
-    // Map of connected cells
-    const uint16_t mCellMap;
-
     // CID
     bcc_cid_t mCID;
 
+    // Map of connected cells
+    const uint16_t mCellMap;
+
     // Message count
-    uint8_t mMsgCnt; /*!< Last received value of Message counter (values 0-15). */
+    uint8_t mMsgCnt = 0; /*!< Last received value of Message counter (values 0-15). */
 
     /*******************************************************************************
      * PRIVATE FUNCTIONS
@@ -98,10 +98,83 @@ private:
      */
     bcc_status_t setGpioCfg(const uint8_t gpioSel, const bcc_pin_mode_t mode);
 
+    
 public:
     BCC(bcc_device_t device, uint8_t cellCount, uint8_t ntcCount, bool currentSenseEnabled, bcc_cid_t cid);
 
-        /*!
+    /*******************************************************************************
+     * PUBLIC FUNCTIONS
+     ******************************************************************************/
+
+    /*!
+     * @brief This function reads desired number of registers of the BCC device.
+     *
+     * In case of simultaneous read of more registers, address is incremented
+     * in ascending manner.
+     *
+     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
+     *                  for possible values (MC3377*C_*_OFFSET macros).
+     * @param regCnt    Number of registers to read.
+     * @param regVal    Pointer to memory where content of selected 16 bit registers
+     *                  will be stored.
+     *
+     * @return bcc_status_t Error code.
+     */
+    bcc_status_t regRead(const uint8_t regAddr, const uint8_t regCnt, uint16_t *regVal, const bool toUnassigned = false);
+
+    /*!
+     * @brief This function writes a value to addressed register of the BCC device.
+     *
+     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
+     *                  for possible values (MC3377*C_*_OFFSET macros).
+     * @param regVal    New value of selected register.
+     *
+     * @return bcc_status_t Error code.
+     */
+    bcc_status_t regWrite(const uint8_t regAddr, const uint16_t regVal, const bool toUnassigned = false);
+
+    /*!
+     * @brief This function writes a value to addressed register of all configured
+     * BCC devices in the chain.
+     *
+     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
+     *                  for possible values (MC3377*C_*_OFFSET macros).
+     * @param regVal    New value of selected register.
+     *
+     * @return bcc_status_t Error code.
+     */
+    static bcc_status_t regWriteGlobal(const uint8_t regAddr, const uint16_t regVal);
+
+    /*!
+     * @brief This function updates content of a selected register; affects bits
+     * specified by a bit mask only.
+     *
+     * @param regAddr   Register address. See MC33771C.h and MC33772C.h header files
+     *                  for possible values (MC3377*C_*_OFFSET macros).
+     * @param regMask   Bit mask. Bits set to 1 will be updated.
+     * @param regVal    New value of register bits defined by bit mask.
+     *
+     * @return bcc_status_t Error code.
+     */
+    bcc_status_t regUpdate(const uint8_t regAddr, const uint16_t regMask, const uint16_t regVal);
+
+    /*!
+     * @brief This function sends a No Operation command to the BCC device.
+     *
+     * @return bcc_status_t Error code.
+     */
+    bcc_status_t sendNop();
+
+    /*!
+     * @brief This function check the message count of the BCC device.
+     *
+     * @param resp       Response to check.
+     *
+     * @return bcc_status_t Error code.
+     */
+    bcc_status_t checkMsgCnt(const uint8_t *const resp);
+
+    /*!
      * @brief This function assigns CID to a BCC device that has CID equal to zero.
      * It also stores the MsgCntr value for appropriate CID, terminates the RDTX_OUT
      * of the last node if loop-back is not required (in the TPL mode) and checks
