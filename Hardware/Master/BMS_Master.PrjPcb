@@ -325,23 +325,6 @@ GenerateClassCluster=0
 DocumentUniqueId=
 
 [Document17]
-DocumentPath=Managed\OutputJobs\590C195C-FC5A-4725-BE0A-53DE8D32FDD1\OUT-0006-10.OutJob
-AnnotationEnabled=1
-AnnotateStartValue=1
-AnnotationIndexControlEnabled=0
-AnnotateSuffix=
-AnnotateScope=All
-AnnotateOrder=-1
-DoLibraryUpdate=1
-DoDatabaseUpdate=1
-ClassGenCCAutoEnabled=1
-ClassGenCCAutoRoomEnabled=0
-ClassGenNCAutoScope=None
-DItemRevisionGUID=
-GenerateClassCluster=0
-DocumentUniqueId=
-
-[Document18]
 DocumentPath=Master.PCBDwf
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -358,189 +341,56 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=KQPNRRPD
 
-[GeneratedDocument1]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\comp_+_top\components
+[Document18]
+DocumentPath=TempPCBs.pcblib
+AnnotationEnabled=1
+AnnotateStartValue=1
+AnnotationIndexControlEnabled=0
+AnnotateSuffix=
+AnnotateScope=All
+AnnotateOrder=-1
+DoLibraryUpdate=1
+DoDatabaseUpdate=1
+ClassGenCCAutoEnabled=1
+ClassGenCCAutoRoomEnabled=0
+ClassGenNCAutoScope=None
 DItemRevisionGUID=
+GenerateClassCluster=0
+DocumentUniqueId=VOAMJBYL
 
-[GeneratedDocument2]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\eda\data
+[Document19]
+DocumentPath=TempSchematics.schlib
+AnnotationEnabled=1
+AnnotateStartValue=1
+AnnotationIndexControlEnabled=0
+AnnotateSuffix=
+AnnotateScope=All
+AnnotateOrder=-1
+DoLibraryUpdate=1
+DoDatabaseUpdate=1
+ClassGenCCAutoEnabled=1
+ClassGenCCAutoRoomEnabled=0
+ClassGenNCAutoScope=None
 DItemRevisionGUID=
+GenerateClassCluster=0
+DocumentUniqueId=BVJHZAPJ
 
-[GeneratedDocument3]
-DocumentPath=Project Outputs for BMS_Master\Design Rule Check - Master.html
+[Document20]
+DocumentPath=Managed\OutputJobs\590C195C-FC5A-4725-BE0A-53DE8D32FDD1\OUT-0006-10.OutJob
+AnnotationEnabled=1
+AnnotateStartValue=1
+AnnotationIndexControlEnabled=0
+AnnotateSuffix=
+AnnotateScope=All
+AnnotateOrder=-1
+DoLibraryUpdate=1
+DoDatabaseUpdate=1
+ClassGenCCAutoEnabled=1
+ClassGenCCAutoRoomEnabled=0
+ClassGenNCAutoScope=None
 DItemRevisionGUID=
-
-[GeneratedDocument4]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\bottom_3d_body\features
-DItemRevisionGUID=
-
-[GeneratedDocument5]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\bottom_assembly\features
-DItemRevisionGUID=
-
-[GeneratedDocument6]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\bottom_component_center\features
-DItemRevisionGUID=
-
-[GeneratedDocument7]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\bottom_component_outline\features
-DItemRevisionGUID=
-
-[GeneratedDocument8]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\bottom_courtyard\features
-DItemRevisionGUID=
-
-[GeneratedDocument9]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\bottom_designator\features
-DItemRevisionGUID=
-
-[GeneratedDocument10]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\bottom_layer\features
-DItemRevisionGUID=
-
-[GeneratedDocument11]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\bottom_overlay\features
-DItemRevisionGUID=
-
-[GeneratedDocument12]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\bottom_paste\features
-DItemRevisionGUID=
-
-[GeneratedDocument13]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\bottom_solder\features
-DItemRevisionGUID=
-
-[GeneratedDocument14]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\comp_+_top\features
-DItemRevisionGUID=
-
-[GeneratedDocument15]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\dielectric1\features
-DItemRevisionGUID=
-
-[GeneratedDocument16]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\dielectric2\features
-DItemRevisionGUID=
-
-[GeneratedDocument17]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\dielectric3\features
-DItemRevisionGUID=
-
-[GeneratedDocument18]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\drill_drawing_top_layer-bottom_layer\features
-DItemRevisionGUID=
-
-[GeneratedDocument19]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\drill_guide_top_layer-bottom_layer\features
-DItemRevisionGUID=
-
-[GeneratedDocument20]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\drill_non-plated_bottom_layer-top_layer\features
-DItemRevisionGUID=
-
-[GeneratedDocument21]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\drill_plated_bottom_layer-top_layer\features
-DItemRevisionGUID=
-
-[GeneratedDocument22]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\gnd-layer\features
-DItemRevisionGUID=
-
-[GeneratedDocument23]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\keep-out_layer\features
-DItemRevisionGUID=
-
-[GeneratedDocument24]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\mechanical_1\features
-DItemRevisionGUID=
-
-[GeneratedDocument25]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\mechanical_7\features
-DItemRevisionGUID=
-
-[GeneratedDocument26]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\mechanical_13\features
-DItemRevisionGUID=
-
-[GeneratedDocument27]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\mechanical_15\features
-DItemRevisionGUID=
-
-[GeneratedDocument28]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\pwr-layer\features
-DItemRevisionGUID=
-
-[GeneratedDocument29]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\top_3d_body\features
-DItemRevisionGUID=
-
-[GeneratedDocument30]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\top_assembly\features
-DItemRevisionGUID=
-
-[GeneratedDocument31]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\top_component_center\features
-DItemRevisionGUID=
-
-[GeneratedDocument32]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\top_component_outline\features
-DItemRevisionGUID=
-
-[GeneratedDocument33]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\top_courtyard\features
-DItemRevisionGUID=
-
-[GeneratedDocument34]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\top_designator\features
-DItemRevisionGUID=
-
-[GeneratedDocument35]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\top_layer\features
-DItemRevisionGUID=
-
-[GeneratedDocument36]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\top_overlay\features
-DItemRevisionGUID=
-
-[GeneratedDocument37]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\top_paste\features
-DItemRevisionGUID=
-
-[GeneratedDocument38]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\top_solder\features
-DItemRevisionGUID=
-
-[GeneratedDocument39]
-DocumentPath=Project Outputs for BMS_Master\Master.zip
-DItemRevisionGUID=
-
-[GeneratedDocument40]
-DocumentPath=Project Outputs for BMS_Master\odb\matrix\matrix
-DItemRevisionGUID=
-
-[GeneratedDocument41]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\netlists\cadnet\netlist
-DItemRevisionGUID=
-
-[GeneratedDocument42]
-DocumentPath=Project Outputs for BMS_Master\Pick Place for Master.csv
-DItemRevisionGUID=
-
-[GeneratedDocument43]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\profile
-DItemRevisionGUID=
-
-[GeneratedDocument44]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\stephdr
-DItemRevisionGUID=
-
-[GeneratedDocument45]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\drill_non-plated_bottom_layer-top_layer\tools
-DItemRevisionGUID=
-
-[GeneratedDocument46]
-DocumentPath=Project Outputs for BMS_Master\odb\steps\pcb\layers\drill_plated_bottom_layer-top_layer\tools
-DItemRevisionGUID=
+GenerateClassCluster=0
+DocumentUniqueId=
 
 [Parameter1]
 Name=Author
@@ -969,6 +819,11 @@ OutputDocumentPath9=
 OutputVariantName9=[No Variations]
 OutputDefault9=0
 PageOptions9=Record=PageOptions|CenterHorizontal=True|CenterVertical=True|PrintScale=1.00|XCorrection=1.00|YCorrection=1.00|PrintKind=1|BorderSize=5000000|LeftOffset=0|BottomOffset=0|Orientation=2|PaperLength=1000|PaperWidth=1000|Scale=100|PaperSource=7|PrintQuality=-3|MediaType=1|DitherType=10|PrintScaleMode=1|PaperKind=A4|PaperIndex=9
+OutputType10=BOM_ReportManufacturing
+OutputName10=Manufacturing Data
+OutputDocumentPath10=
+OutputVariantName10=[No Variations]
+OutputDefault10=0
 
 [OutputGroup7]
 Name=Other Outputs
@@ -1091,36 +946,6 @@ OutputName12=Web Review Data
 OutputDocumentPath12=
 OutputVariantName12=
 OutputDefault12=0
-OutputType13=Ansoft Neutral
-OutputName13=Ansoft Neutral (AutoPCB)
-OutputDocumentPath13=
-OutputVariantName13=
-OutputDefault13=0
-OutputType14=HyperLynx
-OutputName14=HyperLynx (AutoPCB)
-OutputDocumentPath14=
-OutputVariantName14=
-OutputDefault14=0
-OutputType15=MathWorks
-OutputName15=MathWorks (AutoPCB)
-OutputDocumentPath15=
-OutputVariantName15=
-OutputDefault15=0
-OutputType16=Orcad v7 Capture Design
-OutputName16=Orcad v7 Capture Design (AutoSCH)
-OutputDocumentPath16=
-OutputVariantName16=
-OutputDefault16=0
-OutputType17=P-CAD ASCII
-OutputName17=P-CAD ASCII (AutoPCB)
-OutputDocumentPath17=
-OutputVariantName17=
-OutputDefault17=0
-OutputType18=P-CAD V16 Schematic Design
-OutputName18=P-CAD V16 Schematic Design (AutoSCH)
-OutputDocumentPath18=
-OutputVariantName18=
-OutputDefault18=0
 
 [OutputGroup10]
 Name=PostProcess Outputs
@@ -1293,6 +1118,8 @@ Type156=1
 Type157=1
 Type158=1
 Type159=1
+Type160=1
+Type161=1
 
 [Difference Levels]
 Type1=1
@@ -1382,6 +1209,7 @@ Type84=1
 Type85=1
 Type86=1
 Type87=1
+Type88=1
 
 [Electrical Rules Check]
 Type1=1
@@ -1547,6 +1375,8 @@ Type160=0
 Type161=0
 Type162=1
 Type163=1
+Type164=1
+Type165=2
 
 [ERC Connection Matrix]
 L1=NNNNNNNNNNNWNNNWW
@@ -1859,5 +1689,5 @@ Cached_LifeCycleStateHRID=Draft
 Cached_LifeCycleStateGUID=[Unknown]
 Cached_LifeCycleStateColor=00F0F0F0
 Cached_LifeCycleStateTextColor=00606060
-Cached_RevisionReleaseDate=04/03/2025 18:53:45
+Cached_RevisionReleaseDate=30-12-1899
 
