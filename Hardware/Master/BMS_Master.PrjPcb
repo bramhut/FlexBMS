@@ -53,6 +53,23 @@ PrefsVaultGUID=
 PrefsRevisionGUID=
 
 [Document1]
+DocumentPath=HV.SchDoc
+AnnotationEnabled=1
+AnnotateStartValue=1
+AnnotationIndexControlEnabled=0
+AnnotateSuffix=
+AnnotateScope=All
+AnnotateOrder=-1
+DoLibraryUpdate=1
+DoDatabaseUpdate=1
+ClassGenCCAutoEnabled=1
+ClassGenCCAutoRoomEnabled=0
+ClassGenNCAutoScope=None
+DItemRevisionGUID=
+GenerateClassCluster=0
+DocumentUniqueId=QFKWDOQX
+
+[Document2]
 DocumentPath=STM32_IO.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -69,7 +86,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=WSUKSLDN
 
-[Document2]
+[Document3]
 DocumentPath=Top.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -86,7 +103,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=WVJIRXYO
 
-[Document3]
+[Document4]
 DocumentPath=Power.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -103,7 +120,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=QRFOQSXK
 
-[Document4]
+[Document5]
 DocumentPath=Transceivers.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -120,7 +137,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=TCQGJEKV
 
-[Document5]
+[Document6]
 DocumentPath=Peripherals.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -137,7 +154,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=PXQCDYRS
 
-[Document6]
+[Document7]
 DocumentPath=STLink_MODS.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -154,7 +171,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=XECPSJYD
 
-[Document7]
+[Document8]
 DocumentPath=STLink_MODS.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -171,7 +188,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document8]
+[Document9]
 DocumentPath=STM32_IO.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -188,7 +205,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document9]
+[Document10]
 DocumentPath=Transceivers.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -205,7 +222,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document10]
+[Document11]
 DocumentPath=Connectors.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -222,7 +239,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=TZTUSMBZ
 
-[Document11]
+[Document12]
 DocumentPath=Connectors.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -239,7 +256,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document12]
+[Document13]
 DocumentPath=Master.PcbDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -256,7 +273,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=WJQXEVFR
 
-[Document13]
+[Document14]
 DocumentPath=PreCharge.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -273,7 +290,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=QFKWDOQX
 
-[Document14]
+[Document15]
 DocumentPath=Peripherals.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -290,7 +307,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document15]
+[Document16]
 DocumentPath=BMS_Master.BomDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -307,7 +324,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document16]
+[Document17]
 DocumentPath=CAMtastic1.Cam
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -324,7 +341,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document17]
+[Document18]
 DocumentPath=Master.PCBDwf
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -341,7 +358,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=KQPNRRPD
 
-[Document18]
+[Document19]
 DocumentPath=TempPCBs.pcblib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -358,7 +375,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=VOAMJBYL
 
-[Document19]
+[Document20]
 DocumentPath=TempSchematics.schlib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -375,8 +392,25 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=BVJHZAPJ
 
-[Document20]
+[Document21]
 DocumentPath=Managed\OutputJobs\590C195C-FC5A-4725-BE0A-53DE8D32FDD1\OUT-0006-10.OutJob
+AnnotationEnabled=1
+AnnotateStartValue=1
+AnnotationIndexControlEnabled=0
+AnnotateSuffix=
+AnnotateScope=All
+AnnotateOrder=-1
+DoLibraryUpdate=1
+DoDatabaseUpdate=1
+ClassGenCCAutoEnabled=1
+ClassGenCCAutoRoomEnabled=0
+ClassGenNCAutoScope=None
+DItemRevisionGUID=
+GenerateClassCluster=0
+DocumentUniqueId=
+
+[Document22]
+DocumentPath=HV.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
 AnnotationIndexControlEnabled=0
@@ -1689,5 +1723,5 @@ Cached_LifeCycleStateHRID=Draft
 Cached_LifeCycleStateGUID=[Unknown]
 Cached_LifeCycleStateColor=00F0F0F0
 Cached_LifeCycleStateTextColor=00606060
-Cached_RevisionReleaseDate=30-12-1899
+Cached_RevisionReleaseDate=30/12/1899
 
