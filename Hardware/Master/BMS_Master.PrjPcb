@@ -308,7 +308,7 @@ GenerateClassCluster=0
 DocumentUniqueId=KQPNRRPD
 
 [Document16]
-DocumentPath=FlexBMS_lib.pcblib
+DocumentPath=..\FlexBMS_lib.pcblib
 AnnotationEnabled=1
 AnnotateStartValue=1
 AnnotationIndexControlEnabled=0
@@ -322,10 +322,10 @@ ClassGenCCAutoRoomEnabled=0
 ClassGenNCAutoScope=None
 DItemRevisionGUID=
 GenerateClassCluster=0
-DocumentUniqueId=VOAMJBYL
+DocumentUniqueId=
 
 [Document17]
-DocumentPath=FlexBMS_lib.schlib
+DocumentPath=..\FlexBMS_lib.schlib
 AnnotationEnabled=1
 AnnotateStartValue=1
 AnnotationIndexControlEnabled=0
@@ -339,7 +339,7 @@ ClassGenCCAutoRoomEnabled=0
 ClassGenNCAutoScope=None
 DItemRevisionGUID=
 GenerateClassCluster=0
-DocumentUniqueId=BVJHZAPJ
+DocumentUniqueId=
 
 [Document18]
 DocumentPath=HVsense.SchDoc
