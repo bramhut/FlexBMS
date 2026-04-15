@@ -322,7 +322,7 @@ ClassGenCCAutoRoomEnabled=0
 ClassGenNCAutoScope=None
 DItemRevisionGUID=
 GenerateClassCluster=0
-DocumentUniqueId=
+DocumentUniqueId=VOAMJBYL
 
 [Document17]
 DocumentPath=..\FlexBMS_lib.schlib
