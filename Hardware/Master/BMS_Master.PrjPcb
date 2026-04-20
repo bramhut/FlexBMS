@@ -427,23 +427,6 @@ GenerateClassCluster=0
 DocumentUniqueId=PJHNGOFT
 
 [Document23]
-DocumentPath=HV.Harness
-AnnotationEnabled=1
-AnnotateStartValue=1
-AnnotationIndexControlEnabled=0
-AnnotateSuffix=
-AnnotateScope=All
-AnnotateOrder=-1
-DoLibraryUpdate=1
-DoDatabaseUpdate=1
-ClassGenCCAutoEnabled=1
-ClassGenCCAutoRoomEnabled=0
-ClassGenNCAutoScope=None
-DItemRevisionGUID=
-GenerateClassCluster=0
-DocumentUniqueId=
-
-[Document24]
 DocumentPath=BMS_Master.OutJob
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -460,7 +443,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document25]
+[Document24]
 DocumentPath=Managed\OutputJobs\590C195C-FC5A-4725-BE0A-53DE8D32FDD1\OUT-0006-10.OutJob
 AnnotationEnabled=1
 AnnotateStartValue=1
