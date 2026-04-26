@@ -2,7 +2,6 @@
 Version=1.0
 Caption=Hydriven Outjob Template
 Description=Contains everything needed to order at Axtron or Eurocircuits!
-Includes ODB++, BOM, CPL and board stackup
 VaultGUID=0AF484DA-94E3-4FE7-85FB-85A3B8DE4D24
 ItemGUID=D2FAE8C5-2179-4EF0-9FCE-8A0604652069
 ItemHRID=
@@ -16,13 +15,13 @@ LifeCycleDefinitionGUID=
 RevisionNamingSchemeGUID=
 
 [OutputGroup1]
-Name=OUT-0006-9.OutJob
+Name=OUT-0006-10.OutJob
 Description=
 TargetOutputMedium=Folder Structure
 VariantName=[No Variations]
 VariantScope=1
 CurrentConfigurationName=
-TargetPrinter=AnyDesk Printer
+TargetPrinter=Microsoft Print to PDF
 PrinterOptions=Record=PrinterOptions|Copies=1|Duplex=1|TrueTypeOptions=3|Collate=1|PrintJobKind=1|PrintWhat=1
 OutputMedium1=Print Job
 OutputMedium1_Type=Printer
@@ -100,7 +99,7 @@ Configuration5_Item1=e|Compression_tar_tgz=True|Compression_zip=True|DifferentFo
 [PublishSettings]
 OutputFilePath2=Project Outputs for Free Documents\
 ReleaseManaged2=1
-OutputBasePath2=Project Outputs for Free Documents
+OutputBasePath2=Project Outputs for BMS_Master
 OutputPathMedia2=
 OutputPathMediaValue2=
 OutputPathOutputer2=[Output Type]

@@ -15,7 +15,7 @@ LifeCycleDefinitionGUID=
 RevisionNamingSchemeGUID=
 
 [OutputGroup1]
-Name=Job Group
+Name=BMS_Master.OutJob
 Description=
 TargetOutputMedium=PDF
 VariantName=[No Variations]
@@ -64,7 +64,7 @@ Configuration2_Item1=CaptionAsName
 Configuration2_Name2=ForceUpdateSettings
 Configuration2_Item2=False
 Configuration2_Name3=General
-Configuration2_Item3=TemplateFilename=Board Stack Report.XLT
+Configuration2_Item3=OpenExported=False|AddToProject=False|ReportBOMViolationsInMessages=False|ForceFit=False|NotFitted=False|Database=False|DatabasePriority=False|IncludePcbData=False|IncludeVaultData=False|IncludeCloudData=False|IncludeDocumentData=True|IncludeAlternatives=False|ShowExportOptions=True|TemplateFilename=|TemplateVaultGuid=|TemplateItemGuid=|TemplateRevisionGuid=|BatchMode=5|FormWidth=1200|FormHeight=710|SupplierProdQty=1|SupplierAutoQty=False|SupplierUseCachedPricing=False|SupplierCurrency=USD|SolutionsPerItem=1|SuppliersPerSolution=1|ViewType=0|BomSetName=
 Configuration2_Name4=GroupOrder
 Configuration2_Item4=
 Configuration2_Name5=VisibleOrder
