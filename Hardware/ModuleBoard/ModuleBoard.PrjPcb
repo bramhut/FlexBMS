@@ -86,7 +86,7 @@ GenerateClassCluster=0
 DocumentUniqueId=JPZFTCXJ
 
 [Document3]
-DocumentPath=Module Board.PcbDoc
+DocumentPath=Module Board - OLD.PcbDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
 AnnotationIndexControlEnabled=0
@@ -203,6 +203,23 @@ ClassGenNCAutoScope=None
 DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=GKUSCSOO
+
+[Document10]
+DocumentPath=Module Board.PcbDoc
+AnnotationEnabled=1
+AnnotateStartValue=1
+AnnotationIndexControlEnabled=0
+AnnotateSuffix=
+AnnotateScope=All
+AnnotateOrder=-1
+DoLibraryUpdate=1
+DoDatabaseUpdate=1
+ClassGenCCAutoEnabled=1
+ClassGenCCAutoRoomEnabled=0
+ClassGenNCAutoScope=None
+DItemRevisionGUID=
+GenerateClassCluster=0
+DocumentUniqueId=YMNBHNBP
 
 [DiffPairSuffix1]
 Positive=_HI
