@@ -257,23 +257,6 @@ GenerateClassCluster=0
 DocumentUniqueId=
 
 [Document13]
-DocumentPath=BMS_Master.BomDoc
-AnnotationEnabled=1
-AnnotateStartValue=1
-AnnotationIndexControlEnabled=0
-AnnotateSuffix=
-AnnotateScope=All
-AnnotateOrder=-1
-DoLibraryUpdate=1
-DoDatabaseUpdate=1
-ClassGenCCAutoEnabled=1
-ClassGenCCAutoRoomEnabled=0
-ClassGenNCAutoScope=None
-DItemRevisionGUID=
-GenerateClassCluster=0
-DocumentUniqueId=
-
-[Document14]
 DocumentPath=CAMtastic1.Cam
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -290,7 +273,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document15]
+[Document14]
 DocumentPath=Master.PCBDwf
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -307,7 +290,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=KQPNRRPD
 
-[Document16]
+[Document15]
 DocumentPath=..\FlexBMS_lib.pcblib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -324,7 +307,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=VOAMJBYL
 
-[Document17]
+[Document16]
 DocumentPath=..\FlexBMS_lib.schlib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -339,9 +322,9 @@ ClassGenCCAutoRoomEnabled=0
 ClassGenNCAutoScope=None
 DItemRevisionGUID=
 GenerateClassCluster=0
-DocumentUniqueId=
+DocumentUniqueId=BVJHZAPJ
 
-[Document18]
+[Document17]
 DocumentPath=HVsense.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -358,7 +341,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=NLTQSALF
 
-[Document19]
+[Document18]
 DocumentPath=HVsense.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -375,7 +358,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document20]
+[Document19]
 DocumentPath=ESP32.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -392,7 +375,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=UNNPPULQ
 
-[Document21]
+[Document20]
 DocumentPath=ESP32.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -409,7 +392,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document22]
+[Document21]
 DocumentPath=RelayDriver.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -426,7 +409,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=PJHNGOFT
 
-[Document23]
+[Document22]
 DocumentPath=BMS_Master.OutJob
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -443,7 +426,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document24]
+[Document23]
 DocumentPath=Managed\OutputJobs\590C195C-FC5A-4725-BE0A-53DE8D32FDD1\OUT-0006-10.OutJob
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -891,6 +874,18 @@ OutputDocumentPath2=
 OutputVariantName2=[No Variations]
 OutputDefault2=0
 PageOptions2=Record=PageOptions|CenterHorizontal=True|CenterVertical=True|PrintScale=1.00|XCorrection=1.00|YCorrection=1.00|PrintKind=1|BorderSize=5000000|LeftOffset=0|BottomOffset=0|Orientation=2|PaperLength=1000|PaperWidth=1000|Scale=100|PaperSource=7|PrintQuality=-3|MediaType=1|DitherType=10|PrintScaleMode=1|PaperKind=A4|PaperIndex=9
+Configuration2_Name1=ColumnNameFormat
+Configuration2_Item1=CaptionAsName
+Configuration2_Name2=ForceUpdateSettings
+Configuration2_Item2=False
+Configuration2_Name3=General
+Configuration2_Item3=OpenExported=False|AddToProject=False|ReportBOMViolationsInMessages=False|ForceFit=False|NotFitted=False|Database=False|DatabasePriority=False|IncludePcbData=False|IncludeVaultData=False|IncludeCloudData=False|IncludeDocumentData=True|IncludeAlternatives=False|ShowExportOptions=True|TemplateFilename=|TemplateVaultGuid=|TemplateItemGuid=|TemplateRevisionGuid=|BatchMode=5|FormWidth=1200|FormHeight=710|SupplierProdQty=1|SupplierAutoQty=False|SupplierUseCachedPricing=False|SupplierCurrency=USD|SolutionsPerItem=1|SuppliersPerSolution=1|ViewType=0|BomSetName=
+Configuration2_Name4=GroupOrder
+Configuration2_Item4=CompareState=True|Comment=True
+Configuration2_Name5=SortOrder
+Configuration2_Item5=Designator=Up|Comment=Up
+Configuration2_Name6=VisibleOrder
+Configuration2_Item6=Line #=80|CompareState=120|Comment=120|Description=120|Designator=120|Manufacturer Part Number 1=120|Quantity=120
 OutputType3=ComponentCrossReference
 OutputName3=Component Cross Reference Report
 OutputDocumentPath3=
