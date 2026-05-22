@@ -36,10 +36,7 @@ ConstraintManagerFlow=0
 IsVirtualBomDocumentRemoved=0
 OutputPath=
 LogFolderPath=
-ManagedProjectGUID=B2D34FFD-BC21-41AE-B936-EB5F04AB530A
-VaultGUID=0AF484DA-94E3-4FE7-85FB-85A3B8DE4D24
-ReleaseVaultName=Green Team Twente
-ItemGUID=B2D34FFD-BC21-41AE-B936-EB5F04AB530A
+ManagedProjectGUID=
 IncludeDesignInRelease=0
 CrossRefSheetStyle=1
 CrossRefLocationStyle=1
@@ -237,9 +234,26 @@ ClassGenCCAutoRoomEnabled=0
 ClassGenNCAutoScope=None
 DItemRevisionGUID=
 GenerateClassCluster=0
-DocumentUniqueId=WJQXEVFR
+DocumentUniqueId=LMLCUAWF
 
 [Document12]
+DocumentPath=Master - OLD.PcbDoc
+AnnotationEnabled=1
+AnnotateStartValue=1
+AnnotationIndexControlEnabled=0
+AnnotateSuffix=
+AnnotateScope=All
+AnnotateOrder=-1
+DoLibraryUpdate=1
+DoDatabaseUpdate=1
+ClassGenCCAutoEnabled=1
+ClassGenCCAutoRoomEnabled=0
+ClassGenNCAutoScope=None
+DItemRevisionGUID=
+GenerateClassCluster=0
+DocumentUniqueId=WJQXEVFR
+
+[Document13]
 DocumentPath=Peripherals.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -256,7 +270,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document13]
+[Document14]
 DocumentPath=CAMtastic1.Cam
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -273,7 +287,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document14]
+[Document15]
 DocumentPath=Master.PCBDwf
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -290,7 +304,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=KQPNRRPD
 
-[Document15]
+[Document16]
 DocumentPath=..\FlexBMS_lib.pcblib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -307,7 +321,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=VOAMJBYL
 
-[Document16]
+[Document17]
 DocumentPath=..\FlexBMS_lib.schlib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -324,7 +338,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=BVJHZAPJ
 
-[Document17]
+[Document18]
 DocumentPath=HVsense.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -341,7 +355,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=NLTQSALF
 
-[Document18]
+[Document19]
 DocumentPath=HVsense.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -358,7 +372,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document19]
+[Document20]
 DocumentPath=ESP32.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -375,7 +389,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=UNNPPULQ
 
-[Document20]
+[Document21]
 DocumentPath=ESP32.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -392,7 +406,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document21]
+[Document22]
 DocumentPath=RelayDriver.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -409,7 +423,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=PJHNGOFT
 
-[Document22]
+[Document23]
 DocumentPath=BMS_Master.OutJob
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -426,7 +440,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document23]
+[Document24]
 DocumentPath=Managed\OutputJobs\590C195C-FC5A-4725-BE0A-53DE8D32FDD1\OUT-0006-10.OutJob
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -444,11 +458,11 @@ GenerateClassCluster=0
 DocumentUniqueId=
 
 [Parameter1]
-Name=Author
-Value=Bram Bremer
+Name=ProjectPrettyName
+Value=BMS Master
 
 [Parameter2]
-Name=Author2
+Name=Author4
 Value=
 
 [Parameter3]
@@ -456,12 +470,12 @@ Name=Author3
 Value=
 
 [Parameter4]
-Name=Author4
+Name=Author2
 Value=
 
 [Parameter5]
-Name=ProjectPrettyName
-Value=BMS Master
+Name=Author
+Value=Bram Bremer
 
 [DiffPairSuffix1]
 Positive=_HI
@@ -1836,5 +1850,5 @@ Cached_LifeCycleStateHRID=Draft
 Cached_LifeCycleStateGUID=[Unknown]
 Cached_LifeCycleStateColor=00F0F0F0
 Cached_LifeCycleStateTextColor=00606060
-Cached_RevisionReleaseDate=30-12-1899
+Cached_RevisionReleaseDate=30/12/1899
 
