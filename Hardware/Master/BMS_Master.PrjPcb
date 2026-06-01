@@ -458,11 +458,11 @@ GenerateClassCluster=0
 DocumentUniqueId=
 
 [Parameter1]
-Name=ProjectPrettyName
-Value=BMS Master
+Name=Author
+Value=Bram Bremer
 
 [Parameter2]
-Name=Author4
+Name=Author2
 Value=
 
 [Parameter3]
@@ -470,12 +470,12 @@ Name=Author3
 Value=
 
 [Parameter4]
-Name=Author2
+Name=Author4
 Value=
 
 [Parameter5]
-Name=Author
-Value=Bram Bremer
+Name=ProjectPrettyName
+Value=BMS Master
 
 [DiffPairSuffix1]
 Positive=_HI
