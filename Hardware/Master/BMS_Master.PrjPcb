@@ -24,7 +24,7 @@ ReorderDocumentsOnCompile=1
 NameNetsHierarchically=0
 PowerPortNamesTakePriority=1
 AutoSheetNumbering=1
-AutoCrossReferences=0
+AutoCrossReferences=1
 NewIndexingOfSheetSymbols=0
 PushECOToAnnotationFile=1
 DItemRevisionGUID=
@@ -458,11 +458,11 @@ GenerateClassCluster=0
 DocumentUniqueId=
 
 [Parameter1]
-Name=Author
-Value=Bram Bremer
+Name=ProjectPrettyName
+Value=BMS Master
 
 [Parameter2]
-Name=Author2
+Name=Author4
 Value=
 
 [Parameter3]
@@ -470,12 +470,12 @@ Name=Author3
 Value=
 
 [Parameter4]
-Name=Author4
+Name=Author2
 Value=
 
 [Parameter5]
-Name=ProjectPrettyName
-Value=BMS Master
+Name=Author
+Value=Bram Bremer
 
 [DiffPairSuffix1]
 Positive=_HI
@@ -1064,6 +1064,36 @@ OutputName12=Web Review Data
 OutputDocumentPath12=
 OutputVariantName12=
 OutputDefault12=0
+OutputType13=Ansoft Neutral
+OutputName13=Ansoft Neutral (AutoPCB)
+OutputDocumentPath13=
+OutputVariantName13=
+OutputDefault13=0
+OutputType14=HyperLynx
+OutputName14=HyperLynx (AutoPCB)
+OutputDocumentPath14=
+OutputVariantName14=
+OutputDefault14=0
+OutputType15=MathWorks
+OutputName15=MathWorks (AutoPCB)
+OutputDocumentPath15=
+OutputVariantName15=
+OutputDefault15=0
+OutputType16=Orcad v7 Capture Design
+OutputName16=Orcad v7 Capture Design (AutoSCH)
+OutputDocumentPath16=
+OutputVariantName16=
+OutputDefault16=0
+OutputType17=P-CAD ASCII
+OutputName17=P-CAD ASCII (AutoPCB)
+OutputDocumentPath17=
+OutputVariantName17=
+OutputDefault17=0
+OutputType18=P-CAD V16 Schematic Design
+OutputName18=P-CAD V16 Schematic Design (AutoSCH)
+OutputDocumentPath18=
+OutputVariantName18=
+OutputDefault18=0
 
 [OutputGroup10]
 Name=PostProcess Outputs
@@ -1842,5 +1872,5 @@ Cached_LifeCycleStateHRID=Draft
 Cached_LifeCycleStateGUID=[Unknown]
 Cached_LifeCycleStateColor=00F0F0F0
 Cached_LifeCycleStateTextColor=00606060
-Cached_RevisionReleaseDate=30/12/1899
+Cached_RevisionReleaseDate=30-12-1899
 
