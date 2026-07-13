@@ -32,7 +32,7 @@ OutputMedium2_Type=GeneratedFiles
 OutputType1=Gerber X2
 OutputName1=Gerber X2 Files
 OutputCategory1=Fabrication
-OutputDocumentPath1=Module Board.PcbDoc
+OutputDocumentPath1=Master.PcbDoc
 OutputVariantName1=
 OutputEnabled1=1
 OutputEnabled1_OutputMedium1=0
@@ -43,7 +43,7 @@ Configuration1_Item1=BoardID=YMNBHNBP|FileComment= |FileSubject=Autodetect|Gener
 OutputType2=Pick Place
 OutputName2=Generates pick and place files
 OutputCategory2=Assembly
-OutputDocumentPath2=Module Board.PcbDoc
+OutputDocumentPath2=Master.PcbDoc
 OutputVariantName2=
 OutputEnabled2=1
 OutputEnabled2_OutputMedium1=0

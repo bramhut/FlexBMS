@@ -271,23 +271,6 @@ GenerateClassCluster=0
 DocumentUniqueId=
 
 [Document14]
-DocumentPath=CAMtastic1.Cam
-AnnotationEnabled=1
-AnnotateStartValue=1
-AnnotationIndexControlEnabled=0
-AnnotateSuffix=
-AnnotateScope=All
-AnnotateOrder=-1
-DoLibraryUpdate=1
-DoDatabaseUpdate=1
-ClassGenCCAutoEnabled=1
-ClassGenCCAutoRoomEnabled=0
-ClassGenNCAutoScope=None
-DItemRevisionGUID=
-GenerateClassCluster=0
-DocumentUniqueId=
-
-[Document15]
 DocumentPath=Master.PCBDwf
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -304,7 +287,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=KQPNRRPD
 
-[Document16]
+[Document15]
 DocumentPath=..\FlexBMS_lib.pcblib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -321,7 +304,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=VOAMJBYL
 
-[Document17]
+[Document16]
 DocumentPath=..\FlexBMS_lib.schlib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -338,7 +321,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=BVJHZAPJ
 
-[Document18]
+[Document17]
 DocumentPath=HVsense.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -355,7 +338,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=NLTQSALF
 
-[Document19]
+[Document18]
 DocumentPath=HVsense.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -372,7 +355,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document20]
+[Document19]
 DocumentPath=ESP32.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -389,7 +372,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=UNNPPULQ
 
-[Document21]
+[Document20]
 DocumentPath=ESP32.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -406,7 +389,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document22]
+[Document21]
 DocumentPath=RelayDriver.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -423,25 +406,8 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=PJHNGOFT
 
-[Document23]
-DocumentPath=BMS_Master.OutJob
-AnnotationEnabled=1
-AnnotateStartValue=1
-AnnotationIndexControlEnabled=0
-AnnotateSuffix=
-AnnotateScope=All
-AnnotateOrder=-1
-DoLibraryUpdate=1
-DoDatabaseUpdate=1
-ClassGenCCAutoEnabled=1
-ClassGenCCAutoRoomEnabled=0
-ClassGenNCAutoScope=None
-DItemRevisionGUID=
-GenerateClassCluster=0
-DocumentUniqueId=
-
-[Document24]
-DocumentPath=Managed\OutputJobs\590C195C-FC5A-4725-BE0A-53DE8D32FDD1\OUT-0006-10.OutJob
+[Document22]
+DocumentPath=JLCPCB_OutJob.OutJob
 AnnotationEnabled=1
 AnnotateStartValue=1
 AnnotationIndexControlEnabled=0
@@ -459,66 +425,6 @@ DocumentUniqueId=
 
 [GeneratedDocument1]
 DocumentPath=Project Outputs for BMS_Master\Design Rule Check - Master.html
-DItemRevisionGUID=
-
-[GeneratedDocument2]
-DocumentPath=Project Outputs for BMS_Master\Master.EXTREP
-DItemRevisionGUID=
-
-[GeneratedDocument3]
-DocumentPath=Project Outputs for BMS_Master\Master.G1
-DItemRevisionGUID=
-
-[GeneratedDocument4]
-DocumentPath=Project Outputs for BMS_Master\Master.G2
-DItemRevisionGUID=
-
-[GeneratedDocument5]
-DocumentPath=Project Outputs for BMS_Master\Master.GBL
-DItemRevisionGUID=
-
-[GeneratedDocument6]
-DocumentPath=Project Outputs for BMS_Master\Master.GBO
-DItemRevisionGUID=
-
-[GeneratedDocument7]
-DocumentPath=Project Outputs for BMS_Master\Master.GBP
-DItemRevisionGUID=
-
-[GeneratedDocument8]
-DocumentPath=Project Outputs for BMS_Master\Master.GBS
-DItemRevisionGUID=
-
-[GeneratedDocument9]
-DocumentPath=Project Outputs for BMS_Master\Master.GD1
-DItemRevisionGUID=
-
-[GeneratedDocument10]
-DocumentPath=Project Outputs for BMS_Master\Master.GG1
-DItemRevisionGUID=
-
-[GeneratedDocument11]
-DocumentPath=Project Outputs for BMS_Master\Master.GM
-DItemRevisionGUID=
-
-[GeneratedDocument12]
-DocumentPath=Project Outputs for BMS_Master\Master.GTL
-DItemRevisionGUID=
-
-[GeneratedDocument13]
-DocumentPath=Project Outputs for BMS_Master\Master.GTO
-DItemRevisionGUID=
-
-[GeneratedDocument14]
-DocumentPath=Project Outputs for BMS_Master\Master.GTP
-DItemRevisionGUID=
-
-[GeneratedDocument15]
-DocumentPath=Project Outputs for BMS_Master\Master.GTS
-DItemRevisionGUID=
-
-[GeneratedDocument16]
-DocumentPath=Project Outputs for BMS_Master\Master.REP
 DItemRevisionGUID=
 
 [Parameter1]
@@ -1897,18 +1803,6 @@ ComparisonOptions5=Kind=Structure Class|MinPercent=75|MinMatch=3|ShowMatch=0|Use
 [SmartPDF]
 PageOptions=Record=PageOptions|CenterHorizontal=True|CenterVertical=True|PrintScale=1.00|XCorrection=1.00|YCorrection=1.00|PrintKind=1|BorderSize=5000000|LeftOffset=0|BottomOffset=0|Orientation=2|PaperLength=1000|PaperWidth=1000|Scale=100|PaperSource=7|PrintQuality=-3|MediaType=1|DitherType=10|PrintScaleMode=1|PaperKind=A4|PaperIndex=9
 
-[ManagedOutputJobs1]
-VaultGUID=0AF484DA-94E3-4FE7-85FB-85A3B8DE4D24
-VaultHRID=Green Team Twente
-ItemGUID=D2FAE8C5-2179-4EF0-9FCE-8A0604652069
-ItemHRID=OUT-0006
-RevisionGUID=590C195C-FC5A-4725-BE0A-53DE8D32FDD1
-RevisionHRID=OUT-0006-10
-Cached_RevisionCaption=Hydriven Outjob Template
-Cached_RevisionDescription=Contains everything needed to order at Axtron or Eurocircuits!
-Cached_LifeCycleStateHRID=Draft
-Cached_LifeCycleStateGUID=[Unknown]
-Cached_LifeCycleStateColor=00F0F0F0
-Cached_LifeCycleStateTextColor=00606060
-Cached_RevisionReleaseDate=30-12-1899
+[Parameter Manager Custom Column Order]
+<Schematic>=Application,Approvals,"Arrow Part Number","Arrow Price/Stock",Automotive,"Automotive Grade","Average Rectified Current","Capacitor Type","JLCPCB Part #",Value,"Voltage Rating",Case/Package,Category,"Ceramic Type","Case Code (Metric)","Case Code (Imperial)",Manufacturer_Part_Number,"Channel Type",ClassName,"Coil Current","Coil Power",ComponentLink2Description,"Coil Resistance","Coil Type","Coil Voltage (DC)","Component Type",ComponentLink1Description,ComponentLink1URL,ComponentLink2URL,"Connector Type","Design Item ID","Contact Current Rating","Contact Material","Contact Plating","Contact Resistance","Continuous Drain Current (ID)","Core Material","Current Rating","Data Rate","Datasheet Link","DC Current","DC Resistance (DCR)",Depth,"Device Class L1","Device Class L2","Device Class L3","Digikey Description","Drain to Source Voltage (Vdss)","Dropout Voltage","Element Configuration","Forward Current","Forward Voltage",Frequency,"Gate to Source Voltage (Vgs)",Gender,Height,"Housing Color","Housing Material",Impedance,"Inductance Primary","Input Capacitance","Insertion Loss","Interface Type","Ipc Land Pattern Name","Isolated Power","Isolation Voltage","Lead Free",Length,Manufacturer,"Manufacturer Part Number",Manufacturer_Name,"Match Code",Material,"Max Current Rating","Max DC Current","Max Forward Surge Current (Ifsm)","Max Junction Temp","Max Operating Temperature","Max Power Dissipation","Max Repetitive Reverse Voltage (Vrrm)","Max Reverse Current","Max Reverse Leakage Current","Max Reverse Voltage (DC)","Max Supply Voltage","Max Surge Current","Max Voltage Rating (AC)","Max Voltage Rating (DC)","Min Operating Temperature","Min Supply Voltage",Mount,"Mounting Technology","Mouser Part Number","Mouser Price/Stock","Nominal Supply Current","Number of Channels","Number of Circuits","Number of Contacts","Number of Elements","Number of Lines","Number Of Outputs","Number of Pins","Number of Ports","Number of Rows","Obsolete Part",Octopart,"Operate Time","Operating Temperature Max","Operating Temperature Min",Orientation,"Output Current","Output Type","Output Voltage",Package,"Package Quantity",Packaging,"Peak Non-Repetitive Surge Current","Peak Reverse Current","Pin Count",Pins,Pitch,Power,"Power Consumption","Power Dissipation","Propagation Delay","Pulse Width Distortion (PWD)","R25 value","Radiation Hardening","Rated Current","Rds On Max","REACH SVHC","Recovery Time","Relay Type","Release Time","Return Loss","Reverse Recovery Time","Reverse Voltage",RoHS,"RoHS Compliant",Series,Shielding,Source,"Standoff Height",Temperature,"Temperature Range High","Temperature Range Low",Termination,"Test Frequency","Throw Configuration",Tolerance,"Turns Ratio",Type,"Voltage Rating (AC)",Weight,Width,"Withstanding Voltage","Working Voltage"
 

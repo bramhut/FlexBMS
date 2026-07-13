@@ -1,0 +1,10 @@
+Output: Bill of Materials
+Type  : BOM
+From  : Variant [[No Variations]] of Project [ModuleBoard.PrjPcb]
+   Generated File[Bill of Materials-ModuleBoard.xlsx]
+
+
+Files Generated   : 1
+Documents Printed : 0
+
+Finished Output Generation At 23:10:00 On 9-7-2026
