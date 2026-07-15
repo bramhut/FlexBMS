@@ -202,6 +202,10 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
+[GeneratedDocument1]
+DocumentPath=Project Outputs for ModuleBoard\Design Rule Check - Module Board.html
+DItemRevisionGUID=
+
 [DiffPairSuffix1]
 Positive=_HI
 Negative=_LO
