@@ -432,11 +432,11 @@ DocumentPath=Project Outputs for BMS_Master\Design Rule Check - Master.html
 DItemRevisionGUID=
 
 [Parameter1]
-Name=Author
-Value=Bram Bremer
+Name=ProjectPrettyName
+Value=BMS Master
 
 [Parameter2]
-Name=Author2
+Name=Author4
 Value=
 
 [Parameter3]
@@ -444,12 +444,12 @@ Name=Author3
 Value=
 
 [Parameter4]
-Name=Author4
+Name=Author2
 Value=
 
 [Parameter5]
-Name=ProjectPrettyName
-Value=BMS Master
+Name=Author
+Value=Bram Bremer
 
 [DiffPairSuffix1]
 Positive=_HI
@@ -1094,7 +1094,7 @@ Type32=1
 Type33=1
 Type34=1
 Type35=1
-Type36=1
+Type36=0
 Type37=1
 Type38=1
 Type39=1
@@ -1525,10 +1525,16 @@ UpdateToLatestRevision=1
 PartTypes=0
 ComponentLibIdentifierKind0=Library Name And Type
 ComponentLibraryIdentifier0=FlexBMS_lib.schlib
-ComponentDesignItemID0=Q13FC1350000400
-ComponentSymbolReference0=Q13FC1350000400
+ComponentDesignItemID0=WRB1203S-3WR2
+ComponentSymbolReference0=WRB1203S-3WR2
 ComponentUpdate0=1
 ComponentIsDeviceSheet0=0
+ComponentLibIdentifierKind1=Vault Name
+ComponentLibraryIdentifier1=Green Team Twente
+ComponentDesignItemID1=CMP-009-00206-3
+ComponentSymbolReference1=RES_GENERIC
+ComponentUpdate1=0
+ComponentIsDeviceSheet1=0
 FullReplace=0
 UpdateDesignatorLock=1
 UpdatePartIDLock=1
@@ -1542,19 +1548,19 @@ RemoveParameters=0
 AddModels=1
 RemoveModels=1
 UpdateCurrentModels=1
-ParameterName0=Arrow Part Number
+ParameterName0=Case/Package
 ParameterUpdate0=1
-ParameterName1=Arrow Price/Stock
+ParameterName1=Comment
 ParameterUpdate1=1
-ParameterName2=Comment
+ParameterName2=Component Kind
 ParameterUpdate2=1
-ParameterName3=Component Kind
+ParameterName3=Datasheet Link
 ParameterUpdate3=1
-ParameterName4=Datasheet Link
+ParameterName4=Description
 ParameterUpdate4=1
-ParameterName5=Description
+ParameterName5=Height
 ParameterUpdate5=1
-ParameterName6=Height
+ParameterName6=JLCPCB Part #
 ParameterUpdate6=1
 ParameterName7=Library Reference
 ParameterUpdate7=1
@@ -1562,15 +1568,32 @@ ParameterName8=Manufacturer_Name
 ParameterUpdate8=1
 ParameterName9=Manufacturer_Part_Number
 ParameterUpdate9=1
-ParameterName10=Mouser Part Number
+ParameterName10=Max Operating Temperature
 ParameterUpdate10=1
-ParameterName11=Mouser Price/Stock
+ParameterName11=Min Operating Temperature
 ParameterUpdate11=1
+ParameterName12=Mounting Technology
+ParameterUpdate12=1
+ParameterName13=Pins
+ParameterUpdate13=1
+ParameterName14=Power
+ParameterUpdate14=1
+ParameterName15=RoHS Compliant
+ParameterUpdate15=1
+ParameterName16=Tolerance
+ParameterUpdate16=1
+ParameterName17=Value
+ParameterUpdate17=1
+ParameterName18=Voltage Rating
+ParameterUpdate18=1
 ModelTypeGroup0=PCBLIB
 ModelTypeUpdate0=1
 ModelType0=PCBLIB
-ModelName0=Q13FC1350000400
+ModelName0=RES_SM0603_YAGEORC_N
 ModelUpdate0=1
+ModelType1=PCBLIB
+ModelName1=WRB1203S3WR2
+ModelUpdate1=1
 
 [DatabaseUpdateOptions]
 SelectedOnly=0
