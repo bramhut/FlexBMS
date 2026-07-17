@@ -424,19 +424,15 @@ GenerateClassCluster=0
 DocumentUniqueId=
 
 [GeneratedDocument1]
-DocumentPath=Project Outputs for BMS_Master\BMS_Master.EDF
-DItemRevisionGUID=
-
-[GeneratedDocument2]
 DocumentPath=Project Outputs for BMS_Master\Design Rule Check - Master.html
 DItemRevisionGUID=
 
 [Parameter1]
-Name=ProjectPrettyName
-Value=BMS Master
+Name=Author
+Value=Bram Bremer
 
 [Parameter2]
-Name=Author4
+Name=Author2
 Value=
 
 [Parameter3]
@@ -444,12 +440,12 @@ Name=Author3
 Value=
 
 [Parameter4]
-Name=Author2
+Name=Author4
 Value=
 
 [Parameter5]
-Name=Author
-Value=Bram Bremer
+Name=ProjectPrettyName
+Value=BMS Master
 
 [DiffPairSuffix1]
 Positive=_HI
@@ -726,6 +722,10 @@ OutputName1=Test Point Report
 OutputDocumentPath1=
 OutputVariantName1=[No Variations]
 OutputDefault1=0
+Configuration1_Name1=ForceUpdateSettings
+Configuration1_Item1=False
+Configuration1_Name2=OutputConfigurationParameter1
+Configuration1_Item2=AssyAdjacencyDistance=250000|AssyGenerateCSVFormat=True|AssyGenerateIPCFormat=False|AssyGenerateSpreadSheetFormat=False|AssyGenerateTextFormat=False|AssyMergeNetTieNets=False|AssyOriginPosition=Relative|AssyOutlineLayer=56|AssyOutputAdjancencies=False|AssyOutputBoardOutline=False|AssyOutputTraces=False|AssyReportBottomLayerTestpoints=True|AssyReportTopLayerTestpoints=True|AssyUnits=Imperial|Record=TestPointView|DocumentPath=C:\Users\BramBremerInspiro\Documents\Git\FlexBMS\Hardware\Master\Master.PcbDoc
 OutputType2=Wire Bonding Table
 OutputName2=Wire Bonding Table Report
 OutputDocumentPath2=
