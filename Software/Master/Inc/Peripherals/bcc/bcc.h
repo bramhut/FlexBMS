@@ -516,8 +516,10 @@ public:
      * @brief This function reads the fault status registers of the BCC device. Will clear the fault status registers.
      *
      * @param allFaults Pointer to the array where the fault status will be stored. Will bitwise-OR all fault status registers with allFaults.
+     *
+     * @return bcc_status_t Error code.
      */
-    void fault_GetStatus(uint16_t *const allFaults);
+    bcc_status_t fault_GetStatus(uint16_t *const allFaults);
 
     /*!
      * @brief This function clears selected fault status register.

@@ -1419,8 +1419,10 @@ void BCC::applyFaultMasks(uint16_t *faultValues)
  * @brief This function reads the fault status registers of the BCC device. Will clear the fault status registers.
  *
  * @param allFaults Pointer to the array where the fault status will be stored. Will bitwise-OR all fault status registers with allFaults.
+ *
+ * @return bcc_status_t Error code.
  */
-void BCC::fault_GetStatus(uint16_t *const allFaults)
+bcc_status_t BCC::fault_GetStatus(uint16_t *const allFaults)
 {
     bcc_status_t status;
 
@@ -1430,28 +1432,28 @@ void BCC::fault_GetStatus(uint16_t *const allFaults)
     status = regRead(MC33771C_CELL_OV_FLT_OFFSET, 2U, &mFaultStatusRegisters[BCC_FS_CELL_OV]);
     if (status != BCC_STATUS_SUCCESS)
     {
-        return;
+        return status;
     }
 
     /* Read CB_OPEN_FLT, CB_SHORT_FLT. */
     status = regRead(MC33771C_CB_OPEN_FLT_OFFSET, 2U, &mFaultStatusRegisters[BCC_FS_CB_OPEN]);
     if (status != BCC_STATUS_SUCCESS)
     {
-        return;
+        return status;
     }
 
     /* Read AN_OT_UT_FLT, GPIO_SHORT_Anx_OPEN_STS. */
     status = regRead(MC33771C_AN_OT_UT_FLT_OFFSET, 2U, &mFaultStatusRegisters[BCC_FS_AN_OT_UT]);
     if (status != BCC_STATUS_SUCCESS)
     {
-        return;
+        return status;
     }
     uint16_t currentCommErrors = mFaultStatusRegisters[BCC_FS_COMM];
     /* Read COM_STATUS, FAULT1_STATUS, FAULT2_STATUS and FAULT3_STATUS. */
     status = regRead(MC33771C_COM_STATUS_OFFSET, 4U, &mFaultStatusRegisters[BCC_FS_COMM]);
     if (status != BCC_STATUS_SUCCESS)
     {
-        return;
+        return status;
     }
 
     // Be carefull! Apply the fault mask will modify the data in combinedFaults, if you want to log these register. Do this before applying this mask or adapt the mask
@@ -1493,6 +1495,8 @@ void BCC::fault_GetStatus(uint16_t *const allFaults)
             }
         }
     }
+
+    return BCC_STATUS_SUCCESS;
 }
 
 /*!

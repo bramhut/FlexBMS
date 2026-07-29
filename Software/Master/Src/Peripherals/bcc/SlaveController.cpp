@@ -38,6 +38,19 @@ namespace SlaveController
 {
     namespace
     {
+        constexpr uint16_t faultMask(BMSFault fault)
+        {
+            return static_cast<uint16_t>(1U << static_cast<uint16_t>(fault));
+        }
+
+        constexpr uint16_t BOOT_ONLY_FAULT_MASK =
+            faultMask(INVALID_CONFIG) |
+            faultMask(TPL_FAULT);
+
+        constexpr uint16_t RETRYABLE_INITIALIZATION_FAULT_MASK =
+            faultMask(CID_INITIALIZATION_FAULT) |
+            faultMask(REGISTER_INITIALIZATION_FAULT) |
+            faultMask(DIAGNOSTICS_FAULT);
 
         /*******************************************************************************
             FreeRTOS Task stuff
@@ -55,8 +68,11 @@ namespace SlaveController
 
         CAN *mCAN = nullptr; /* Pointer to the CAN instance */
 
-        uint16_t mFaults = 0;      // Current faults active
-        bool mClearFaults = false; // Clear all faults, if allowed
+        uint16_t activeFaults = 0;
+        uint16_t latchedFaults = 0;
+        uint16_t historicalFaults = 0;
+        volatile bool faultClearCommandPending = false;
+        bool faultClearValidationInProgress = false;
 
         BMSState currentState = DEVICE_INITIALIZATION; // Current state of the BMS
 
@@ -70,6 +86,7 @@ namespace SlaveController
         uint8_t currentMeasurementSlaveIdx = 0; // Index of the slave responsible for current measurement
 
         bool newDataAvailable = false; // Set to true when new data is available to be read
+        bool completeMeasurementSetValid = false;
 
         vector<uint16_t> ICtemperatures; // Vector of IC temperatures
         uint16_t minICtemperature = UINT16_MAX;
@@ -87,26 +104,50 @@ namespace SlaveController
         bool *registerRequestFlag = nullptr;
         RegisterReponse *registerResponse = nullptr;
 
-        uint32_t timeLastFaultEnabled = 0; // The time when the last fault has been enabled in [milliSeconds]
-
         /*******************************************************************************
          * Private functions
          ******************************************************************************/
 
+        uint16_t getBlockingFaults()
+        {
+            return activeFaults | latchedFaults;
+        }
+
+        bool measurementsAreFresh()
+        {
+            if (!completeMeasurementSetValid)
+            {
+                return false;
+            }
+
+            for (auto &slave : mSlaves)
+            {
+                if ((millis() - slave.getTimeReceivedLastMeasurement()) > settings.SAFETY_LIMITS.COMMUNICATION_TIMEOUT)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         void handleRelay()
         {
-            
             bool relayState = currentState == RUNNING &&
-                              mFaults == 0 &&
+                              getBlockingFaults() == 0 &&
+                              measurementsAreFresh() &&
                               PCC::getPCCState() != PCC::PCC_STATE::STARTUP &&
                               PCC::getPCCState() != PCC::PCC_STATE::ERROR;
-            
-            IO::setRelay(relayState);
 
+            IO::setRelay(relayState);
         }
 
         void setState(BMSState state)
         {
+            if (state != RUNNING)
+            {
+                completeMeasurementSetValid = false;
+                newDataAvailable = false;
+            }
             currentState = state;
             handleRelay();
             switch (state)
@@ -129,41 +170,35 @@ namespace SlaveController
             }
         }
 
-        bool isFaultEnabled(BMSFault fault)
+        void updateFault(BMSFault fault, bool active)
         {
-            return mFaults & (0x01 << fault);
-        }
+            const uint16_t mask = faultMask(fault);
+            const uint16_t previousActiveFaults = activeFaults;
+            const uint16_t previousBlockingFaults = getBlockingFaults();
 
-        void setFault(BMSFault fault, bool enable)
-        {
-            uint16_t lastFaults = mFaults;
-            if (enable)
+            if (active)
             {
-                // Enable fault
-                mFaults |= (0x01 << fault);
-                timeLastFaultEnabled = millis();
+                activeFaults |= mask;
+                latchedFaults |= mask;
+                historicalFaults |= mask;
             }
-            else if (millis() - timeLastFaultEnabled > settings.MINIMUM_FAULT_ACTIVE_TIME)
+            else
             {
-                // Check if companion has requested to clear all faults
-                // if (mClearFaults)
-                // {
-                //     mFaults = 0;
-                //     mClearFaults = false;
-                // }
-
-                // Check if diagnostic fault is enabled.
-                // Diagnostic faults should never be cleared.
-                if (!isFaultEnabled(DIAGNOSTICS_FAULT)) {
-                    
-                    mFaults = 0;
-                }
+                activeFaults &= static_cast<uint16_t>(~mask);
             }
 
-            // If the fault state changed, handle the relay
-            if (lastFaults != mFaults)
+            if (previousActiveFaults != activeFaults)
             {
-                PRINTF_INFO("[SC] Fault state changed, %s fault %u: %04X\n", enable ? "enabled" : "disabled", fault, mFaults);
+                PRINTF_INFO("[SC] Fault condition %s for fault %u: active=%04X latched=%04X history=%04X\n",
+                            active ? "active" : "inactive",
+                            fault,
+                            activeFaults,
+                            latchedFaults,
+                            historicalFaults);
+            }
+
+            if (previousBlockingFaults != getBlockingFaults())
+            {
                 handleRelay();
             }
         }
@@ -291,8 +326,10 @@ namespace SlaveController
             return true;
         };
 
-        void startMeasurements()
+        bool startMeasurements()
         {
+            bool success = true;
+
             // Pause CB for all slaves
             for (auto &slave : mSlaves)
             {
@@ -303,7 +340,10 @@ namespace SlaveController
             // to ensure that the LP filters have settled.
             delay(3);
 
-            BCC::meas_StartConversionGlobal();
+            if (BCC::meas_StartConversionGlobal() != BCC_STATUS_SUCCESS)
+            {
+                success = false;
+            }
 
             // Wait for the conversion to finish
             for (auto &slave : mSlaves)
@@ -311,7 +351,7 @@ namespace SlaveController
                 if (slave.meas_WaitOnConversion(BCC_ADC_AVG) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: wait on conversion\n", slave.getCID());
-                    continue;
+                    success = false;
                 }
             }
 
@@ -320,46 +360,62 @@ namespace SlaveController
             {
                 slave.CB_Pause(false);
             }
+
+            return success;
         };
 
-        void faultDetection()
+        bool faultDetection()
         {
             uint16_t combinedFaults[BCC_STAT_CNT] = {0};
+            bool faultStatusSuccessful = true;
             double iAvg;
             double ampHour;
             for (auto &slave : mSlaves)
             {
-                slave.fault_GetStatus(combinedFaults);
+                if (slave.fault_GetStatus(combinedFaults) != BCC_STATUS_SUCCESS)
+                {
+                    PRINTF_WARN("[SC] Slave (CID: %u) failed on: get fault status\n", slave.getCID());
+                    faultStatusSuccessful = false;
+                }
 
                 // if (slave.currentSenseEnabled())
                 // {
                 //     slave.meas_GetAmpHourAndIAvg(settings.SHUNT_RESISTANCE, settings.INVERT_CURRENT, &ampHour, &iAvg);
-                //     setFault(OVERCURRENT_LIMIT, iAvg < -settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT || iAvg > settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT);
+                //     updateFault(OVERCURRENT_LIMIT, iAvg < -settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT || iAvg > settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT);
                 // }
 
                 // TODO Log all fault registers in FLASH or something
             }
 
             double current = IO::getCurrent();
-            setFault(OVERCURRENT_LIMIT,  current < -settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT || current > settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT);
+            updateFault(OVERCURRENT_LIMIT, current < -settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT || current > settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT);
 
-            setFault(OVERVOLTAGE_LIMIT, combinedFaults[BCC_FS_CELL_OV] != 0);
-            setFault(UNDERVOLTAGE_LIMIT, combinedFaults[BCC_FS_CELL_UV] != 0);
-            setFault(TEMPERATURE_LIMIT, combinedFaults[BCC_FS_AN_OT_UT] != 0);
-            setFault(OPEN_SHORT_FAULT, combinedFaults[BCC_FS_CB_OPEN] != 0 || combinedFaults[BCC_FS_CB_SHORT] != 0 || combinedFaults[BCC_FS_GPIO_SHORT]);
-            setFault(IC_TEMPERATURE, (combinedFaults[BCC_FS_FAULT2] & MC33771C_FAULT2_STATUS_IC_TSD_FLT_MASK) != 0);
-            setFault(SYSTEM_FAULT, combinedFaults[BCC_FS_FAULT1] != 0 || combinedFaults[BCC_FS_FAULT2] != 0 || combinedFaults[BCC_FS_FAULT3] != 0);
+            if (!faultStatusSuccessful)
+            {
+                return false;
+            }
+
+            updateFault(OVERVOLTAGE_LIMIT, combinedFaults[BCC_FS_CELL_OV] != 0);
+            updateFault(UNDERVOLTAGE_LIMIT, combinedFaults[BCC_FS_CELL_UV] != 0);
+            updateFault(TEMPERATURE_LIMIT, combinedFaults[BCC_FS_AN_OT_UT] != 0);
+            updateFault(OPEN_SHORT_FAULT, combinedFaults[BCC_FS_CB_OPEN] != 0 || combinedFaults[BCC_FS_CB_SHORT] != 0 || combinedFaults[BCC_FS_GPIO_SHORT]);
+            updateFault(IC_TEMPERATURE, (combinedFaults[BCC_FS_FAULT2] & MC33771C_FAULT2_STATUS_IC_TSD_FLT_MASK) != 0);
+            updateFault(SYSTEM_FAULT, combinedFaults[BCC_FS_FAULT1] != 0 || combinedFaults[BCC_FS_FAULT2] != 0 || combinedFaults[BCC_FS_FAULT3] != 0);
+            return true;
         };
 
-        void getMeasurements()
+        bool getMeasurements(bool forceRead = false)
         {
             bcc_status_t status;
             static uint32_t loopCount = 0;
+
             // Only fetch measurements every x loops
-            if ((loopCount++ % settings.BMS_MEASUREMENT_PERIOD_FACTOR) != 0)
+            if (!forceRead && (loopCount++ % settings.BMS_MEASUREMENT_PERIOD_FACTOR) != 0)
             {
-                return;
+                return completeMeasurementSetValid;
             }
+
+            bool success = true;
 
             // PRINTF_INFO("[SC] Fetching measurements\n");
             for (auto &slave : mSlaves)
@@ -368,7 +424,7 @@ namespace SlaveController
                 if ((status = slave.meas_GetRawValues()) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get raw values\n", slave.getCID());
-                    continue;
+                    success = false;
                 }
             }
 
@@ -388,6 +444,7 @@ namespace SlaveController
                 if (mSlaves[i].meas_GetCellVoltages(cellVoltages[i]) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get cell voltages\n", mSlaves[i].getCID());
+                    success = false;
                     continue;
                 }
 
@@ -395,6 +452,7 @@ namespace SlaveController
                 if (mSlaves[i].meas_GetNTCTemperatures(NTCtemperatures[i], settings.NTC_RESISTANCE, settings.NTC_BETA) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get NTC temperatures\n", mSlaves[i].getCID());
+                    success = false;
                     continue;
                 }
 
@@ -402,6 +460,7 @@ namespace SlaveController
                 if (mSlaves[i].meas_GetIcTemperature(&ICtemperatures[i]) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get IC temperature\n", mSlaves[i].getCID());
+                    success = false;
                     continue;
                 }
 
@@ -444,7 +503,7 @@ namespace SlaveController
             }
 
             // Update the SoC if necessary
-            if (settings.AUTO_CALIBRATE_SOC)
+            if (success && settings.AUTO_CALIBRATE_SOC)
             {
                 // If the pack voltage is above the threshold, set the SoC to 100%
                 const uint32_t calibrateVoltage = settings.AUTO_CALIBRATE_SOC_THRESHOLD * settings.SAFETY_LIMITS.OVERVOLTAGE_LIMIT * getCellCount() * 1'000'000U;
@@ -454,38 +513,31 @@ namespace SlaveController
                 }
             }
 
-            // Set the newDataAvailable flag to true
-            newDataAvailable = true;
+            completeMeasurementSetValid = success;
+            newDataAvailable = success;
+            return success;
         }
 
-        void doCommunicationCheck()
+        void doCommunicationCheck(bool faultStatusSuccessful)
         {
-            for (auto &slave : mSlaves)
-            {
-                // Check if the BCC has a communication timeout
-                if ((millis() - slave.getTimeReceivedLastMeasurement()) > settings.SAFETY_LIMITS.COMMUNICATION_TIMEOUT)
-                {
-                    // If there is a communication timeout, set the fault and return
-                    setFault(COMMUNICATION_TIMEOUT, true);
-                    return;
-                }
-            }
-            // Clear the fault if no BCC has a communication timeout
-            setFault(COMMUNICATION_TIMEOUT, false);
+            bool communicationFault = !measurementsAreFresh() || !faultStatusSuccessful;
 
-            // CID presence check
-            if (!allCIDsPresence())
+            if (!communicationFault && !allCIDsPresence())
             {
-                // We lost communication with one of our slaves, go back to DEVICE_INITIALIZATION
-                setState(DEVICE_INITIALIZATION);
-                return;
+                communicationFault = true;
             }
+
+            updateFault(COMMUNICATION_TIMEOUT, communicationFault);
         }
 
         // Checks based on the current active faults if cell balancing is allowed
         bool isBalancingAllowed()
         {
-            return ((mFaults & ~(1U << (uint16_t)OVERVOLTAGE_LIMIT)) & ~(1U << (uint16_t)SOC_LIMIT)) == 0;
+            const uint16_t balancingAllowedFaults =
+                getBlockingFaults() &
+                static_cast<uint16_t>(~faultMask(OVERVOLTAGE_LIMIT)) &
+                static_cast<uint16_t>(~faultMask(SOC_LIMIT));
+            return balancingAllowedFaults == 0;
         }
 
         void performCellBalancing()
@@ -610,9 +662,13 @@ namespace SlaveController
         {
             // PRINTF_ERR("[SC] Running loop in state: %d\n", (currentState));
             // ADC conversions
-            startMeasurements();
-
-            getMeasurements();
+            const bool conversionSuccessful = startMeasurements();
+            const bool measurementsSuccessful = getMeasurements();
+            completeMeasurementSetValid = conversionSuccessful && measurementsSuccessful;
+            if (!completeMeasurementSetValid)
+            {
+                newDataAvailable = false;
+            }
 
             // Cell balancing
             // performCellBalancing();
@@ -620,9 +676,9 @@ namespace SlaveController
             // Handle register requests from Companion
             handleRegisterRequests();
 
-            faultDetection();
+            const bool faultStatusSuccessful = faultDetection();
 
-            doCommunicationCheck();
+            doCommunicationCheck(faultStatusSuccessful);
             handleRelay();
         }
 
@@ -671,7 +727,8 @@ namespace SlaveController
                            (uint32_t)status);
                 if (failureCount >= CID_INITIALIZATION_MAX_FAILURES)
                 {
-                    setFault(CID_INITIALIZATION_FAULT, true);
+                    updateFault(CID_INITIALIZATION_FAULT, true);
+                    faultClearValidationInProgress = false;
                     setState(PANIC);
                 }
                 return false;
@@ -702,7 +759,8 @@ namespace SlaveController
                                (uint32_t)status);
                     if (failureCount >= CID_INITIALIZATION_MAX_FAILURES)
                     {
-                        setFault(CID_INITIALIZATION_FAULT, true);
+                        updateFault(CID_INITIALIZATION_FAULT, true);
+                        faultClearValidationInProgress = false;
                         setState(PANIC);
                     }
                     return false;
@@ -710,6 +768,7 @@ namespace SlaveController
                 cidInitializationFailureCounts[i] = 0U;
             }
 
+            updateFault(CID_INITIALIZATION_FAULT, false);
             return true;
         }
 
@@ -763,7 +822,8 @@ namespace SlaveController
                 frame.length = 8;
                 frame.data64 = 0;                         // Clear the data
                 frame.data[0] = getState();               // Byte 0
-                memcpy(frame.data + 1, &mFaults, 2);      // Byte 1-2
+                const uint16_t blockingFaults = getBlockingFaults();
+                memcpy(frame.data + 1, &blockingFaults, 2); // Byte 1-2
                 frame.data[3] = BCC::getCANstateGlobal(); // (Part of) Byte 3
                 for (size_t i = 1; i < 20; i++)           // Bytes 3-7
                 {
@@ -780,6 +840,42 @@ namespace SlaveController
             loopCount++;
         }
 
+        void processFaultClearCommand()
+        {
+            if (!faultClearCommandPending)
+            {
+                return;
+            }
+
+            faultClearCommandPending = false;
+            const uint16_t blockingFaults = getBlockingFaults();
+
+            if (blockingFaults == 0U)
+            {
+                PRINTF_INFO("[SC] Fault clear ignored: no faults are latched\n");
+                return;
+            }
+
+            if ((blockingFaults & BOOT_ONLY_FAULT_MASK) != 0U)
+            {
+                PRINTF_ERR("[SC] Fault clear rejected: configuration and initial TPL faults require a reboot\n");
+                return;
+            }
+
+            const uint16_t activeRuntimeFaults =
+                activeFaults & static_cast<uint16_t>(~RETRYABLE_INITIALIZATION_FAULT_MASK);
+            if (activeRuntimeFaults != 0U)
+            {
+                PRINTF_ERR("[SC] Fault clear rejected: active fault conditions remain: %04X\n", activeRuntimeFaults);
+                return;
+            }
+
+            faultClearValidationInProgress = true;
+            cidInitializationFailureCounts.assign(mSlaves.size(), 0U);
+            PRINTF_INFO("[SC] Fault clear accepted: restarting BMS validation\n");
+            setState(DEVICE_INITIALIZATION);
+        }
+
         /**
          * @brief freeRTOS task for SlaveController
          */
@@ -788,6 +884,8 @@ namespace SlaveController
             uint32_t startTick = osKernelGetTickCount(); // Keep track of the time since the task started
             while (true)
             {
+                processFaultClearCommand();
+
                 if (currentState == DEVICE_INITIALIZATION)
                 {
                     // 1. Daisy chain / CID initialization
@@ -811,11 +909,13 @@ namespace SlaveController
                     // 2. Register initialization
                     if (!initializeRegisters())
                     {
-                        setFault(REGISTER_INITIALIZATION_FAULT, true);
+                        updateFault(REGISTER_INITIALIZATION_FAULT, true);
+                        faultClearValidationInProgress = false;
                         setState(PANIC);
                     }
                     else
                     {
+                        updateFault(REGISTER_INITIALIZATION_FAULT, false);
                         setState(PERFORMING_DIAGNOSTICS);
                     }
                 }
@@ -823,11 +923,42 @@ namespace SlaveController
                 if (currentState == PERFORMING_DIAGNOSTICS)
                 {
                     // 5. Diagnostics
-                    if (!diagnostics())
+                    const bool diagnosticsSuccessful = diagnostics();
+                    updateFault(DIAGNOSTICS_FAULT, !diagnosticsSuccessful);
+                    if (!diagnosticsSuccessful)
                     {
-                        setFault(DIAGNOSTICS_FAULT, true);
+                        faultClearValidationInProgress = false;
+                        setState(PANIC);
                     }
-                    setState(RUNNING);
+                    else
+                    {
+                        const bool conversionSuccessful = startMeasurements();
+                        const bool measurementsSuccessful = conversionSuccessful && getMeasurements(true);
+                        completeMeasurementSetValid = conversionSuccessful && measurementsSuccessful;
+
+                        bool faultStatusSuccessful = false;
+                        if (measurementsSuccessful)
+                        {
+                            faultStatusSuccessful = faultDetection();
+                        }
+                        doCommunicationCheck(faultStatusSuccessful);
+
+                        if (faultClearValidationInProgress)
+                        {
+                            if (activeFaults == 0U)
+                            {
+                                latchedFaults = 0U;
+                                PRINTF_INFO("[SC] Fault clear completed successfully\n");
+                            }
+                            else
+                            {
+                                PRINTF_ERR("[SC] Fault clear validation failed: active=%04X\n", activeFaults);
+                            }
+                            faultClearValidationInProgress = false;
+                        }
+
+                        setState(RUNNING);
+                    }
                 }
 
                 if (currentState == RUNNING)
@@ -934,7 +1065,7 @@ namespace SlaveController
 
         if (!loadConfig())
         {
-            setFault(INVALID_CONFIG, true);
+            updateFault(INVALID_CONFIG, true);
             setState(PANIC);
         }
 
@@ -943,7 +1074,7 @@ namespace SlaveController
         if (BCC_Communication::TPL_Enable() != BCC_STATUS_SUCCESS)
         {
             // TODO this: reportBCCError(status, 0);
-            setFault(TPL_FAULT, true);
+            updateFault(TPL_FAULT, true);
             setState(PANIC);
         }
 
@@ -977,12 +1108,27 @@ namespace SlaveController
 
     void clearFaults()
     {
-        mClearFaults = true;
+        faultClearCommandPending = true;
     }
 
     uint16_t getFaults()
     {
-        return mFaults;
+        return getBlockingFaults();
+    }
+
+    uint16_t getActiveFaults()
+    {
+        return activeFaults;
+    }
+
+    uint16_t getLatchedFaults()
+    {
+        return latchedFaults;
+    }
+
+    uint16_t getHistoricalFaults()
+    {
+        return historicalFaults;
     }
 
     BMSState getState()
@@ -1072,7 +1218,9 @@ namespace SlaveController
     bool isChargingAllowed()
     {
         // Charging is always allowed if there are no faults and we are in the running state (RELAY closed)
-        return currentState == RUNNING && mFaults == 0;
+        return currentState == RUNNING &&
+               getBlockingFaults() == 0 &&
+               measurementsAreFresh();
     }
 
     const vector<vector<uint16_t>> &getNTCtemps()

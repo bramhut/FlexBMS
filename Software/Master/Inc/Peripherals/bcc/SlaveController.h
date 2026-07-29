@@ -75,6 +75,21 @@ namespace SlaveController
     uint16_t getFaults();
 
     /*!
+     * @brief Get faults whose condition is currently present
+     */
+    uint16_t getActiveFaults();
+
+    /*!
+     * @brief Get faults latched since the last successful clear
+     */
+    uint16_t getLatchedFaults();
+
+    /*!
+     * @brief Get all faults observed since boot
+     */
+    uint16_t getHistoricalFaults();
+
+    /*!
      * @brief Clear the current faults if allowed
      */
     void clearFaults();
