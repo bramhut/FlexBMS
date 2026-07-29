@@ -17,10 +17,8 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-
 /* USER CODE BEGIN Includes */
 
 /* USER CODE END Includes */
@@ -63,6 +61,7 @@
   */
 void HAL_MspInit(void)
 {
+
   /* USER CODE BEGIN MspInit 0 */
 
   /* USER CODE END MspInit 0 */
@@ -78,20 +77,24 @@ void HAL_MspInit(void)
   /** PVD Configuration
   */
   sConfigPVD.PVDLevel = PWR_PVDLEVEL_6;
-  sConfigPVD.Mode = PWR_PVD_MODE_EVENT_FALLING;
+  sConfigPVD.Mode = PWR_PVD_MODE_NORMAL;
   HAL_PWR_ConfigPVD(&sConfigPVD);
 
   /** Enable the PVD Output
   */
   HAL_PWR_EnablePVD();
 
-  /** Disable the Internal Voltage Reference buffer
+  /** Configure the internal voltage reference buffer voltage scale
   */
-  HAL_SYSCFG_DisableVREFBUF();
+  HAL_SYSCFG_VREFBUF_VoltageScalingConfig(SYSCFG_VREFBUF_VOLTAGE_SCALE1);
 
   /** Configure the internal voltage reference buffer high impedance mode
   */
-  HAL_SYSCFG_VREFBUF_HighImpedanceConfig(SYSCFG_VREFBUF_HIGH_IMPEDANCE_ENABLE);
+  HAL_SYSCFG_VREFBUF_HighImpedanceConfig(SYSCFG_VREFBUF_HIGH_IMPEDANCE_DISABLE);
+
+  /** Enable the Internal Voltage Reference buffer
+  */
+  HAL_SYSCFG_EnableVREFBUF();
 
   /** Disable the internal Pull-Up in Dead Battery pins of UCPD peripheral
   */
