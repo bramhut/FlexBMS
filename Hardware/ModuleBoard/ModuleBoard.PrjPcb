@@ -84,23 +84,6 @@ GenerateClassCluster=0
 DocumentUniqueId=JPZFTCXJ
 
 [Document3]
-DocumentPath=Module Board - OLD.PcbDoc
-AnnotationEnabled=1
-AnnotateStartValue=1
-AnnotationIndexControlEnabled=0
-AnnotateSuffix=
-AnnotateScope=All
-AnnotateOrder=-1
-DoLibraryUpdate=1
-DoDatabaseUpdate=1
-ClassGenCCAutoEnabled=1
-ClassGenCCAutoRoomEnabled=0
-ClassGenNCAutoScope=None
-DItemRevisionGUID=
-GenerateClassCluster=0
-DocumentUniqueId=UIBFWFTL
-
-[Document4]
 DocumentPath=Module Board.PCBDwf
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -117,7 +100,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=FMRLUMJB
 
-[Document5]
+[Document4]
 DocumentPath=..\FlexBMS_lib.pcblib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -134,7 +117,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=VOAMJBYL
 
-[Document6]
+[Document5]
 DocumentPath=..\FlexBMS_lib.schlib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -151,7 +134,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=BVJHZAPJ
 
-[Document7]
+[Document6]
 DocumentPath=BalancingNetwork.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -168,7 +151,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=GKUSCSOO
 
-[Document8]
+[Document7]
 DocumentPath=Module Board.PcbDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -185,7 +168,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=YMNBHNBP
 
-[Document9]
+[Document8]
 DocumentPath=JLCPCB_OutJob.OutJob
 AnnotationEnabled=1
 AnnotateStartValue=1

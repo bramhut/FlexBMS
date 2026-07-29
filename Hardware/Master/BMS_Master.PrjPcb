@@ -237,23 +237,6 @@ GenerateClassCluster=0
 DocumentUniqueId=LMLCUAWF
 
 [Document12]
-DocumentPath=Master - OLD.PcbDoc
-AnnotationEnabled=1
-AnnotateStartValue=1
-AnnotationIndexControlEnabled=0
-AnnotateSuffix=
-AnnotateScope=All
-AnnotateOrder=-1
-DoLibraryUpdate=1
-DoDatabaseUpdate=1
-ClassGenCCAutoEnabled=1
-ClassGenCCAutoRoomEnabled=0
-ClassGenNCAutoScope=None
-DItemRevisionGUID=
-GenerateClassCluster=0
-DocumentUniqueId=WJQXEVFR
-
-[Document13]
 DocumentPath=Peripherals.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -270,7 +253,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document14]
+[Document13]
 DocumentPath=Master.PCBDwf
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -287,7 +270,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=KQPNRRPD
 
-[Document15]
+[Document14]
 DocumentPath=..\FlexBMS_lib.pcblib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -304,7 +287,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=VOAMJBYL
 
-[Document16]
+[Document15]
 DocumentPath=..\FlexBMS_lib.schlib
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -321,7 +304,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=BVJHZAPJ
 
-[Document17]
+[Document16]
 DocumentPath=HVsense.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -338,7 +321,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=NLTQSALF
 
-[Document18]
+[Document17]
 DocumentPath=HVsense.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -355,7 +338,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document19]
+[Document18]
 DocumentPath=ESP32.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -372,7 +355,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=UNNPPULQ
 
-[Document20]
+[Document19]
 DocumentPath=ESP32.Harness
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -389,7 +372,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=
 
-[Document21]
+[Document20]
 DocumentPath=RelayDriver.SchDoc
 AnnotationEnabled=1
 AnnotateStartValue=1
@@ -406,7 +389,7 @@ DItemRevisionGUID=
 GenerateClassCluster=0
 DocumentUniqueId=PJHNGOFT
 
-[Document22]
+[Document21]
 DocumentPath=JLCPCB_OutJob.OutJob
 AnnotationEnabled=1
 AnnotateStartValue=1
