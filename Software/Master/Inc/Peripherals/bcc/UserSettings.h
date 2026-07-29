@@ -46,6 +46,8 @@ struct UserSettings_t
     // Timing
     uint32_t BMS_MAIN_LOOP_PERIOD;          // [ms] The minimum time that the main SlaveController loop takes.
     uint32_t BMS_MEASUREMENT_PERIOD_FACTOR; // Determines how many x loops the measurements are fetched.
+    uint32_t TPL_TX_TIMEOUT_MS;
+    uint32_t TPL_RX_TIMEOUT_MS;
     uint32_t CAN_MEASUREMENT_MSG_PERIOD_FACTOR;
     uint32_t CAN_BMS_STATE_MSG_PERIOD_FACTOR;
     uint32_t MINIMUM_FAULT_ACTIVE_TIME; // [ms] The minimum time that a fault is active in milliseconds
@@ -91,6 +93,8 @@ const UserSettings_t DEFAULT_SETTINGS = {
     // Timing
     .BMS_MAIN_LOOP_PERIOD = 50,
     .BMS_MEASUREMENT_PERIOD_FACTOR = 5,
+    .TPL_TX_TIMEOUT_MS = 1,
+    .TPL_RX_TIMEOUT_MS = 10,
     .CAN_MEASUREMENT_MSG_PERIOD_FACTOR = 5,
     .CAN_BMS_STATE_MSG_PERIOD_FACTOR = 5,
     .MINIMUM_FAULT_ACTIVE_TIME = 2000,

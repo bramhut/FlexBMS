@@ -10,10 +10,13 @@
 
 namespace BCC_Communication
 {
-     /*!
-     * @brief This function intializes the SPI busses
+    /*!
+     * @brief This function initializes the SPI buses and communication timeouts.
+     *
+     * @param txTimeoutMs TX timeout in milliseconds.
+     * @param rxTimeoutMs RX timeout in milliseconds.
      */
-    void setup();
+    void setup(uint32_t txTimeoutMs, uint32_t rxTimeoutMs);
 
 
     /**

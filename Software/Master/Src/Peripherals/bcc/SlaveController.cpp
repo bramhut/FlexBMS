@@ -32,6 +32,7 @@ using std::vector;
 /*! @brief Time after VPWR connection for the IC to be ready for initialization
  *  (t_VPWR(READY), max.) in [ms]. */
 #define BCC_T_VPWR_READY_MS 5U
+#define CID_INITIALIZATION_MAX_FAILURES 3U
 
 namespace SlaveController
 {
@@ -60,6 +61,7 @@ namespace SlaveController
         BMSState currentState = DEVICE_INITIALIZATION; // Current state of the BMS
 
         static vector<BCC> mSlaves; /* Array of BCC devices */
+        vector<uint8_t> cidInitializationFailureCounts;
 
         UserSettings_t settings;
 
@@ -661,9 +663,20 @@ namespace SlaveController
 
             if (status != BCC_STATUS_SUCCESS)
             {
-                PRINTF_ERR("Failed to assign CID to the first device, status code: %lu\n", (uint32_t)status);
+                uint8_t &failureCount = cidInitializationFailureCounts[0];
+                failureCount++;
+                PRINTF_ERR("Failed to assign CID 1 (%u/%u), status code: %lu\n",
+                           failureCount,
+                           CID_INITIALIZATION_MAX_FAILURES,
+                           (uint32_t)status);
+                if (failureCount >= CID_INITIALIZATION_MAX_FAILURES)
+                {
+                    setFault(CID_INITIALIZATION_FAULT, true);
+                    setState(PANIC);
+                }
                 return false;
             }
+            cidInitializationFailureCounts[0] = 0U;
 
             /* Init the rest of devices. */
             for (uint8_t i = 1; i < mSlaves.size(); i++)
@@ -680,8 +693,21 @@ namespace SlaveController
                 status = mSlaves[i].assignCid(mSlaves.size());
                 if (status != BCC_STATUS_SUCCESS)
                 {
+                    uint8_t &failureCount = cidInitializationFailureCounts[i];
+                    failureCount++;
+                    PRINTF_ERR("Failed to assign CID %u (%u/%u), status code: %lu\n",
+                               mSlaves[i].getCID(),
+                               failureCount,
+                               CID_INITIALIZATION_MAX_FAILURES,
+                               (uint32_t)status);
+                    if (failureCount >= CID_INITIALIZATION_MAX_FAILURES)
+                    {
+                        setFault(CID_INITIALIZATION_FAULT, true);
+                        setState(PANIC);
+                    }
                     return false;
                 }
+                cidInitializationFailureCounts[i] = 0U;
             }
 
             return true;
@@ -767,15 +793,14 @@ namespace SlaveController
                     // 1. Daisy chain / CID initialization
                     if (!InitDevices())
                     {
-                        setFault(CID_INITIALIZATION_FAULT, true);
-
-                        // Don't change the state here to make sure we keep trying to initialize devices
-                        // Delay a little bit so we don't spam it
-                        delay(2000);
+                        if (currentState != PANIC)
+                        {
+                            // Retry the complete chain after a short delay.
+                            delay(2000);
+                        }
                     }
                     else
                     {
-                        setFault(CID_INITIALIZATION_FAULT, false);
                         setState(REGISTER_INITIALIZATION);
                     }
                 }
@@ -891,6 +916,7 @@ namespace SlaveController
                     return false;
                 }
             }
+            cidInitializationFailureCounts.assign(mSlaves.size(), 0U);
             return true;
         }
     }
@@ -912,7 +938,7 @@ namespace SlaveController
             setState(PANIC);
         }
 
-        BCC_Communication::setup();
+        BCC_Communication::setup(settings.TPL_TX_TIMEOUT_MS, settings.TPL_RX_TIMEOUT_MS);
 
         if (BCC_Communication::TPL_Enable() != BCC_STATUS_SUCCESS)
         {

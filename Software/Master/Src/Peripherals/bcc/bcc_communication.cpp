@@ -20,12 +20,6 @@
  * Definitions
  ******************************************************************************/
 
-/*! @brief Timeout for TX communication in milliseconds. */
-#define BCC_TX_COM_TIMEOUT_MS 1U
-
-/*! @brief Timeout for RX communication in milliseconds. */
-#define BCC_RX_COM_TIMEOUT_MS 1U
-
 /*! @brief Size of CRC table. */
 #define BCC_CRC_TBL_SIZE 256U
 
@@ -100,6 +94,8 @@ namespace BCC_Communication
         SPI mSpiRX(&BCC_RX_HSPI, SPI::SLAVE_RX);
 
         uint8_t mRxBuf[BCC_RX_BUF_SIZE_TPL]; /* Buffer for received data. */
+        uint32_t mTxTimeoutMs = 1U;
+        uint32_t mRxTimeoutMs = 1U;
     }
 
     /*******************************************************************************
@@ -112,8 +108,14 @@ namespace BCC_Communication
      * Description   : Setup the SPI communication.
      *
      *END**************************************************************************/
-    void setup()
+    void setup(uint32_t txTimeoutMs, uint32_t rxTimeoutMs)
     {
+        BCC_MCU_Assert(txTimeoutMs > 0U);
+        BCC_MCU_Assert(rxTimeoutMs > 0U);
+
+        mTxTimeoutMs = txTimeoutMs;
+        mRxTimeoutMs = rxTimeoutMs;
+
         mSpiTX.setup();
         mSpiRX.setup();
     }
@@ -242,7 +244,7 @@ namespace BCC_Communication
         }
 
         // Send data to transceiver
-        if (!mSpiTX.transmit(txBuf, 6, BCC_TX_COM_TIMEOUT_MS))
+        if (!mSpiTX.transmit(txBuf, 6, mTxTimeoutMs))
         {
             PRINTF_WARN("[BCC_COMM] TX timeout\n");
             mSpiRX.abort();
@@ -252,7 +254,7 @@ namespace BCC_Communication
         }
 
         // Wait for data to be available in the RX buffer
-        int32_t rxTimeout = BCC_RX_COM_TIMEOUT_MS * 1000;
+        int32_t rxTimeout = static_cast<int32_t>(mRxTimeoutMs * 1000U);
         while (!mSpiRX.getRxDataAvailable())
         {
             BCC_MCU_WaitUs(10);
