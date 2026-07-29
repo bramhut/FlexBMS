@@ -1376,10 +1376,12 @@ bcc_status_t BCC::meas_GetNTCTemperatures(vector<uint16_t> &temperatures, double
         return status;
     }
 
-    // Only convert the connected NTC's, assuming that NTC's are connected from GPIO0 to NTCCount
-    for (uint8_t i = 0; i < getNTCCount(); i++)
+    // meas_GetAnVoltages exposes GPIO0 at index 0 even though the device
+    // measurement registers are ordered from AN6 down to AN0.
+    // Convert the connected NTCs in ascending GPIO order: GPIO0..GPIO(NTCCount - 1).
+    for (uint8_t gpio = 0; gpio < getNTCCount(); gpio++)
     {
-        temperatures[i] = BCC_VOLT_TO_TEMPRAW(ntcVolt[i], NTCresistance, NTCBeta);
+        temperatures[gpio] = BCC_VOLT_TO_TEMPRAW(ntcVolt[gpio], NTCresistance, NTCBeta);
     }
 
     return BCC_STATUS_SUCCESS;
