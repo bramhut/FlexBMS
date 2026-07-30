@@ -102,7 +102,7 @@
     align: (left, left),
     stroke: none,
     inset: (x: 5pt, y: 4pt),
-    [*Document date*], [29 July 2026],
+    [*Document date*], [30 July 2026],
     [*System*], [96s LiFePO4 home BESS],
     [*Nominal capacity*], [314 Ah / approximately 96.5 kWh],
     [*Primary controller*], [STM32G491],
@@ -262,8 +262,17 @@ development and diagnostics, but does not provide the 12 V rail required to ener
 == High-voltage path
 
 The main contactor is located in the positive battery path. A separate precharge path limits inrush
-current before the contactor closes. The master measures both sides of the open contactor so that
-precharge progress and voltage plausibility can be evaluated.
+current before the contactor closes. The STM32 is the sole software owner of both drivers. It measures
+the battery and load sides through separate isolated AMC3330 channels, compares the battery-side result
+with the voltage reported by the cell-monitor chain, and observes both active-low diagnostic outputs.
+
+The contactor is pulled in at full drive and then held with 20 kHz PWM. Precharge remains closed during
+pull-in and opens only after the contactor drive is established. The hold duty is a firmware
+configuration value.
+
+Voltage feedback shows whether the two HV nodes are plausible and whether precharge has progressed. It
+does not prove the mechanical position of the contactor: the load-side voltage may remain present after
+opening because the inverter DC-link discharge behavior is not yet characterized.
 
 Pack-level protection also includes the main DC fuse and a manual DC isolation device. Exact component
 ratings, wiring, creepage, clearance, and protection coordination belong in the hardware design files and
@@ -302,14 +311,14 @@ The current battery profile is:
 
 - eight MC33771C devices with twelve cells each;
 - four NTC channels per controller on GPIO0 through GPIO3;
-- current sensing on CID 1 with a 375 µohm shunt value;
+- current sensing on CID 1 with a 375 micro-ohm shunt value;
 - positive current for charging and negative current for discharging;
 - 314 Ah nominal capacity; and
 - amp-hour retention in RTC backup registers while backup power is present.
 
-The firmware separates active fault conditions, acknowledged-required latches, and in-memory fault
-history. The contactor is permitted only in the normal running state, without blocking faults, and after
-fresh valid data has been received from the complete monitor chain.
+The firmware separates active fault conditions, acknowledgement-required latches, and in-memory fault
+history. The HV supervisor receives permission only while the BMS is running without blocking faults and
+holds one fresh, complete measurement set from the monitor chain.
 
 Runtime faults keep measurement and monitoring active while preventing relay closure. A clear request is
 accepted only after the underlying runtime condition has disappeared. The BMS then repeats its device,
@@ -317,12 +326,31 @@ register, diagnostic, and measurement validation before allowing the latch to cl
 
 The STM32 also hosts:
 
-- precharge and contactor coordination;
+- the dedicated HV supervisor;
 - board-level analog and digital I/O;
 - CAN communication;
 - USB serial communication;
-- the browser-based Companion service interface; and
-- external flash support.
+- and the browser-based Companion service interface.
+
+== HV supervisor
+
+#status("CURRENT")
+
+The HV supervisor follows `OFF -> SELF_TEST -> PRECHARGE -> CONTACTOR_CLOSE -> RUN`. It starts only on a
+new run-request edge. No current software component supplies that request, so the supervisor remains
+`OFF` by default.
+
+`SELF_TEST` checks BMS permission, measurement freshness, isolated-voltage diagnostics, agreement between
+the battery-side and cell-monitor voltages, an unenergized load side, and the available power source.
+`PRECHARGE` raises the load-side voltage and requires a stable voltage relationship before contactor
+pull-in. `CONTACTOR_CLOSE` transfers from the precharge path to contactor hold drive. `RUN` keeps
+monitoring the BMS permission and both HV measurements.
+
+A removed request, lost BMS permission, or implausible HV feedback disables both drivers. Shutdown and
+fault handling require the request to return to off before a new edge can start another sequence.
+
+USB-only operation supports service access but cannot request or energize the HV path. The fitted
+hardware pull-down defines the inactive USB-sense level; the STM32 does not enable an internal pull.
 
 #callout(
   [Source of truth],
@@ -400,8 +428,8 @@ commissioning and engineering tool rather than the permanent home-energy dashboa
 
 At start-up, the STM32 validates its configuration and initializes the complete TPL chain. It assigns
 each battery monitor a chain address, configures its registers, runs diagnostics, and obtains a fresh
-measurement set. Relay permission remains off until this sequence and the precharge conditions are
-satisfied.
+measurement set. Both HV outputs remain off. After BMS validation, the separate HV supervisor can run
+its self-test and precharge sequence only when a new run request is supplied.
 
 == Normal operation
 
@@ -415,6 +443,12 @@ A battery, measurement, or communication fault immediately removes relay permiss
 continues where possible so that the live condition can be observed. Faults remain latched until they are
 acknowledged through the supported service path and the BMS has successfully revalidated the battery
 chain.
+
+The BMS exposes the HV supervisor as one aggregate blocking fault while the supervisor retains separate
+active, latched, and historical HV reasons. The Companion clear command can clear an HV latch only with
+the run request off and the live HV conditions healthy. The BMS then repeats chain initialization,
+diagnostics, and a complete fault-checked measurement cycle before the latch is released. Historical
+reasons remain available until reboot.
 
 Configuration and initial TPL setup faults require a reboot. The ESP32, EMS, and Home Assistant cannot
 override a blocking STM32 fault.

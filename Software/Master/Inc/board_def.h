@@ -10,13 +10,13 @@
 /* Peripheral - ADC */
 
     // Number of ADC channels, 0 = disabled
-    #define ADC1_CHANNELS 4
-    #define ADC2_CHANNELS 1
+    #define ADC1_CHANNELS 5
+    #define ADC2_CHANNELS 0
     #define ADC3_CHANNELS 0
 
     // Define the channel for VREFINT. Start counting from channel 0, adc1
     // So if VREFINT is on channel 3, adc3: set to ADC1_CHANNELS + ADC2_CHANNELS + 3
-    #define ADC_VREFINT_IDX 2
+    #define ADC_VREFINT_IDX 3
 
 /* Peripheral - USB */
 

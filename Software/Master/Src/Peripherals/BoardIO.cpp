@@ -1,127 +1,152 @@
-// This file contains the peripheral IO definitions for the BMS Master board
-
 #include "BoardIO.h"
-#include "tim.h"
-#include "AIN.h"
-#include <algorithm>
-#include "TimeFunctions.h"
 
-#define DEBUG_LVL 0
+#include "adc.h"
+#include "main.h"
+#include "tim.h"
+
+#include <algorithm>
+
+#define DEBUG_LVL 2
 #include "Debug.h"
 
 namespace IO
 {
-	/* GLOBALS */
-	RGB_t _ledColor;
-	bool _ledState;
-	uint32_t lastPrintTime = 0;
+    namespace
+    {
+        constexpr size_t ADC_CHANNEL_COUNT = 5U;
+        constexpr size_t LOAD_VOLTAGE_INDEX = 0U;
+        constexpr size_t BATTERY_VOLTAGE_INDEX = 1U;
+        constexpr size_t VREFINT_INDEX = 3U;
+        constexpr double ADC_OVERSAMPLING_GAIN = 16.0;
+        constexpr double ADC_DIFFERENTIAL_SCALE = 2048.0 * ADC_OVERSAMPLING_GAIN;
+        constexpr double HV_DIVIDER_AND_GAIN = 801.0 / 2.0;
 
-	std::vector<std::function<void(bool state)>> _switchCallbacks;
+        alignas(4) volatile uint32_t adcValues[ADC_CHANNEL_COUNT] = {};
+        RGB_t ledColor{1.0, 1.0, 1.0};
+        bool ledState = false;
 
-	/* FUNCTIONS */
+        double getVdda()
+        {
+            const uint32_t vrefRaw = adcValues[VREFINT_INDEX];
+            if (vrefRaw == 0U)
+            {
+                return 0.0;
+            }
 
-	void setup()
-	{
-		setRelay(false);
-		setLED(false);
-		setLEDcolor(RGB_t{1, 1, 1});
-	}
+            return (static_cast<double>(VREFINT_CAL_VREF) / 1000.0) *
+                   static_cast<double>(*VREFINT_CAL_ADDR) *
+                   ADC_OVERSAMPLING_GAIN /
+                   static_cast<double>(vrefRaw);
+        }
 
-	void onSwitchChange(std::function<void(bool state)> callback)
-	{
-		_switchCallbacks.push_back(callback);
-	}
+        double getHVVoltage(size_t index)
+        {
+            const double vdda = getVdda();
+            const int16_t differentialRaw =
+                static_cast<int16_t>(adcValues[index] & 0xFFFFU);
+            const double adcDifferentialVoltage =
+                static_cast<double>(differentialRaw) * vdda /
+                ADC_DIFFERENTIAL_SCALE;
+            return std::max(0.0, adcDifferentialVoltage * HV_DIVIDER_AND_GAIN);
+        }
+    }
 
-	bool getSwitch()
-	{
-		return !READ_PIN(SW1_IN);
-	}
+    void setup()
+    {
+        setPrechargeRelay(false);
+        setContactorDutyPercent(0U);
+        setLED(false);
 
-	void _handleCallbacks(uint16_t GPIO_Pin)
-	{
-		if (GPIO_Pin == SW1_IN_Pin)
-		{
-			for (auto &callback : _switchCallbacks)
-			{
-				callback(getSwitch());
-			}
-		}
-	}
+        if (HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED) != HAL_OK ||
+            HAL_ADCEx_Calibration_Start(&hadc1, ADC_DIFFERENTIAL_ENDED) != HAL_OK ||
+            HAL_ADC_Start_DMA(
+                &hadc1,
+                const_cast<uint32_t *>(adcValues),
+                ADC_CHANNEL_COUNT) != HAL_OK)
+        {
+            PRINTF_ERR("[IO] ADC1 calibration or DMA startup failed\n");
+        }
+    }
 
-	void setLEDcolor(RGB_t color)
-	{
-		_ledColor = color;
-		setLED(_ledState);
-	}
+    void setLEDcolor(RGB_t color)
+    {
+        ledColor = color;
+        setLED(ledState);
+    }
 
-	void setLEDcolor(HSV_t color)
-	{
-		_ledColor = hsv2rgb(color);
-		setLED(_ledState);
-	}
+    void setLEDcolor(HSV_t color)
+    {
+        setLEDcolor(hsv2rgb(color));
+    }
 
-	void setLED(bool state)
-	{
-		_ledState = state;
-		auto color = _ledColor;
+    void setLED(bool state)
+    {
+        ledState = state;
+        const double red = state ? ledColor.r : 0.0;
+        __HAL_TIM_SET_COMPARE(
+            &htim1,
+            TIM_CHANNEL_1,
+            static_cast<uint32_t>(std::clamp(red, 0.0, 1.0) * 254.0));
 
-		TIM1->CCR1 = std::clamp<double>(color.r * 255, 0, 255);
-		TIM1->CCR2 = std::clamp<double>(color.g * 255, 0, 255);
-		TIM1->CCR3 = std::clamp<double>(color.b * 255, 0, 255);
-		_activatePWM(&htim1, TIM_CHANNEL_1, state);
-		_activatePWM(&htim1, TIM_CHANNEL_2, state);
-		_activatePWM(&htim1, TIM_CHANNEL_3, state);
-	}
+        if (state)
+        {
+            HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+        }
+        else
+        {
+            HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+        }
+    }
 
-	void setRelay(bool state)
-	{
-		WRITE_PIN(RELAY, state);
-	}
+    void setPrechargeRelay(bool enabled)
+    {
+        HAL_GPIO_WritePin(
+            PCC_EN_GPIO_Port,
+            PCC_EN_Pin,
+            enabled ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    }
 
-	void togglePrechargeAndAIR(bool state)
-	{
-		WRITE_PIN(PCC_ACT, state); // Set the PCC state to true
-	}
+    void setContactorDutyPercent(uint8_t dutyPercent)
+    {
+        const uint32_t boundedDuty = std::min<uint32_t>(dutyPercent, 100U);
+        const uint32_t periodCounts = __HAL_TIM_GET_AUTORELOAD(&htim3) + 1U;
+        const uint32_t pulseCounts = periodCounts * boundedDuty / 100U;
 
-	bool getFSDCState()
-	{
-		return READ_PIN(SDC_PCC);
-	}
+        __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulseCounts);
+        if (boundedDuty == 0U)
+        {
+            HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1);
+        }
+        else
+        {
+            HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+        }
+    }
 
-	double getCurrent()
-	{
-		double smallCurrentOffset = 1.298;	 // Offset in V
-		double bigCurrentOffset = 0.852; // Offset in V
-		double smallSensitivity = 0.049;				 // Sensitivity in V/A
-		double bigSensitivity = 0.00220;			 // Sensitivity in V/A
-		double maxSmallCurrent = -19.5; // Maximum current for small transducer in A
+    bool areHVSensorDiagnosticsHealthy()
+    {
+        return HAL_GPIO_ReadPin(
+                   V_SENSE_LOAD_DIAG_GPIO_Port,
+                   V_SENSE_LOAD_DIAG_Pin) == GPIO_PIN_SET &&
+               HAL_GPIO_ReadPin(
+                   V_SENSE_BAT_DIAG_GPIO_Port,
+                   V_SENSE_BAT_DIAG_Pin) == GPIO_PIN_SET;
+    }
 
-		AIN::measureVREF();
-		double smallCurrentInput = (AIN::getAbsoluteVoltage(0));
-		double bigCurrentInput = (AIN::getAbsoluteVoltage(4));
+    bool isUsbPresent()
+    {
+        return HAL_GPIO_ReadPin(
+                   V_SENSE_USB_GPIO_Port,
+                   V_SENSE_USB_Pin) == GPIO_PIN_SET;
+    }
 
-		double smallCurrent = (smallCurrentInput - smallCurrentOffset) / smallSensitivity;
-		double bigCurrent = ((bigCurrentInput - bigCurrentOffset) / bigSensitivity) ;
+    double getLoadSideVoltage()
+    {
+        return getHVVoltage(LOAD_VOLTAGE_INDEX);
+    }
 
-		double current;
-
-		if (smallCurrent > maxSmallCurrent && smallCurrent < -maxSmallCurrent)
-		{
-			current =  static_cast<double>(static_cast<int>(smallCurrent * 10.)) / 10.;;
-		}
-		else
-		{
-			current =  static_cast<double>(static_cast<int>(bigCurrent * 10.)) / 10.;;
-		}
-
-		// HAL sensor is reversed.
-		current = -current;
-		return current;
-	}
-
-}
-
-extern "C" void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-	IO::_handleCallbacks(GPIO_Pin);
+    double getBatterySideVoltage()
+    {
+        return getHVVoltage(BATTERY_VOLTAGE_INDEX);
+    }
 }

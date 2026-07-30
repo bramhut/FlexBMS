@@ -38,6 +38,7 @@ namespace SlaveController
         OPEN_SHORT_FAULT, // A pin (can be CB or GPIO) is detected short or open
         SYSTEM_FAULT,
         COMMUNICATION_TIMEOUT,
+        HV_SUPERVISOR_FAULT,
     };
 
     enum BMSState
@@ -136,12 +137,14 @@ namespace SlaveController
     */    
     uint32_t getPackVoltage();
 
-    // /*!
-    //  * @brief Get the current in [1/64 A]
-    //  *
-    //  * @return int16_t current [1/64 A]
-    //  */
-    // int16_t getCurrent();
+    /*! @brief Get the most recently measured pack current in [A]. */
+    double getCurrent();
+
+    /*! @brief True when the BMS permits the HV supervisor to operate. */
+    bool isHVReady();
+
+    /*! @brief Update the aggregate HV supervisor fault condition. */
+    void setHVSupervisorFaultActive(bool active);
 
     /*!
     * @brief Check whether charging is currently allowed

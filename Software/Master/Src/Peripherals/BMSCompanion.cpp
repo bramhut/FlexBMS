@@ -10,7 +10,6 @@
 #include "Charger.h"
 #include "PCC.h"
 #include "bcc/bcc_utils.h"
-#include "BoardIO.h"
 
 #define DEBUG_LVL 0
 #include "Debug.h"
@@ -113,7 +112,7 @@ namespace BMSCompanion
 
         string encodePackMeasurementsMessage()
         {
-            double current = IO::getCurrent();
+            double current = SlaveController::getCurrent();
 
             snprintf(printBuf, sizeof(printBuf), "%08x%04x%04x\n", SlaveController::getPackVoltage(), (uint16_t) BCC_CURRENT_TO_RAW(current), SlaveController::getSoC());
             return string(printBuf);
@@ -204,17 +203,10 @@ namespace BMSCompanion
             else if (msgID == 0x1B)
             {
                 USBCOM::print("[CH] Clearing faults\n");
-                SlaveController::clearFaults();
-            }
-            else if (msgID == 0x1C)
-            {
-                if (msgBody == "1") {
-                    PRINTF_INFO("[CH] Received 'finish Precharge' command\n");
-                    PCC::setFinishPrechargeCommand(true);
-                } else {
-                    PRINTF_ERR("[CH] Received unknown precharge command: %s\n", msgBody.c_str());
+                if (PCC::requestFaultClear())
+                {
+                    SlaveController::clearFaults();
                 }
-
             }
             else if (msgID == 0x1D)
             {

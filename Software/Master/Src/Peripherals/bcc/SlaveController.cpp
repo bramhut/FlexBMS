@@ -13,9 +13,7 @@
 #include "bcc/SlaveController.h"
 #include "bcc/bcc_diagnostics.h"
 #include "bcc/UserSettings.h"
-#include "BoardIO.h"
 #include "USBCOM.h"
-#include "pcc.h"
 
 #define DEBUG_LVL 2
 #include "Debug.h"
@@ -99,6 +97,7 @@ namespace SlaveController
         uint32_t minCellVoltage = UINT32_MAX;
         uint32_t maxCellVoltage = 0;
         uint32_t packVoltage = 0;
+        double packCurrent = 0.0;
 
         RegisterRequest registerRequest = {};
         bool *registerRequestFlag = nullptr;
@@ -130,17 +129,6 @@ namespace SlaveController
             return true;
         }
 
-        void handleRelay()
-        {
-            bool relayState = currentState == RUNNING &&
-                              getBlockingFaults() == 0 &&
-                              measurementsAreFresh() &&
-                              PCC::getPCCState() != PCC::PCC_STATE::STARTUP &&
-                              PCC::getPCCState() != PCC::PCC_STATE::ERROR;
-
-            IO::setRelay(relayState);
-        }
-
         void setState(BMSState state)
         {
             if (state != RUNNING)
@@ -149,7 +137,6 @@ namespace SlaveController
                 newDataAvailable = false;
             }
             currentState = state;
-            handleRelay();
             switch (state)
             {
             case DEVICE_INITIALIZATION:
@@ -173,9 +160,13 @@ namespace SlaveController
         void updateFault(BMSFault fault, bool active)
         {
             const uint16_t mask = faultMask(fault);
-            const uint16_t previousActiveFaults = activeFaults;
-            const uint16_t previousBlockingFaults = getBlockingFaults();
+            uint16_t previousActiveFaults;
+            uint16_t activeSnapshot;
+            uint16_t latchedSnapshot;
+            uint16_t historicalSnapshot;
 
+            taskENTER_CRITICAL();
+            previousActiveFaults = activeFaults;
             if (active)
             {
                 activeFaults |= mask;
@@ -186,20 +177,19 @@ namespace SlaveController
             {
                 activeFaults &= static_cast<uint16_t>(~mask);
             }
+            activeSnapshot = activeFaults;
+            latchedSnapshot = latchedFaults;
+            historicalSnapshot = historicalFaults;
+            taskEXIT_CRITICAL();
 
-            if (previousActiveFaults != activeFaults)
+            if (previousActiveFaults != activeSnapshot)
             {
                 PRINTF_INFO("[SC] Fault condition %s for fault %u: active=%04X latched=%04X history=%04X\n",
                             active ? "active" : "inactive",
                             fault,
-                            activeFaults,
-                            latchedFaults,
-                            historicalFaults);
-            }
-
-            if (previousBlockingFaults != getBlockingFaults())
-            {
-                handleRelay();
+                            activeSnapshot,
+                            latchedSnapshot,
+                            historicalSnapshot);
             }
         }
 
@@ -368,8 +358,6 @@ namespace SlaveController
         {
             uint16_t combinedFaults[BCC_STAT_CNT] = {0};
             bool faultStatusSuccessful = true;
-            double iAvg;
-            double ampHour;
             for (auto &slave : mSlaves)
             {
                 if (slave.fault_GetStatus(combinedFaults) != BCC_STATUS_SUCCESS)
@@ -378,17 +366,29 @@ namespace SlaveController
                     faultStatusSuccessful = false;
                 }
 
-                // if (slave.currentSenseEnabled())
-                // {
-                //     slave.meas_GetAmpHourAndIAvg(settings.SHUNT_RESISTANCE, settings.INVERT_CURRENT, &ampHour, &iAvg);
-                //     updateFault(OVERCURRENT_LIMIT, iAvg < -settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT || iAvg > settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT);
-                // }
-
                 // TODO Log all fault registers in FLASH or something
             }
 
-            double current = IO::getCurrent();
-            updateFault(OVERCURRENT_LIMIT, current < -settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT || current > settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT);
+            double ampHour = 0.0;
+            double current = 0.0;
+            if (mSlaves[currentMeasurementSlaveIdx].meas_GetAmpHourAndIAvg(
+                    settings.SHUNT_RESISTANCE,
+                    settings.INVERT_CURRENT,
+                    &ampHour,
+                    &current) != BCC_STATUS_SUCCESS)
+            {
+                PRINTF_WARN("[SC] Current measurement failed on CID %u\n",
+                            mSlaves[currentMeasurementSlaveIdx].getCID());
+                faultStatusSuccessful = false;
+            }
+            else
+            {
+                packCurrent = current;
+                updateFault(
+                    OVERCURRENT_LIMIT,
+                    current < -settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT ||
+                        current > settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT);
+            }
 
             if (!faultStatusSuccessful)
             {
@@ -679,7 +679,6 @@ namespace SlaveController
             const bool faultStatusSuccessful = faultDetection();
 
             doCommunicationCheck(faultStatusSuccessful);
-            handleRelay();
         }
 
         bcc_status_t globalSoftwareReset()
@@ -806,8 +805,7 @@ namespace SlaveController
                 // Send Measurements_2 message
                 frame.id = settings.CAN_MEAS2_ID;
                 frame.length = 8;
-                double halEffectCurrent = IO::getCurrent();
-                frame.data_s16[0] = BCC_CURRENT_TO_RAW(halEffectCurrent);  // Current [1/64 A]
+                frame.data_s16[0] = BCC_CURRENT_TO_RAW(getCurrent());  // Current [1/64 A]
                 frame.data16[1] = getMinNTCtemp(); // Min NTC temperature [raw]
                 frame.data16[2] = getMaxNTCtemp(); // Max NTC temperature [raw]
                 frame.data16[3] = getMaxICtemp();  // Max IC temperature [raw]
@@ -1202,18 +1200,22 @@ namespace SlaveController
         return packVoltage;
     }
 
-    // int16_t getCurrent()
-    // {
-    //     double current;
-    //     double ampHour;
-    //     bcc_status_t status;
-    //     if ((status = mSlaves[currentMeasurementSlaveIdx].meas_GetAmpHourAndIAvg(settings.SHUNT_RESISTANCE, settings.INVERT_CURRENT, &ampHour, &current)) != BCC_STATUS_SUCCESS)
-    //     {
-    //         // In case of an error, return 0
-    //         return BCC_CURRENT_TO_RAW(0);
-    //     }
-    //     return BCC_CURRENT_TO_RAW(current);
-    // }
+    double getCurrent()
+    {
+        return packCurrent;
+    }
+
+    bool isHVReady()
+    {
+        return currentState == RUNNING &&
+               getBlockingFaults() == 0U &&
+               measurementsAreFresh();
+    }
+
+    void setHVSupervisorFaultActive(bool active)
+    {
+        updateFault(HV_SUPERVISOR_FAULT, active);
+    }
 
     bool isChargingAllowed()
     {

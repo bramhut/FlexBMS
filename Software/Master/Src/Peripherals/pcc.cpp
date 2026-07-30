@@ -1,314 +1,496 @@
 #include "pcc.h"
+
 #include "BoardIO.h"
-#include "Debug.h"
-#include "Charger.h"
+#include "TimeFunctions.h"
+#include "bcc/SlaveController.h"
 #include "bcc/UserSettings.h"
 
-#define DEBUG_LVL 2 // Set the debug level for this file
+#include <algorithm>
+#include <cmath>
 
-#define DBC_BIT_POS(x) (x + 7 - 2 * (x % 8)) // Shamelessly stolen from the FCCU code.
+#define DEBUG_LVL 2
+#include "Debug.h"
 
 namespace PCC
 {
-  namespace
-  {
-    // Constants
-    const uint32_t PRECHARGE_TIMEOUT = 10000; // Precharge timeout in milliseconds
-    const double PRECHARGE_PERCENTAGE = 0.95; // Percentage of the battery voltage to reach before enabling PCC
-    const uint32_t CAN_TIMEOUT_TIME = 1000;   // Timeout time for CAN messages [ms]
-
-    // CAN stuff
-    const uint32_t dcdcID = 0x525;
-    const uint32_t compID = 0x526; 
-    CAN *mCan = nullptr;           // Pointer to the CAN instance used for PCC communication
-
-    uint32_t lastDCDCMessage = 0;       // Last time a DCDC message was received [ms]
-    uint32_t lastCompressorMessage = 0; // Last time a compressor message was received [ms]
-
-    osMessageQueueId_t dcdcQueue = nullptr;       // Message queue for DCDC messages
-    osMessageQueueId_t compressorQueue = nullptr; // Message queue for compressor messages
-
-    // Measured values
-    double dcdcVoltage = 0;       // Voltage of the DCDC
-    double compressorVoltage = 0; // Voltage of the compressor
-    double tsVoltage = 0;         // Estimated TS voltage based on dcdc/compressor or charger voltage
-
-    PCC_STATE pccState = PCC_STATE::STARTUP;  // Current state of the Power Control Circuit (PCC)
-    PCC_ERROR pccError = PCC_ERROR::NO_ERROR; // Current error state of the PCC
-    uint32_t prechargeStartTime = 0;
-    TSAC_LOCATION tsacLocation = TSAC_LOCATION::UNKOWN; // Location of the TSAC, used to determine if the PCC is in the car or in the charging cart
-
-    uint32_t lastDebugInfo = 0; // Last time debug info was printed [ms]
-
-    bool receivedFinishPrechargeCommand = false; // Flag to indicate if the finish precharge command was received
-
-    uint32_t lastPrechargeTime = 0;
-
-    void printDebugInfo()
+    namespace
     {
-      if (millis() - lastDebugInfo > 1000) // Print debug info every second
-      {
-        PRINTF_ERR("[PCC] DCDC voltage: %.2f V\n, Compressor voltage: %.2f V\n, Charger voltage: %.2f V\n, TSAC location: %d\n, PCC state: %d\n, PCC error: %d\n",
-                   dcdcVoltage, compressorVoltage, Charger::getOutputVoltage(), (int)tsacLocation, (int)pccState, (int)pccError);
-        lastDebugInfo = millis();
-      }
-    }
+        constexpr uint32_t PRECHARGE_TIMEOUT_MS = 10000U;
+        constexpr uint32_t PRECHARGE_STABLE_TIME_MS = 200U;
+        constexpr uint32_t CONTACTOR_PULL_IN_TIME_MS = 100U;
+        constexpr uint32_t CONTACTOR_VALIDATION_TIME_MS = 200U;
+        constexpr double PRECHARGE_RATIO = 0.95;
+        constexpr double MAX_PRECHARGE_DELTA_V = 10.0;
+        constexpr double MAX_SELF_TEST_LOAD_V = 30.0;
+        constexpr double MIN_BATTERY_SOURCE_V = 30.0;
+        constexpr double MIN_BATTERY_AGREEMENT_V = 10.0;
+        constexpr double BATTERY_AGREEMENT_PERCENT = 0.05;
+        constexpr uint16_t HV_FAULT_MASK =
+            static_cast<uint16_t>(1U << SlaveController::HV_SUPERVISOR_FAULT);
 
-    uint64_t getBitsBigEndian(uint8_t data[8], uint8_t bitStart, uint8_t bitLen)
-    {
-      uint64_t result = 0;
-      for (uint8_t i = 0; i < 8; i++)
-      { // First swap endianness
-        result |= data[i];
-        if (i != 7)
+        CAN *mCan = nullptr;
+        PCC_STATE state = OFF;
+        PCC_ERROR error = NO_ERROR;
+
+        bool runRequest = false;
+        bool requestEdgePending = false;
+        bool requestRequiresRelease = false;
+        bool faultClearPending = false;
+
+        uint16_t activeErrors = HV_ERROR_NONE;
+        uint16_t latchedErrors = HV_ERROR_NONE;
+        uint16_t historicalErrors = HV_ERROR_NONE;
+
+        double batteryVoltage = 0.0;
+        double loadVoltage = 0.0;
+
+        uint32_t stateStartTime = 0U;
+        uint32_t stableStartTime = 0U;
+        uint32_t lastPrechargeTime = 0U;
+
+        void disableOutputs()
         {
-          result <<= 8;
+            IO::setPrechargeRelay(false);
+            IO::setContactorDutyPercent(0U);
         }
-      }
-      result <<= bitStart; // Shift out irrelevant bits
-      result >>= 64 - bitLen;
-      return result;
+
+        double getBccPackVoltage()
+        {
+            return static_cast<double>(SlaveController::getPackVoltage()) / 1000000.0;
+        }
+
+        bool batteryVoltageAgreesWithBms()
+        {
+            const double bccVoltage = getBccPackVoltage();
+            const double allowedDelta =
+                std::max(MIN_BATTERY_AGREEMENT_V,
+                         bccVoltage * BATTERY_AGREEMENT_PERCENT);
+            return batteryVoltage >= MIN_BATTERY_SOURCE_V &&
+                   std::abs(batteryVoltage - bccVoltage) <= allowedDelta;
+        }
+
+        bool isUsbOnly()
+        {
+            return IO::isUsbPresent() &&
+                   batteryVoltage < MIN_BATTERY_SOURCE_V;
+        }
+
+        bool prechargeVoltageReached()
+        {
+            if (batteryVoltage < MIN_BATTERY_SOURCE_V)
+            {
+                return false;
+            }
+
+            const double delta = std::abs(batteryVoltage - loadVoltage);
+            return loadVoltage >= batteryVoltage * PRECHARGE_RATIO &&
+                   delta <= MAX_PRECHARGE_DELTA_V;
+        }
+
+        void publishAggregateActiveFault()
+        {
+            SlaveController::setHVSupervisorFaultActive(activeErrors != HV_ERROR_NONE);
+        }
+
+        void refreshActiveErrors()
+        {
+            uint16_t liveErrors = HV_ERROR_NONE;
+
+            if ((latchedErrors & HV_ERROR_SENSOR_DIAGNOSTIC) != 0U &&
+                !IO::areHVSensorDiagnosticsHealthy())
+            {
+                liveErrors |= HV_ERROR_SENSOR_DIAGNOSTIC;
+            }
+            if ((latchedErrors & HV_ERROR_USB_ONLY) != 0U && isUsbOnly())
+            {
+                liveErrors |= HV_ERROR_USB_ONLY;
+            }
+            if ((latchedErrors & HV_ERROR_BATTERY_VOLTAGE_MISMATCH) != 0U &&
+                !batteryVoltageAgreesWithBms())
+            {
+                liveErrors |= HV_ERROR_BATTERY_VOLTAGE_MISMATCH;
+            }
+            if ((latchedErrors & HV_ERROR_LOAD_SIDE_ENERGIZED) != 0U &&
+                loadVoltage >= MAX_SELF_TEST_LOAD_V)
+            {
+                liveErrors |= HV_ERROR_LOAD_SIDE_ENERGIZED;
+            }
+
+            activeErrors = liveErrors;
+            publishAggregateActiveFault();
+        }
+
+        void latchFault(PCC_ERROR fault, uint16_t mask, bool conditionIsActive)
+        {
+            disableOutputs();
+            state = OFF;
+            requestEdgePending = false;
+            requestRequiresRelease = true;
+            error = fault;
+            latchedErrors |= mask;
+            historicalErrors |= mask;
+
+            // Pulse the aggregate fault active so it is latched and recorded by
+            // the BMS even for event faults such as a precharge timeout.
+            SlaveController::setHVSupervisorFaultActive(true);
+            activeErrors = conditionIsActive ? mask : HV_ERROR_NONE;
+            publishAggregateActiveFault();
+
+            PRINTF_ERR("[PCC] HV supervisor fault: error=%u active=%04X latched=%04X\n",
+                       static_cast<unsigned>(fault),
+                       activeErrors,
+                       latchedErrors);
+        }
+
+        bool liveHVConditionsHealthy()
+        {
+            return IO::areHVSensorDiagnosticsHealthy() &&
+                   !isUsbOnly() &&
+                   batteryVoltageAgreesWithBms() &&
+                   loadVoltage < MAX_SELF_TEST_LOAD_V;
+        }
+
+        bool validateSequencePlausibility()
+        {
+            if (!IO::areHVSensorDiagnosticsHealthy())
+            {
+                latchFault(SENSOR_DIAGNOSTIC_ERROR,
+                           HV_ERROR_SENSOR_DIAGNOSTIC,
+                           true);
+                return false;
+            }
+            if (!batteryVoltageAgreesWithBms())
+            {
+                latchFault(BATTERY_VOLTAGE_MISMATCH,
+                           HV_ERROR_BATTERY_VOLTAGE_MISMATCH,
+                           true);
+                return false;
+            }
+            return true;
+        }
+
+        void startPrecharge()
+        {
+            state = PRECHARGE;
+            stateStartTime = millis();
+            stableStartTime = 0U;
+            IO::setContactorDutyPercent(0U);
+            IO::setPrechargeRelay(true);
+            PRINTF_INFO("[PCC] New state: PRECHARGE\n");
+        }
+
+        void handleSelfTest()
+        {
+            disableOutputs();
+
+            if (!SlaveController::isHVReady())
+            {
+                state = OFF;
+                requestRequiresRelease = true;
+                return;
+            }
+            if (!IO::areHVSensorDiagnosticsHealthy())
+            {
+                latchFault(SENSOR_DIAGNOSTIC_ERROR,
+                           HV_ERROR_SENSOR_DIAGNOSTIC,
+                           true);
+                return;
+            }
+            if (isUsbOnly())
+            {
+                latchFault(USB_ONLY_ERROR, HV_ERROR_USB_ONLY, true);
+                return;
+            }
+            if (!batteryVoltageAgreesWithBms())
+            {
+                latchFault(BATTERY_VOLTAGE_MISMATCH,
+                           HV_ERROR_BATTERY_VOLTAGE_MISMATCH,
+                           true);
+                return;
+            }
+            if (loadVoltage >= MAX_SELF_TEST_LOAD_V)
+            {
+                latchFault(LOAD_SIDE_ENERGIZED,
+                           HV_ERROR_LOAD_SIDE_ENERGIZED,
+                           true);
+                return;
+            }
+
+            startPrecharge();
+        }
+
+        void handlePrecharge()
+        {
+            IO::setPrechargeRelay(true);
+            IO::setContactorDutyPercent(0U);
+
+            if (!validateSequencePlausibility())
+            {
+                return;
+            }
+
+            const uint32_t now = millis();
+            if (now - stateStartTime >= PRECHARGE_TIMEOUT_MS)
+            {
+                latchFault(PRECHARGE_TIMEOUT,
+                           HV_ERROR_PRECHARGE_TIMEOUT,
+                           false);
+                return;
+            }
+
+            if (!prechargeVoltageReached())
+            {
+                stableStartTime = 0U;
+                return;
+            }
+
+            if (stableStartTime == 0U)
+            {
+                stableStartTime = now;
+                return;
+            }
+
+            if (now - stableStartTime >= PRECHARGE_STABLE_TIME_MS)
+            {
+                lastPrechargeTime = now - stateStartTime;
+                state = CONTACTOR_CLOSE;
+                stateStartTime = now;
+                stableStartTime = 0U;
+                IO::setContactorDutyPercent(100U);
+                PRINTF_INFO("[PCC] New state: CONTACTOR_CLOSE\n");
+            }
+        }
+
+        void handleContactorClose()
+        {
+            if (!validateSequencePlausibility() ||
+                !prechargeVoltageReached())
+            {
+                if (state != OFF)
+                {
+                    latchFault(PRECHARGE_VOLTAGE_LOST,
+                               HV_ERROR_PRECHARGE_VOLTAGE_LOST,
+                               false);
+                }
+                return;
+            }
+
+            const uint32_t elapsed = millis() - stateStartTime;
+            if (elapsed < CONTACTOR_PULL_IN_TIME_MS)
+            {
+                IO::setPrechargeRelay(true);
+                IO::setContactorDutyPercent(100U);
+                return;
+            }
+
+            IO::setPrechargeRelay(false);
+            IO::setContactorDutyPercent(HV_CONTACTOR_HOLD_DUTY_PERCENT);
+            if (stableStartTime == 0U)
+            {
+                stableStartTime = millis();
+            }
+
+            if (millis() - stableStartTime >= CONTACTOR_VALIDATION_TIME_MS)
+            {
+                state = RUN;
+                PRINTF_INFO("[PCC] New state: RUN\n");
+            }
+        }
+
+        void handleRun()
+        {
+            IO::setPrechargeRelay(false);
+            IO::setContactorDutyPercent(HV_CONTACTOR_HOLD_DUTY_PERCENT);
+
+            if (!validateSequencePlausibility() ||
+                !prechargeVoltageReached())
+            {
+                if (state != OFF)
+                {
+                    latchFault(CONTACTOR_VOLTAGE_LOST,
+                               HV_ERROR_CONTACTOR_VOLTAGE_LOST,
+                               false);
+                }
+            }
+        }
+
+        void handleSendingCANMessage()
+        {
+            static uint32_t lastSendTime = 0U;
+            if (mCan == nullptr ||
+                millis() - lastSendTime < DEFAULT_SETTINGS.CAN_PCC_PERIOD)
+            {
+                return;
+            }
+
+            lastSendTime = millis();
+            CAN::Frame frame{};
+            frame.id = DEFAULT_SETTINGS.CAN_PCC_ID;
+            frame.length = 8U;
+            frame.data[0] = static_cast<uint8_t>(state);
+            frame.data[1] = static_cast<uint8_t>(error);
+            frame.data16[1] = static_cast<uint16_t>(
+                std::min<uint32_t>(lastPrechargeTime, UINT16_MAX));
+            mCan->sendMessage(frame);
+        }
     }
 
-    double parseDCDCMessage(CAN::Frame *frame)
+    void setup(CAN *can)
     {
-      uint16_t uhs = (uint16_t)frame->data[7];
-      uhs |= ((uint16_t)frame->data[6] & 0x000f) << 8;
-      return uhs * 0.25;
+        mCan = can;
+        runRequest = false;
+        requestEdgePending = false;
+        requestRequiresRelease = false;
+        faultClearPending = false;
+        state = OFF;
+        error = NO_ERROR;
+        activeErrors = HV_ERROR_NONE;
+        latchedErrors = HV_ERROR_NONE;
+        historicalErrors = HV_ERROR_NONE;
+        disableOutputs();
     }
 
-    double parseCompMessage(CAN::Frame frame)
+    void setRunRequest(bool requested)
     {
-      return (double)getBitsBigEndian(frame.data, 16, 16)/10; // Parse the compressor message to get the compressor voltage
+        if (!requested)
+        {
+            runRequest = false;
+            requestEdgePending = false;
+            requestRequiresRelease = false;
+            disableOutputs();
+            state = OFF;
+            return;
+        }
+
+        if (!runRequest && !requestRequiresRelease &&
+            latchedErrors == HV_ERROR_NONE)
+        {
+            requestEdgePending = true;
+        }
+        runRequest = true;
     }
 
-    void handleReceivingCANMessage()
+    bool requestFaultClear()
     {
+        if (latchedErrors == HV_ERROR_NONE)
+        {
+            return true;
+        }
 
-      CAN::Frame frame; // Frame to hold the received CAN message
-      if (osMessageQueueGet(dcdcQueue, &frame, NULL, 0) == osOK)
-      {
-        dcdcVoltage = parseDCDCMessage(&frame); // Parse the DCDC message to get the battery voltage
-        lastDCDCMessage = millis();             // Update the last DCDC message time
-      }
+        refreshActiveErrors();
+        if (runRequest || activeErrors != HV_ERROR_NONE ||
+            !liveHVConditionsHealthy())
+        {
+            PRINTF_ERR("[PCC] HV fault clear rejected\n");
+            return false;
+        }
 
-      if (osMessageQueueGet(compressorQueue, &frame, NULL, 0) == osOK)
-      {
-        compressorVoltage = parseCompMessage(frame); // Parse the compressor message to get the compressor voltage
-        lastCompressorMessage = millis();            // Update the last compressor message time
-      }
-    }
-
-    void handleSendingCANMessage()
-    {
-
-      uint32_t static lastPccSendTime = 0;                              // Last time the PCC state was sent over CAN
-      if (millis() - lastPccSendTime > DEFAULT_SETTINGS.CAN_PCC_PERIOD) // Check if the PCC state was sent recently
-      {
-        lastPccSendTime = millis(); // Update the last PCC send time
-        // Send current pcc state, error and last precharge time
-        CAN::Frame frame;
-        frame.id = DEFAULT_SETTINGS.CAN_PCC_ID; // Use the PCC CAN ID
-        frame.length = 8;                       // Set the length of the frame to 8 bytes
-
-        frame.data[0] = (uint8_t)pccState;             // Set the PCC state in the first byte
-        frame.data[1] = (uint8_t)pccError;             // Set the PCC
-        frame.data16[1] = (uint16_t)lastPrechargeTime; // Set the last precharge time in the second byte
-
-        mCan->sendMessage(frame); // Send the frame over CAN
-      }
-    }
-
-    /*
-     * @brief Checks if the TSAC location is known based on the received CAN messages.
-     * If a charger message is received, the TSAC is on the charging cart.
-     * If both compressor and DCDC messages are received, the TSAC is in the car.
-     * @return True if the TSAC location is known, false otherwise.
-     */
-    bool TSACLocationIsKnown()
-    {
-      if (Charger::isConnected())
-      {
-        tsacLocation = TSAC_LOCATION::CHARGING_CART; // If a charger message is received, the TSAC is on the charging cart
+        faultClearPending = true;
         return true;
-      }
-      else if (lastDCDCMessage != 0)
-      {
-        tsacLocation = TSAC_LOCATION::CAR; // If both compressor and DCDC messages are received, the TSAC is in the car
-        return true;
-      }
-      else
-      {
-        PRINTF_ERR_TIMED_VAR(pcc_loc, "[PCC] Location not found \n");
-        return false;
-      }
     }
 
-    bool checkCANCommunicationTimeout()
+    void loop()
     {
-      if (tsacLocation == TSAC_LOCATION::CHARGING_CART)
-      {
-        return (Charger::isConnected()); // If the TSAC is in the charging cart, check for charger timeout
-      }
-      else if (tsacLocation == TSAC_LOCATION::CAR)
-      {\
-        // TODO implement compressor timeout check when compressor CAN messages are implemented
-        return (millis() - lastDCDCMessage > CAN_TIMEOUT_TIME ||  millis() - lastCompressorMessage > CAN_TIMEOUT_TIME); // If the TSAC is in the car, check for DCDC and compressor timeouts
-      }
+        batteryVoltage = IO::getBatterySideVoltage();
+        loadVoltage = IO::getLoadSideVoltage();
 
-      return false; // If the TSAC location is unknown, return false
+        if (faultClearPending &&
+            (SlaveController::getLatchedFaults() & HV_FAULT_MASK) == 0U)
+        {
+            latchedErrors = HV_ERROR_NONE;
+            activeErrors = HV_ERROR_NONE;
+            error = NO_ERROR;
+            faultClearPending = false;
+            requestRequiresRelease = false;
+            PRINTF_INFO("[PCC] HV fault clear completed\n");
+        }
+
+        if (latchedErrors != HV_ERROR_NONE)
+        {
+            refreshActiveErrors();
+        }
+
+        if (!runRequest ||
+            (state != OFF && !SlaveController::isHVReady()))
+        {
+            disableOutputs();
+            state = OFF;
+            if (!runRequest)
+            {
+                requestRequiresRelease = false;
+            }
+        }
+
+        switch (state)
+        {
+        case OFF:
+            disableOutputs();
+            if (requestEdgePending && latchedErrors == HV_ERROR_NONE)
+            {
+                requestEdgePending = false;
+                state = SELF_TEST;
+                PRINTF_INFO("[PCC] New state: SELF_TEST\n");
+            }
+            break;
+        case SELF_TEST:
+            handleSelfTest();
+            break;
+        case PRECHARGE:
+            handlePrecharge();
+            break;
+        case CONTACTOR_CLOSE:
+            handleContactorClose();
+            break;
+        case RUN:
+            handleRun();
+            break;
+        default:
+            disableOutputs();
+            state = OFF;
+            requestRequiresRelease = true;
+            break;
+        }
+
+        handleSendingCANMessage();
     }
 
-    void estimateTSVoltage()
+    PCC_STATE getPCCState()
     {
-      if (tsacLocation == TSAC_LOCATION::CHARGING_CART)
-      {
-        tsVoltage = Charger::getOutputVoltage(); // If the TSAC is in the charging cart, use the charger voltage
-      }
-      else if (tsacLocation == TSAC_LOCATION::CAR)
-      {
-          tsVoltage = dcdcVoltage; // If the DCDC voltage is lower than the compressor voltage, use the DCDC voltage
-      }
-      else
-      {
-        tsVoltage = 0; // If the TSAC location is unknown, set the voltage to 0
-      }
+        return state;
     }
-  }
 
-  void setFinishPrechargeCommand(bool command)
-  {
-    if (pccState != PCC_STATE::PRECHARGING)
+    PCC_ERROR getPCCError()
     {
-      PRINTF_ERR("[PCC] Cannot set finish precharge command, PCC is not in PRECHARGING state\n");
-      return; // Do not set the command if the PCC is not in precharging state
+        return error;
     }
-    receivedFinishPrechargeCommand = command; // Set the flag to indicate if the finish precharge command was received
-    PRINTF_ERR("[PCC] Received finish precharge command\n");
-  }
 
-  uint32_t getLastPrechargeTime()
-  {
-    return lastPrechargeTime; // Return the last precharge time in milliseconds
-  }
-
-  void setup(CAN *_Can)
-  {
-
-    IO::togglePrechargeAndAIR(false); // Ensure the precharge relay is off at startup
-
-    dcdcQueue = osMessageQueueNew(1, sizeof(CAN::Frame), NULL); // Create a new message queue for DCDC messages
-    _Can->addListener(dcdcID, dcdcQueue);                       // Add listener for DCDC messages
-
-    compressorQueue = osMessageQueueNew(1, sizeof(CAN::Frame), NULL); // Create a new message queue for compressor messages
-    _Can->addListener(compID, compressorQueue);                       // Add listener for compressor messages
-
-    mCan = _Can; // Set the CAN instance for PCC communication
-  }
-
-  void loop()
-  {
-    handleReceivingCANMessage(); // Handle receiving CAN messages
-    estimateTSVoltage();         // Estimate the TS voltage based on the received messages
-
-    if (!IO::getFSDCState() && (pccState == PCC_STATE::PRECHARGING || pccState == PCC_STATE::SUCCESS))
+    uint32_t getLastPrechargeTime()
     {
-      PRINTF_ERR("[PCC] FSDC is not enabled, returning to IDLE state\n");
-      pccState = PCC_STATE::IDLE; // If the FSDC is not enabled, return to startup state
+        return lastPrechargeTime;
     }
 
-    // PRINTF_ERR("[PCC] Current PCC state: %d, Error: %d, TSAC location: %d, millis: %d\n", (int)pccState, (int)pccError, (int)tsacLocation, millis());
-    switch (pccState)
+    uint16_t getActiveErrors()
     {
-    case PCC_STATE::STARTUP:
-      receivedFinishPrechargeCommand = false; // Reset the flag at startup
-      IO::togglePrechargeAndAIR(false);
-      if (TSACLocationIsKnown() && SlaveController::getState() == SlaveController::RUNNING)
-      {
-        pccState = PCC_STATE::IDLE; // Transition to idle state if the location is known
-      }
-      /* code */
-      break;
-    case PCC_STATE::IDLE:
-      receivedFinishPrechargeCommand = false; // Reset the flag in idle state
-      IO::togglePrechargeAndAIR(false);
-      if (IO::getFSDCState())
-      {
-        PRINTF_ERR("[PCC] FSDC is enabled, transitioning to precharging state\n");
-        pccState = PCC_STATE::PRECHARGING; // Transition to precharging state if the FSDC is enabled
-        prechargeStartTime = millis();     // Start time for the precharge toggle
-      }
-      break;
-    case PCC_STATE::PRECHARGING:
-      IO::togglePrechargeAndAIR(false);
-
-      // If the FSDC turns off, return to idle state
-      if (!IO::getFSDCState())
-      {
-        PRINTF_INFO("[PCC] FSDC turned off during precharge, returning to idle state\n");
-        pccState = PCC_STATE::IDLE;
-      }
-
-      // if (checkCANCommunicationTimeout())
-      // {
-      //   pccError = PCC_ERROR::COMMUNICATION_ERROR; // Set error state to communication error if a timeout occurs
-      //   pccState = PCC_STATE::ERROR;
-      //   break;
-      // }
-
-      if (millis() - prechargeStartTime > PRECHARGE_TIMEOUT)
-      {
-        PRINTF_ERR("[PCC] Precharge time exceeded %d ms, aborting precharge\n", PRECHARGE_TIMEOUT);
-        pccError = PCC_ERROR::TIMEOUT; // Set error state to timeout if precharge time exceeds the limit
-        pccState = PCC_STATE::ERROR;
-        break;
-      }
-
-      // Open PCC and close AIR- if minimum precharge voltage is reached (1s) and received command from Companion
-      if ((millis() - prechargeStartTime > 1000) && (tsVoltage > (0.95 * (SlaveController::getPackVoltage() / 1000000))))
-      // if ((millis() - prechargeStartTime > 1000) && receivedFinishPrechargeCommand)
-      {
-        pccState = PCC_STATE::SUCCESS;
-        receivedFinishPrechargeCommand = false; // Reset the flag after transitioning to success state
-        PRINTF_ERR("[PCC] Precharge successful, transitioning to success state\n");
-        lastPrechargeTime = millis() - prechargeStartTime; // Store the last precharge time
-        break;
-      }
-
-      break;
-    case PCC_STATE::SUCCESS:
-      receivedFinishPrechargeCommand = false; // Reset the flag in success state
-      IO::togglePrechargeAndAIR(true);        // Set the precharge relay to true if the PCC is successful
-
-      // Transition to idle state if the FSDC is disabled
-      if (!IO::getFSDCState())
-      {
-        pccState = PCC_STATE::IDLE;
-      }
-      break;
-    case PCC_STATE::ERROR:
-      receivedFinishPrechargeCommand = false; // Reset the flag in error state
-      IO::togglePrechargeAndAIR(false);
-      break;
-
-    default:
-      IO::togglePrechargeAndAIR(false);
-      PRINTF_ERR("[PCC] Unknown state: %d\n", pccState);
-      break;
+        return activeErrors;
     }
 
-    handleSendingCANMessage(); // Handle sending CAN messages based on the current state
-    // printDebugInfo(); // Print debug info if the debug level is set
-  }
+    uint16_t getLatchedErrors()
+    {
+        return latchedErrors;
+    }
 
-  PCC_STATE getPCCState()
-  {
-    return pccState; // Return the current PCC state
-  }
+    uint16_t getHistoricalErrors()
+    {
+        return historicalErrors;
+    }
 
-  PCC_ERROR getPCCError()
-  {
-    return pccError; // Return the current PCC error state
-  }
+    double getBatteryVoltage()
+    {
+        return batteryVoltage;
+    }
 
+    double getLoadVoltage()
+    {
+        return loadVoltage;
+    }
 }
