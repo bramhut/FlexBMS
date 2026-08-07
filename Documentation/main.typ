@@ -332,6 +332,23 @@ The STM32 also hosts:
 - USB serial communication;
 - and the browser-based Companion service interface.
 
+=== Todo:
+High priority:
+- Go through CubeMX configuration. Pinout is OK.
+- Watchdog implementation. Contactor should open in case of timeout.
+- Analog measurement of HV side. Including diagnostic pin checking. ADC configuraion, high accuracy low Fs.
+- Precharge handling. Including: 
+- Contactor handling. Including: economizing, failure checking using voltages (to be discussed)
+- USB VSENSE setup
+- Derating on temperature (mainly low temperature charging, high temperature is not that applicable)
+- Communication to Goodwe inverter. Exact protocol needs discussion and likely imperical data once we have the inverter ready.
+- User LED
+
+Medium priority:
+- Communication to ESP32 over UART. Reporting and control. Companion should be made accessible from ESP32. A detailed plan still needs to be made for this.
+- Aux relay control (potentially useful for a future heating system)
+
+
 == HV supervisor
 
 #status("CURRENT")
@@ -379,6 +396,15 @@ No ESP32 firmware is currently present in this repository. The following items r
 - authentication and local security;
 - use of Modbus TCP or RS485 for inverter telemetry; and
 - the exact boundary between ESP32, EMS, and Home Assistant.
+
+=== Pinout
+Logical pin numbering on ESP32-C3-WROOM-02U-N4:
+1. 3V3
+2. EN
+3. IO4 - CAN_TX
+4. IO5 - CAN_RX
+To be continued...
+
 
 #block(breakable: false)[
   == Energy management system
