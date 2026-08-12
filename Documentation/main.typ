@@ -289,7 +289,7 @@ commissioning documentation.
     [TPL], [Master to 8 monitor ICs], [Cell, temperature, diagnostic, and current data.],
     [USB], [Service computer to STM32], [Firmware, logs, and Companion access.],
     [CAN], [STM32 and inverter-side domain], [Battery status and inverter communication.],
-    [Wi-Fi], [ESP32 to local network], [Telemetry and future network services.],
+    [Wi-Fi], [ESP32 to local network], [Telemetry, local maintenance page, and MQTT.],
     [RS485], [ESP32 to inverter-side equipment], [Fallback or supplementary Modbus connection.],
   )
 ]
@@ -345,7 +345,8 @@ High priority:
 - User LED
 
 Medium priority:
-- Communication to ESP32 over UART. Reporting and control. Companion should be made accessible from ESP32. A detailed plan still needs to be made for this.
+- Communication to ESP32 over UART. Reporting and named service operations; see
+  `Documentation/architecture/home-bess-firmware-and-maintenance.md`.
 - Aux relay control (potentially useful for a future heating system)
 
 
@@ -353,9 +354,10 @@ Medium priority:
 
 #status("CURRENT")
 
-The HV supervisor follows `OFF -> SELF_TEST -> PRECHARGE -> CONTACTOR_CLOSE -> RUN`. It starts only on a
-new run-request edge. No current software component supplies that request, so the supervisor remains
-`OFF` by default.
+The HV supervisor follows `OFF -> SELF_TEST -> PRECHARGE -> CONTACTOR_CLOSE -> RUN`. The planned
+transport-independent `setRunRequest(bool)` service operation provides intent only; it does not command a
+contactor. The STM32 accepts operation only when its BMS and HV-supervisor conditions are healthy. Until
+this interface is implemented, the supervisor remains `OFF` by default.
 
 `SELF_TEST` checks BMS permission, measurement freshness, isolated-voltage diagnostics, agreement between
 the battery-side and cell-monitor voltages, an unenergized load side, and the available power source.
@@ -363,8 +365,11 @@ the battery-side and cell-monitor voltages, an unenergized load side, and the av
 pull-in. `CONTACTOR_CLOSE` transfers from the precharge path to contactor hold drive. `RUN` keeps
 monitoring the BMS permission and both HV measurements.
 
-A removed request, lost BMS permission, or implausible HV feedback disables both drivers. Shutdown and
-fault handling require the request to return to off before a new edge can start another sequence.
+A removed request, lost BMS permission, or implausible HV feedback disables both drivers. A blocking fault
+does not erase a true run request: after an explicit user fault-clear request and successful STM32
+revalidation, the BMS may resume the startup sequence. The request defaults off after STM32 reset or loss
+of the requesting service transport. The STM32 reports requested state, actual HV state, and any blocking
+reason separately.
 
 USB-only operation supports service access but cannot request or energize the HV path. The fitted
 hardware pull-down defines the inactive USB-sense level; the STM32 does not enable an internal pull.
@@ -389,13 +394,12 @@ The ESP32 is not part of the battery safety chain. It is not allowed to transmit
 bus and must remain listen-only there. Loss of the ESP32 or Wi-Fi must not prevent the STM32 from
 protecting or isolating the battery.
 
-No ESP32 firmware is currently present in this repository. The following items remain to be defined:
-
-- telemetry transport and data model;
-- network provisioning and update strategy;
-- authentication and local security;
-- use of Modbus TCP or RS485 for inverter telemetry; and
-- the exact boundary between ESP32, EMS, and Home Assistant.
+No ESP32 firmware is currently present in this repository. The agreed target is
+a local telemetry and maintenance Gateway: it uses isolated UART to the STM32,
+serves a BMS-only Companion page locally, publishes to Home Assistant through
+MQTT, and remains listen-only on shared BMS/GoodWe CAN. It is not a safety
+authority. The detailed transport, update, local-network, and recovery design
+is in `Documentation/architecture/home-bess-firmware-and-maintenance.md`.
 
 === Pinout
 Logical pin numbering on ESP32-C3-WROOM-02U-N4:
@@ -442,11 +446,14 @@ The entity model, discovery mechanism, command permissions, and dashboard design
 
 == Companion application
 
-#status("CURRENT")
+#status("PLANNED", kind: "planned")
 
-The repository contains a Vue-based browser application for service and diagnostics. It connects to the
-STM32 over Web Serial and presents live cell, temperature, fault, and register information. It is a
-commissioning and engineering tool rather than the permanent home-energy dashboard.
+The current in-tree `Software/bms_companion` is a legacy copy and is not the source for Home-BESS work.
+The planned `Software/Companion` is a FlexBMS-owned BMS-only application with two builds: a direct USB
+Web Serial build for independent service/development diagnostics, and an ESP32-hosted WebSocket build for
+local maintenance. Both provide live battery diagnostics and named service requests. Only direct USB has a
+raw development terminal; the network build has no raw terminal, exposes an explicit allowlist, and adds
+Gateway status and firmware-update workflow.
 
 = Operating concept
 
@@ -471,10 +478,10 @@ acknowledged through the supported service path and the BMS has successfully rev
 chain.
 
 The BMS exposes the HV supervisor as one aggregate blocking fault while the supervisor retains separate
-active, latched, and historical HV reasons. The Companion clear command can clear an HV latch only with
-the run request off and the live HV conditions healthy. The BMS then repeats chain initialization,
-diagnostics, and a complete fault-checked measurement cycle before the latch is released. Historical
-reasons remain available until reboot.
+active, latched, and historical HV reasons. The Companion clear command can clear an HV latch only when
+the live HV conditions are healthy. The BMS then repeats chain initialization, diagnostics, and a complete
+fault-checked measurement cycle before the latch is released. If the retained run request is true, the BMS
+may then resume its normal startup sequence. Historical reasons remain available until reboot.
 
 Configuration and initial TPL setup faults require a reboot. The ESP32, EMS, and Home Assistant cannot
 override a blocking STM32 fault.
@@ -509,13 +516,16 @@ must never be interpreted as a current permission to charge, discharge, or close
   [`Hardware/Master`], [Master schematic, PCB, harnesses, and production data.],
   [`Hardware/ModuleBoard`], [Battery module-board schematic, PCB, and production data.],
   [`Software/Master`], [STM32G491 firmware and platform configuration.],
-  [`Software/bms_companion`], [Browser-based USB service and diagnostic application.],
+  [`Software/bms_companion`], [Legacy in-tree Companion copy; not a Home-BESS source of truth.],
+  [`Software/Companion`], [Planned FlexBMS-owned BMS maintenance UI with USB and Gateway builds.],
+  [`Software/Gateway`], [Planned ESP32 network, MQTT, maintenance, OTA, and UART bridge firmware.],
+  [`Software/protocol`], [Planned STM32--ESP32 framing specification and test vectors.],
   [`Simulations`], [Electrical simulation files used during hardware development.],
   [`Documentation`], [This system overview and its Typst build setup.],
 )
 
-The repository does not yet contain ESP32, EMS, or Home Assistant implementation directories. They should
-be added as separate components when their architecture and deployment boundaries are agreed.
+The repository does not yet contain ESP32, EMS, Home Assistant, or FlexBMS Companion implementation
+directories. The ESP32, Companion, and protocol layouts are agreed; their implementation remains planned.
 
 = Open topics
 
@@ -524,5 +534,5 @@ This overview is intentionally incomplete. The next useful documentation additio
 - confirmed as-built module, NTC, and high-voltage topology;
 - final inverter selection, protocol compatibility, and commissioning sequence;
 - system-level operating, fault, recovery, and shutdown policy;
-- ESP32 telemetry, security, and update architecture; and
+- commissioning of the ESP32 telemetry, local-network, and update architecture; and
 - EMS and Home Assistant interfaces, fallback behavior, and user permissions.

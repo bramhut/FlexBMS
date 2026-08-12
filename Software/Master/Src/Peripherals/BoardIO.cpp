@@ -83,18 +83,25 @@ namespace IO
     {
         ledState = state;
         const double red = state ? ledColor.r : 0.0;
+        const double green = state ? ledColor.g : 0.0;
         __HAL_TIM_SET_COMPARE(
             &htim1,
             TIM_CHANNEL_1,
             static_cast<uint32_t>(std::clamp(red, 0.0, 1.0) * 254.0));
+        __HAL_TIM_SET_COMPARE(
+            &htim4,
+            TIM_CHANNEL_1,
+            static_cast<uint32_t>(std::clamp(green, 0.0, 1.0) * (254.0 / 3.0)));
 
         if (state)
         {
             HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+            HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
         }
         else
         {
             HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+            HAL_TIM_PWM_Stop(&htim4, TIM_CHANNEL_1);
         }
     }
 

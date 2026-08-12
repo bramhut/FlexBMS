@@ -921,7 +921,15 @@ namespace SlaveController
                 if (currentState == PERFORMING_DIAGNOSTICS)
                 {
                     // 5. Diagnostics
-                    const bool diagnosticsSuccessful = diagnostics();
+                    bool diagnosticsSuccessful = true;
+                    if (BMS_RUN_STARTUP_DIAGNOSTICS != 0U)
+                    {
+                        diagnosticsSuccessful = diagnostics();
+                    }
+                    else
+                    {
+                        PRINTF_ERR("[SC] WARNING: startup diagnostics are disabled for bench testing\n");
+                    }
                     updateFault(DIAGNOSTICS_FAULT, !diagnosticsSuccessful);
                     if (!diagnosticsSuccessful)
                     {

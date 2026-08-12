@@ -4,6 +4,7 @@
 #include "BoardIO.h"
 #include "SPIwrapper.h"
 #include "USBCOM.h"
+#include "usb_device.h"
 #include "CAN.h"
 #include "BMSCompanion.h"
 #include "pcc.h" 
@@ -13,6 +14,8 @@
 #define DEBUG_LVL 2
 #include "Debug.h"
 #include "bcc/SlaveController.h"
+
+#include <algorithm>
 
 #ifdef COMMANDS
 #include "Commands.h"
@@ -38,6 +41,7 @@ void mainTask(void *argument)
 	IO::setup();
 	IO::setLED(true);
 	USBCOM::setup();
+	MX_USB_Device_Init();
 	can.setup();
 	commands->setup();
 	SlaveController::setup(&can);
@@ -46,16 +50,18 @@ void mainTask(void *argument)
 	PCC::setup(&can);
 
 	HSV_t hsv{0, 1, 1};
+	double hueStep = 2.4;
 	while (1)
 	{
 		Charger::loop();
 		PCC::loop();
 		
 		IO::setLEDcolor(hsv);
-		hsv.h += 2.4;
-		if (hsv.h >= 360)
+		hsv.h += hueStep;
+		if (hsv.h >= 120 || hsv.h <= 0)
 		{
-			hsv.h = 0;
+			hsv.h = std::clamp(hsv.h, 0.0, 120.0);
+			hueStep = -hueStep;
 		}
 
 		commands->loop();

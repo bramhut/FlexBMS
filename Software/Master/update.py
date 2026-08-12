@@ -40,6 +40,13 @@ for filename in os.listdir("./Src"):
 # Run the command 'stm32pio generate' on both /Src and /Inc directories
 os.system("stm32pio generate")
 
+# This project provides MX_FREERTOS_Init() in Code.cpp. CubeMX still generates
+# its own competing implementation whenever FreeRTOS is enabled, so discard it.
+for filename in ("app_freertos.c", "app_freertos.cpp"):
+    path = os.path.join("./Src", filename)
+    if os.path.isfile(path):
+        os.remove(path)
+
 # Rename all *.c files in /Src subdirectory back to *.cpp. Exclude usbd_conf.c
 for filename in os.listdir("./Src"):
     if filename.endswith('.c') and os.path.isfile(os.path.join("./Src", filename)) and filename != "usbd_conf.c":

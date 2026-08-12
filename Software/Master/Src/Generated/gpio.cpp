@@ -54,7 +54,7 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(SPI_TX_NSS_GPIO_Port, SPI_TX_NSS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, PCC_EN_Pin|MC_EN_Pin|LED_G_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, PCC_EN_Pin|MC_EN_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : V_SENSE_LOAD_DIAG_Pin */
   GPIO_InitStruct.Pin = V_SENSE_LOAD_DIAG_Pin;
@@ -75,12 +75,12 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PCC_EN_Pin LED_G_Pin */
-  GPIO_InitStruct.Pin = PCC_EN_Pin|LED_G_Pin;
+  /*Configure GPIO pin : PCC_EN_Pin */
+  GPIO_InitStruct.Pin = PCC_EN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(PCC_EN_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : V_SENSE_BAT_DIAG_Pin V_SENSE_USB_Pin AUX_IO1_Pin */
   GPIO_InitStruct.Pin = V_SENSE_BAT_DIAG_Pin|V_SENSE_USB_Pin|AUX_IO1_Pin;
