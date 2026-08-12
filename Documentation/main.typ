@@ -401,6 +401,227 @@ MQTT, and remains listen-only on shared BMS/GoodWe CAN. It is not a safety
 authority. The detailed transport, update, local-network, and recovery design
 is in `Documentation/architecture/home-bess-firmware-and-maintenance.md`.
 
+=== STM32--ESP32 UART v1 contract
+
+#status("AGREED", kind: "planned")
+
+The STM32G491 BMS and ESP32-C3 Gateway communicate over isolated USART1 at 1 Mbit/s,
+8-N-1, full duplex, without hardware flow control. The STM32 is the safety authority. UART
+loss is a communication-health condition only: it must not force the HV path off or change the
+current run request. The legacy `*!` Companion protocol remains on USB and is not carried over
+this UART.
+
+Each endpoint sends a zero-payload heartbeat every 500 ms. A peer is declared lost only after
+1.5 s without a complete CRC-valid frame. Invalid bytes or frames with a bad CRC do not refresh
+the timer. The Gateway sends one service request at a time and waits for its response before
+sending the next one.
+
+All multi-byte values are little-endian. Encoders and decoders write and read individual fields;
+they must not transmit native C or C++ structs. The maximum payload length is 512 bytes.
+
+==== Frame
+
+```text
+offset  size  field
+0       2     MAGIC = 0x46 0x42 ("FB")
+2       1     VERSION = 0x01
+3       1     TYPE
+4       1     SEQUENCE
+5       2     LENGTH, uint16 payload length
+7       n     PAYLOAD
+7+n     4     CRC32, uint32
+```
+
+CRC is CRC-32/ISO-HDLC: polynomial `0x04C11DB7` (reflected `0xEDB88320`), reflected input
+and output, initial value and final xor `0xFFFFFFFF`. It covers the magic, header, and payload,
+but not the CRC field; the transmitted CRC word is little-endian. The standard check value is
+`CRC32("123456789") = 0xCBF43926`. On an invalid version, length, or CRC, the receiver discards
+the first magic byte and resumes magic scanning. The protocol uses no escaping or byte stuffing.
+
+`SEQUENCE = 0` is reserved for heartbeat, telemetry, and events. A Gateway service request uses
+a value from 1 through 255; the STM32 response echoes that sequence.
+
+==== Types
+
+#table(
+  columns: (auto, auto, auto),
+  align: (left, left, left),
+  stroke: none,
+  inset: (x: 5pt, y: 3pt),
+  table.header([*ID*], [*Type*], [*Direction*]),
+  [`0x01`], [HEARTBEAT], [both],
+  [`0x02`], [STATUS], [STM32 to Gateway],
+  [`0x03`], [PACK], [STM32 to Gateway],
+  [`0x04`], [CELL], [STM32 to Gateway],
+  [`0x05`], [TEMPERATURE], [STM32 to Gateway],
+  [`0x10`], [SERVICE_REQUEST], [Gateway to STM32],
+  [`0x11`], [SERVICE_RESPONSE], [STM32 to Gateway],
+  [`0x12`], [EVENT], [STM32 to Gateway],
+)
+
+==== Telemetry payloads
+
+`HEARTBEAT` has an empty payload.
+
+`STATUS` is 17 bytes:
+
+```text
+bms_state:u8 | hv_state:u8 | flags:u16 | slave_count:u8 |
+bms_active_faults:u16 | bms_latched_faults:u16 |
+hv_active_faults:u16 | hv_latched_faults:u16 | uptime_ms:u32
+```
+
+Status flag bits are: 0 BMS HV-ready, 1 charging allowed, 2 run request asserted, 3 complete
+measurements fresh, and 4 Gateway peer alive. Bits 5--15 are zero. `slave_count` comes from the
+compile-time BMS configuration and is variable between builds. It must be even: a module always
+contains two monitor slaves. The Gateway must use the reported value rather than assume a fixed
+number of modules.
+
+`PACK` is 24 bytes:
+
+```text
+pack_voltage_uV:u32 | pack_current_raw:i16 | soc_raw:u16 |
+min_cell_uV:u32 | max_cell_uV:u32 |
+min_ntc_raw:u16 | max_ntc_raw:u16 | min_ic_raw:u16 | max_ic_raw:u16
+```
+
+Voltage values are microvolts. Current is signed amperes times 64; positive current is charging.
+SoC uses the existing BCC raw range (`0 = -100%`, `65535 = 200%`), so percent is
+`100 * (soc_raw / 65535 * 3 - 1)`. NTC raw values convert as
+`raw / 65535 * 120 - 20` degrees C. IC raw values are decikelvin, so degrees C are
+`raw / 10 - 273.15`.
+
+`CELL` is 51 bytes, once per configured slave:
+
+```text
+slave_index:u8 | balance_mask:u16 | cell_voltage_uV[12]:u32
+```
+
+`slave_index` is zero-based. `module_index = slave_index >> 1` and
+`slave_in_module = slave_index & 1`. Balance-mask bit 0 represents cell 0 through bit 11 for
+cell 11; bits 12--15 are zero. Each slave always has twelve cells.
+
+`TEMPERATURE` is 11 bytes, once per configured slave:
+
+```text
+slave_index:u8 | ntc_raw[4]:u16 | ic_temp_raw:u16
+```
+
+The four NTC values and one IC value are included together, making this packet fixed-size. This
+matches the installed four-NTC-per-slave configuration and must be enforced as a compile-time
+configuration check in both endpoint implementations.
+
+The STM32 sends STATUS and a complete PACK/CELL/TEMPERATURE snapshot when fresh measurement data
+is available, no more often than once every 500 ms. It sends EVENT immediately on a change.
+The Gateway must treat PACK, CELL, and TEMPERATURE data as invalid while STATUS says measurements
+are not fresh.
+
+==== States, faults, and events
+
+BMS states are `0 DEVICE_INITIALIZATION`, `1 REGISTER_INITIALIZATION`,
+`2 PERFORMING_DIAGNOSTICS`, `3 RUNNING`, and `4 PANIC`. HV states are `0 OFF`, `1 SELF_TEST`,
+`2 PRECHARGE`, `3 CONTACTOR_CLOSE`, and `4 RUN`.
+
+BMS fault bitmap bits 0--15 are, in order: `INVALID_CONFIG`, `TPL_FAULT`,
+`CID_INITIALIZATION_FAULT`, `REGISTER_INITIALIZATION_FAULT`, `CELL_BALANCING_FAULT`,
+`DIAGNOSTICS_FAULT`, `OVERVOLTAGE_LIMIT`, `UNDERVOLTAGE_LIMIT`, `TEMPERATURE_LIMIT`,
+`OVERCURRENT_LIMIT`, `IC_TEMPERATURE`, `SOC_LIMIT`, `OPEN_SHORT_FAULT`, `SYSTEM_FAULT`,
+`COMMUNICATION_TIMEOUT`, and `HV_SUPERVISOR_FAULT`.
+
+HV fault bitmap bits 0--6 are: `SENSOR_DIAGNOSTIC`, `USB_ONLY`,
+`BATTERY_VOLTAGE_MISMATCH`, `LOAD_SIDE_ENERGIZED`, `PRECHARGE_TIMEOUT`,
+`PRECHARGE_VOLTAGE_LOST`, and `CONTACTOR_VOLTAGE_LOST`. An active reason is present now; a
+latched reason remains a block after its live condition clears, until the STM32 accepts a supported
+clear procedure and revalidates the system.
+
+`EVENT` is three bytes:
+
+```text
+event_id:u8 | value:u16
+```
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  align: (left, left, left),
+  stroke: none,
+  inset: (x: 5pt, y: 3pt),
+  table.header([*ID*], [*Event*], [*Value*]),
+  [`0x01`], [BMS state changed], [new BMS state],
+  [`0x02`], [HV state changed], [new HV state],
+  [`0x03`], [BMS active faults changed], [new active mask],
+  [`0x04`], [BMS latched faults changed], [new latched mask],
+  [`0x05`], [HV active reasons changed], [new active mask],
+  [`0x06`], [HV latched reasons changed], [new latched mask],
+  [`0x07`], [measurement freshness changed], [`0` or `1`],
+)
+
+EVENT is a convenience notification; STATUS is authoritative, so loss of an event is harmless.
+
+==== Services
+
+The service-request payload is `service_id:u8 | arguments...`; the service-response payload is
+`service_id:u8 | result:u8 | response_data...`. Result values are intentionally limited to
+`0 OK`, `1 DENIED`, and `2 INVALID`. `INVALID` covers an unknown service, bad request length,
+bad argument, or nonexistent slave index. `DENIED` means a valid request cannot safely be performed
+in the current STM32 state. `OK` means that the STM32 accepted and invoked the requested operation;
+STATUS and EVENT show the resulting operating state.
+
+#table(
+  columns: (auto, auto, 1fr, 1fr),
+  align: (left, left, left, left),
+  stroke: none,
+  inset: (x: 5pt, y: 3pt),
+  table.header([*ID*], [*Service*], [*Request arguments*], [*OK response data*]),
+  [`0x01`], [GET_STATUS], [none], [17-byte STATUS],
+  [`0x02`], [SET_RUN_REQUEST], [`requested:u8` (`0` or `1`)], [none],
+  [`0x03`], [CLEAR_FAULTS], [none], [none],
+  [`0x04`], [READ_REGISTER], [`slave_index:u8, register:u8`], [`slave_index:u8, register:u8, value:u16`],
+  [`0x05`], [SET_RTC], [`unix_time_s:u32` UTC], [none],
+  [`0x06`], [GET_DEVICE_INFO], [none], [`firmware_version:u32`],
+  [`0x07`], [ENTER_STM32_BOOTLOADER], [`firmware_version:u32, image_length:u32, image_crc32:u32`], [none],
+)
+
+`SET_RUN_REQUEST(0)` immediately removes the request through the STM32 PCC path. A request of 1
+does not guarantee an HV start: the STM32 alone decides whether BMS and HV checks permit the
+sequence. CLEAR_FAULTS is denied while run is requested or live HV conditions are unhealthy.
+Neither the Gateway nor Home Assistant can bypass a fault, write BCC registers, or override the
+HV supervisor. `firmware_version` is packed as
+`major | (minor << 8) | (patch << 16) | (build << 24)`.
+
+`ENTER_STM32_BOOTLOADER` is the only STM32-update operation in this protocol. The Gateway must
+already have staged and CRC-checked the image. The STM32 validates the request shape and image
+length; `firmware_version` and `image_crc32` identify the Gateway-staged image but cannot be
+verified by an STM32 that does not receive its bytes. It returns `DENIED` unless the run request is
+off and it can de-energise the HV path and inhibit normal services. After `OK`, the STM32 drains
+that response, stops framed UART traffic, and enters
+the STM32 ROM bootloader. The Gateway then performs the ROM bootloader sync, transfer, readback
+verification, and `Go` command directly on USART1; these are not FlexBMS UART messages. On return
+to the application, the Gateway waits for heartbeat and uses GET_DEVICE_INFO to confirm the expected
+firmware version. There are deliberately no update-data, acknowledgement, retry, or status frame
+types.
+
+==== Test vectors
+
+The following complete frames are hexadecimal, including the little-endian CRC:
+
+```text
+HEARTBEAT
+46 42 01 01 00 00 00 8F 7A FB 7D
+
+GET_STATUS, sequence 0x2A
+46 42 01 10 2A 01 00 01 8F 21 B2 4B
+
+SET_RUN_REQUEST(true), sequence 0x2B
+46 42 01 10 2B 02 00 02 01 16 26 B1 DC
+
+READ_REGISTER response, sequence 0x2C, slave 3, register 0x20, value 0x1234
+46 42 01 11 2C 06 00 04 00 03 20 34 12 1A 45 F6 9C
+
+ENTER_STM32_BOOTLOADER, sequence 0x2D, version 1.2.3 build 4,
+image length 131072 bytes, image CRC32 0xA1B2C3D4
+46 42 01 10 2D 0D 00 07 01 02 03 04 00 00 02 00 D4 C3 B2 A1 42 C9 9E 95
+```
+
 === Pinout
 Logical pin numbering on ESP32-C3-WROOM-02U-N4:
 1. 3V3

@@ -36,6 +36,7 @@ namespace PCC
         bool requestEdgePending = false;
         bool requestRequiresRelease = false;
         bool faultClearPending = false;
+        bool firmwareUpdateLocked = false;
 
         uint16_t activeErrors = HV_ERROR_NONE;
         uint16_t latchedErrors = HV_ERROR_NONE;
@@ -342,6 +343,7 @@ namespace PCC
         requestEdgePending = false;
         requestRequiresRelease = false;
         faultClearPending = false;
+        firmwareUpdateLocked = false;
         state = OFF;
         error = NO_ERROR;
         activeErrors = HV_ERROR_NONE;
@@ -352,6 +354,12 @@ namespace PCC
 
     void setRunRequest(bool requested)
     {
+        if (requested && firmwareUpdateLocked)
+        {
+            PRINTF_WARN("[PCC] Run request denied during firmware update\n");
+            return;
+        }
+
         if (!requested)
         {
             runRequest = false;
@@ -372,6 +380,11 @@ namespace PCC
 
     bool requestFaultClear()
     {
+        if (firmwareUpdateLocked)
+        {
+            return false;
+        }
+
         if (latchedErrors == HV_ERROR_NONE)
         {
             return true;
@@ -389,10 +402,48 @@ namespace PCC
         return true;
     }
 
+    bool isSafeForFirmwareUpdate()
+    {
+        return !firmwareUpdateLocked && !runRequest && state == OFF;
+    }
+
+    bool enterFirmwareUpdateLock()
+    {
+        if (!isSafeForFirmwareUpdate())
+        {
+            return false;
+        }
+
+        firmwareUpdateLocked = true;
+        requestEdgePending = false;
+        faultClearPending = false;
+        disableOutputs();
+        state = OFF;
+        return true;
+    }
+
+    bool isFirmwareUpdateLocked()
+    {
+        return firmwareUpdateLocked;
+    }
+
+    bool isRunRequested()
+    {
+        return runRequest;
+    }
+
     void loop()
     {
         batteryVoltage = IO::getBatterySideVoltage();
         loadVoltage = IO::getLoadSideVoltage();
+
+        if (firmwareUpdateLocked)
+        {
+            disableOutputs();
+            state = OFF;
+            handleSendingCANMessage();
+            return;
+        }
 
         if (faultClearPending &&
             (SlaveController::getLatchedFaults() & HV_FAULT_MASK) == 0U)

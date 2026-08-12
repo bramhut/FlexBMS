@@ -51,6 +51,10 @@ namespace PCC
 
     void setRunRequest(bool requested);
     bool requestFaultClear();
+    bool isSafeForFirmwareUpdate();
+    bool enterFirmwareUpdateLock();
+    bool isFirmwareUpdateLocked();
+    bool isRunRequested();
 
     PCC_STATE getPCCState();
     PCC_ERROR getPCCError();

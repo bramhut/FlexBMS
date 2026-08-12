@@ -44,6 +44,7 @@ namespace BMSCompanion
         SlaveController::RegisterReponse registerReponse;
 
         uint32_t timeLastSendMessage = 0;
+        uint32_t lastSeenMeasurement = 0;
 
         uint32_t secondaryLoopCounter = 0; // Counter for the secondary loop, used to send messages every 100ms
 
@@ -182,7 +183,10 @@ namespace BMSCompanion
             if (msgID == 0x15)
             {
                 registerRequest = {.cid = (uint8_t)atoi(msgBody.substr(0, 2).c_str()), .regAddr = (uint8_t)std::stoi(msgBody.substr(2, 2).c_str(), nullptr, 16)};
-                SlaveController::requestRegister(registerRequest, &registerRequestFinished, &registerReponse);
+                if (!SlaveController::requestRegister(registerRequest, &registerRequestFinished, &registerReponse))
+                {
+                    PRINTF_WARN("[BC] Register request rejected\n");
+                }
             }
             else if (msgID == 0x19)
             {
@@ -232,7 +236,7 @@ namespace BMSCompanion
                 // No point in doing stuff if companion not connected
                 if (CompanionHandler::isConnectionAlive())
                 {
-                    if (SlaveController::isNewDataAvailable())
+                    if (SlaveController::isNewDataAvailable(lastSeenMeasurement))
                     {
                         CompanionHandler::transmitMessage(0x11, encodeGeneralInfoMessage());
 

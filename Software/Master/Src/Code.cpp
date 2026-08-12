@@ -7,6 +7,7 @@
 #include "usb_device.h"
 #include "CAN.h"
 #include "BMSCompanion.h"
+#include "BmsUart.h"
 #include "pcc.h" 
 #include "Charger.h"
 // #include "WSEN_TIDS.h"
@@ -48,6 +49,7 @@ void mainTask(void *argument)
 	Charger::setup(&can);
 	BMSCompanion::setup();
 	PCC::setup(&can);
+	BmsUart::setup();
 
 	HSV_t hsv{0, 1, 1};
 	double hueStep = 2.4;

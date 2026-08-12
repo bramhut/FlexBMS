@@ -66,7 +66,10 @@ namespace SlaveController
      *
      * @return new data available flag
      */
-    bool isNewDataAvailable();
+    bool isNewDataAvailable(uint32_t &lastSeenMeasurement);
+
+    /*! @brief True when the most recent complete measurement set is still valid. */
+    bool areMeasurementsFresh();
 
     /*!
      * @brief Get the current faults
@@ -167,6 +170,9 @@ namespace SlaveController
      */
     const std::vector<std::vector<bool>> getBalancingList();
 
+    /*! @brief Get the twelve-cell UART balance bitmap for one zero-based slave index. */
+    uint16_t getBalancingMask(size_t slaveIndex);
+
     /*!
     * @brief Get a list of lists of which cells are balancing
     * @return 2D vector of which cells are balancing
@@ -243,5 +249,5 @@ namespace SlaveController
      */
     void setSoC(uint16_t soc);
 
-    void requestRegister(RegisterRequest requestInfo, bool *flag, RegisterReponse *regValue);
+    bool requestRegister(RegisterRequest requestInfo, bool *flag, RegisterReponse *regValue);
 }
