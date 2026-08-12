@@ -14,6 +14,8 @@
 #include "bcc/bcc_diagnostics.h"
 #include "bcc/UserSettings.h"
 #include "USBCOM.h"
+#include "FreeRTOS.h"
+#include <atomic>
 
 #define DEBUG_LVL 2
 #include "Debug.h"
@@ -83,7 +85,7 @@ namespace SlaveController
 
         uint8_t currentMeasurementSlaveIdx = 0; // Index of the slave responsible for current measurement
 
-        bool newDataAvailable = false; // Set to true when new data is available to be read
+        std::atomic<uint32_t> measurementSequence{0};
         bool completeMeasurementSetValid = false;
 
         vector<uint16_t> ICtemperatures; // Vector of IC temperatures
@@ -102,6 +104,7 @@ namespace SlaveController
         RegisterRequest registerRequest = {};
         bool *registerRequestFlag = nullptr;
         RegisterReponse *registerResponse = nullptr;
+        bool registerRequestBusy = false;
 
         /*******************************************************************************
          * Private functions
@@ -134,7 +137,6 @@ namespace SlaveController
             if (state != RUNNING)
             {
                 completeMeasurementSetValid = false;
-                newDataAvailable = false;
             }
             currentState = state;
             switch (state)
@@ -514,7 +516,6 @@ namespace SlaveController
             }
 
             completeMeasurementSetValid = success;
-            newDataAvailable = success;
             return success;
         }
 
@@ -647,15 +648,34 @@ namespace SlaveController
 
         void handleRegisterRequests()
         {
-            RegisterReponse response;
-            if (registerRequest.cid != 0)
+            RegisterRequest request;
+            bool *finishedFlag;
+            RegisterReponse *responseTarget;
+
+            taskENTER_CRITICAL();
+            if (!registerRequestBusy || registerRequest.cid == 0U)
             {
-                PRINTF_INFO("[SC] Processing register request\n");
-                response.status = mSlaves[registerRequest.cid - 1].regRead(registerRequest.regAddr, 1, &response.regValue);
-                *registerRequestFlag = true;
-                *registerResponse = response;
-                registerRequest.cid = 0;
+                taskEXIT_CRITICAL();
+                return;
             }
+
+            request = registerRequest;
+            finishedFlag = registerRequestFlag;
+            responseTarget = registerResponse;
+            taskEXIT_CRITICAL();
+
+            PRINTF_INFO("[SC] Processing register request\n");
+            RegisterReponse response = {};
+            response.status = mSlaves[request.cid - 1U].regRead(request.regAddr, 1, &response.regValue);
+            *responseTarget = response;
+            *finishedFlag = true;
+
+            taskENTER_CRITICAL();
+            registerRequest = {};
+            registerRequestFlag = nullptr;
+            registerResponse = nullptr;
+            registerRequestBusy = false;
+            taskEXIT_CRITICAL();
         }
 
         void runningLoop()
@@ -665,11 +685,10 @@ namespace SlaveController
             const bool conversionSuccessful = startMeasurements();
             const bool measurementsSuccessful = getMeasurements();
             completeMeasurementSetValid = conversionSuccessful && measurementsSuccessful;
-            if (!completeMeasurementSetValid)
+            if (completeMeasurementSetValid)
             {
-                newDataAvailable = false;
+                measurementSequence.fetch_add(1U);
             }
-
             // Cell balancing
             // performCellBalancing();
 
@@ -1094,14 +1113,20 @@ namespace SlaveController
         bmsTaskHandle = osThreadNew(task, NULL, &bmsTask_attributes);
     }
 
-    bool isNewDataAvailable()
+    bool isNewDataAvailable(uint32_t &lastSeenMeasurement)
     {
-        if (newDataAvailable)
+        const uint32_t currentMeasurement = measurementSequence.load();
+        if (currentMeasurement != lastSeenMeasurement)
         {
-            newDataAvailable = false;
+            lastSeenMeasurement = currentMeasurement;
             return true;
         }
         return false;
+    }
+
+    bool areMeasurementsFresh()
+    {
+        return measurementsAreFresh();
     }
 
     void clearFaults()
@@ -1151,7 +1176,8 @@ namespace SlaveController
 
     vector<size_t> getCellCountPerSlave()
     {
-        vector<size_t> cellCounts(getNumOfSlaves());
+        vector<size_t> cellCounts;
+        cellCounts.reserve(getNumOfSlaves());
         for (auto &slave : mSlaves)
         {
             cellCounts.push_back(slave.getCellCount());
@@ -1161,7 +1187,8 @@ namespace SlaveController
 
     vector<size_t> getNTCCountPerSlave()
     {
-        vector<size_t> NTCCounts(getNumOfSlaves());
+        vector<size_t> NTCCounts;
+        NTCCounts.reserve(getNumOfSlaves());
         for (auto &slave : mSlaves)
         {
             NTCCounts.push_back(slave.getNTCCount());
@@ -1183,6 +1210,24 @@ namespace SlaveController
             balanceActive.push_back(slave.getBalancingList());
         }
         return balanceActive;
+    }
+
+    uint16_t getBalancingMask(size_t slaveIndex)
+    {
+        if (slaveIndex >= mSlaves.size())
+        {
+            return 0U;
+        }
+
+        uint16_t mask = 0U;
+        for (uint8_t cellIndex = 0U; cellIndex < 12U; ++cellIndex)
+        {
+            if (mSlaves[slaveIndex].isCellBalancing(cellIndex))
+            {
+                mask |= static_cast<uint16_t>(1U << cellIndex);
+            }
+        }
+        return mask;
     }
 
     uint32_t getMinCellVoltage()
@@ -1274,11 +1319,26 @@ namespace SlaveController
         mSlaves[currentMeasurementSlaveIdx].setAhCounter(ampHour);
     }
 
-    void requestRegister(RegisterRequest requestInfo, bool *flag, RegisterReponse *regResponse)
+    bool requestRegister(RegisterRequest requestInfo, bool *flag, RegisterReponse *regResponse)
     {
+        if (requestInfo.cid == 0U || requestInfo.cid > mSlaves.size() || flag == nullptr || regResponse == nullptr)
+        {
+            return false;
+        }
+
+        taskENTER_CRITICAL();
+        if (registerRequestBusy)
+        {
+            taskEXIT_CRITICAL();
+            return false;
+        }
+
         registerRequest = requestInfo;
         registerRequestFlag = flag;
         registerResponse = regResponse;
+        registerRequestBusy = true;
+        taskEXIT_CRITICAL();
+        return true;
     }
 
 }

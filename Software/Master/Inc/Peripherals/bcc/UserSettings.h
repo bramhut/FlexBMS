@@ -3,7 +3,8 @@
 #include "main.h"
 #include "bcc/bcc.h"
 #include "bcc/bcc_utils.h"
-#include <vector>
+#include <array>
+#include <span>
 
 struct SafetyLimits_t
 {
@@ -18,7 +19,7 @@ struct SafetyLimits_t
 
 struct UserSettings_t
 {
-    std::vector<BCC::Config_t> SLAVE_CONFIG;
+    std::span<const BCC::Config_t> SLAVE_CONFIG;
     SafetyLimits_t SAFETY_LIMITS;
     double SHUNT_RESISTANCE;
     double NTC_RESISTANCE;
@@ -55,8 +56,7 @@ struct UserSettings_t
     uint32_t CAN_PCC_PERIOD; // [ms] The period at which the BMS sends CAN messages about the PCC
 };
 
-const UserSettings_t DEFAULT_SETTINGS = {
-    .SLAVE_CONFIG = {
+inline constexpr std::array<BCC::Config_t, 8> DEFAULT_SLAVE_CONFIG = {{
         {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4, .CURRENT_SENSING_ENABLED = true, .AMPHOUR_BACKUP_REG = 4},
         {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
         {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
@@ -65,7 +65,30 @@ const UserSettings_t DEFAULT_SETTINGS = {
         {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
         {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
         {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
-    },
+}};
+
+constexpr bool hasValidUartTelemetrySlaveConfig()
+{
+    if (DEFAULT_SLAVE_CONFIG.empty() || (DEFAULT_SLAVE_CONFIG.size() % 2U) != 0U)
+    {
+        return false;
+    }
+
+    for (const auto &config : DEFAULT_SLAVE_CONFIG)
+    {
+        if (config.CELL_COUNT != 12U || config.NTC_COUNT != 4U)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+static_assert(hasValidUartTelemetrySlaveConfig(),
+              "UART v1 requires an even number of 12-cell, four-NTC monitor slaves");
+
+inline constexpr UserSettings_t DEFAULT_SETTINGS = {
+    .SLAVE_CONFIG = std::span<const BCC::Config_t>{DEFAULT_SLAVE_CONFIG},
     .SAFETY_LIMITS = {.OVERVOLTAGE_LIMIT = 3.6, .UNDERVOLTAGE_LIMIT = 2.5, .OVERTEMPERATURE_LIMIT = 60, .UNDERTEMPERATURE_LIMIT = 5, .CHARGE_CURRENT_LIMIT = 63, .DISCHARGE_CURRENT_LIMIT = 63, .COMMUNICATION_TIMEOUT = 500},
     .SHUNT_RESISTANCE = 375e-6, // 200 A / 75 mV shunt
     .NTC_RESISTANCE = 10000,
