@@ -158,6 +158,75 @@ The `run_request` switch reports the STM32-owned retained intent. Separate HV
 and fault entities show whether that intent is presently effective. Home
 Assistant does not upload images or directly initiate safety-related actions.
 
+## Status LED language
+
+All physical status LEDs are active-low. The Gateway has one yellow LED on
+IO1/GPIO17. The STM32 has usable red and green user-LED outputs, independently
+PWM controlled. The STM32 yellow LED is the USART1 TX line and must not be used
+as an indicator. The current STM32 firmware only performs a continuous colour
+sweep and the system overview previously listed its user LED as a TODO; that
+sweep is a hardware check, not a status language.
+
+The two controllers will use the same *temporal* language. Exact flash phase
+does not need synchronisation: in particular the endpoints cannot synchronise
+after the UART has failed. They do use the same visible cadence and the same
+meaning for the UART-loss code.
+
+| Pattern | Timing | Common meaning |
+|---|---|---|
+| Boot acknowledgement | Solid for 1 s | Firmware has started. |
+| Waiting | 500 ms on / 500 ms off | Startup or a required prerequisite is not yet ready. |
+| Healthy heartbeat | 100 ms on every 2 s | Ready and healthy, but not actively operating. |
+| Code 2 | Two 150 ms flashes, 150 ms apart, every 2 s | A non-safety external service is unavailable. |
+| Code 3 | Three 150 ms flashes, 150 ms apart, every 2 s | STM32--Gateway UART link unavailable. |
+| Update | 4 Hz blink | Firmware update preparation or transfer is in progress. |
+| Fatal local failure | Solid after the boot acknowledgement | The local firmware cannot enter normal operation. |
+
+Colour adds STM32-specific context without changing these patterns. The STM32
+uses green for healthy and transition/update states, and red for an active
+blocking BMS condition. The Gateway uses its single yellow LED for all Gateway
+states. In particular, a UART-loss BMS communication fault is three red
+flashes; the Gateway shows the same three-flash code in yellow. Any other
+active blocking BMS fault is a single red flash every two seconds. The full
+fault bitmap is intentionally not encoded into flash counts;
+Companion and Home Assistant remain the source of the exact fault names.
+
+The initial state mapping is:
+
+| Controller | State | Indication |
+|---|---|---|
+| STM32 | Boot / self-test before ready | Green waiting blink after the boot acknowledgement. |
+| STM32 | Healthy `OFF`, no run request | Green healthy heartbeat. |
+| STM32 | `SELF_TEST`, `PRECHARGE`, or `CONTACTOR_CLOSE` | Green waiting blink. |
+| STM32 | `RUN` | Solid green. |
+| STM32 | Active blocking fault other than UART loss | Single red flash every 2 s. |
+| STM32 | UART-loss fault | Code 3 in red. |
+| Gateway | Boot | Yellow boot acknowledgement. |
+| Gateway | Wi-Fi setup or connecting to Wi-Fi | Yellow waiting blink. |
+| Gateway | Wi-Fi connected, MQTT unavailable | Code 2 in yellow. |
+| Gateway | Wi-Fi, MQTT, and STM32 UART healthy | Yellow healthy heartbeat. |
+| Gateway | UART heartbeat timeout | Code 3 in yellow. |
+| Gateway | Firmware update in progress | Yellow update blink. |
+
+The STM32 LED controller and Gateway LED controller must be non-blocking,
+driven from their regular scheduling loops, and apply the highest-priority
+active state. For the STM32: fatal local failure, blocking fault, update,
+startup transition, `RUN`, then ready-off. For the Gateway: fatal local
+failure, update, UART loss, Wi-Fi setup/connecting, MQTT loss, then healthy.
+An ordinary BMS fault is not a Gateway fault indication unless it is the
+UART-loss condition: the Gateway remains healthy and reports the BMS fault
+through Companion and Home Assistant.
+
+Brightness is independently adjustable for every physical LED: STM32 red,
+STM32 green, and Gateway yellow. These values are named firmware configuration
+constants rather than hard-coded in pattern logic. They define the maximum
+duty/drive used by every normal operational pattern and default below full
+brightness; commissioning may tune each LED independently. Each controller
+inverts its logical on/off pattern to drive its active-low hardware, without
+changing its configured brightness. An optional separately capped attention
+brightness may be used for boot acknowledgement and fatal-local-failure
+indication, also below the hardware maximum.
+
 ## Telemetry and event contract
 
 UART telemetry uses raw integer units; the Gateway converts the compact Home

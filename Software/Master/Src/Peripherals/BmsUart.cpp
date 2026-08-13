@@ -126,6 +126,7 @@ namespace BmsUart
         volatile bool txComplete = false;
         volatile bool hasValidGatewayFrame = false;
         volatile uint32_t lastValidGatewayFrameMs = 0U;
+        volatile uint32_t uartStartedMs = 0U;
 
         PendingRegisterRead pendingRegisterRead;
         EventCache eventCache;
@@ -372,6 +373,7 @@ namespace BmsUart
             const auto &allIc = SlaveController::getICtemps();
             const size_t slaveCount = SlaveController::getNumOfSlaves();
 
+            // A bench chain may contain one monitor; emit exactly the configured count.
             for (size_t slaveIndex = 0U; slaveIndex < slaveCount; ++slaveIndex)
             {
                 if (slaveIndex >= allCells.size() || slaveIndex >= allNtc.size() || slaveIndex >= allIc.size() ||
@@ -689,8 +691,18 @@ namespace BmsUart
 
     void setup()
     {
+        hasValidGatewayFrame = false;
+        lastValidGatewayFrameMs = HAL_GetTick();
+        uartStartedMs = lastValidGatewayFrameMs;
         rxQueue = xQueueCreateStatic(RX_QUEUE_DEPTH, sizeof(ReceivedFrame), rxQueueStorage.data(), &rxQueueControl);
         uartTaskHandle = osThreadNew(task, nullptr, &uartTaskAttributes);
+    }
+
+    bool isGatewayLinkLost()
+    {
+        const uint32_t now = HAL_GetTick();
+        return now - uartStartedMs >= GATEWAY_LOSS_MS &&
+               (!hasValidGatewayFrame || now - lastValidGatewayFrameMs >= GATEWAY_LOSS_MS);
     }
 
     void onRxEvent(const uint8_t *data, size_t length)

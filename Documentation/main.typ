@@ -342,7 +342,9 @@ High priority:
 - USB VSENSE setup
 - Derating on temperature (mainly low temperature charging, high temperature is not that applicable)
 - Communication to Goodwe inverter. Exact protocol needs discussion and likely imperical data once we have the inverter ready.
-- User LED
+- User LED status language is specified in
+  `Documentation/architecture/home-bess-firmware-and-maintenance.md`; firmware
+  implementation remains pending.
 
 Medium priority:
 - Communication to ESP32 over UART. Reporting and named service operations; see
@@ -473,9 +475,9 @@ hv_active_faults:u16 | hv_latched_faults:u16 | uptime_ms:u32
 
 Status flag bits are: 0 BMS HV-ready, 1 charging allowed, 2 run request asserted, 3 complete
 measurements fresh, and 4 Gateway peer alive. Bits 5--15 are zero. `slave_count` comes from the
-compile-time BMS configuration and is variable between builds. It must be even: a module always
-contains two monitor slaves. The Gateway must use the reported value rather than assume a fixed
-number of modules.
+configured BMS monitor chain and is variable between builds. A production module contains two
+monitor slaves, but a single-slave development chain is supported until its second slave is
+connected. The Gateway must use the reported value and must not reject an odd count.
 
 `PACK` is 24 bytes:
 
@@ -499,7 +501,8 @@ slave_index:u8 | balance_mask:u16 | cell_voltage_uV[12]:u32
 
 `slave_index` is zero-based. `module_index = slave_index >> 1` and
 `slave_in_module = slave_index & 1`. Balance-mask bit 0 represents cell 0 through bit 11 for
-cell 11; bits 12--15 are zero. Each slave always has twelve cells.
+cell 11; bits 12--15 are zero. Each slave always has twelve cells. In a single-slave development
+chain, only index 0 is sent; it maps to module 0, slave 0, and no partner frame is implied.
 
 `TEMPERATURE` is 11 bytes, once per configured slave:
 

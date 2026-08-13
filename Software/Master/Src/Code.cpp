@@ -8,6 +8,7 @@
 #include "CAN.h"
 #include "BMSCompanion.h"
 #include "BmsUart.h"
+#include "StatusLed.h"
 #include "pcc.h" 
 #include "Charger.h"
 // #include "WSEN_TIDS.h"
@@ -40,7 +41,7 @@ Commands* commands = Commands::getInstance();
 void mainTask(void *argument)
 {
 	IO::setup();
-	IO::setLED(true);
+	StatusLed::setup();
 	USBCOM::setup();
 	MX_USB_Device_Init();
 	can.setup();
@@ -51,20 +52,12 @@ void mainTask(void *argument)
 	PCC::setup(&can);
 	BmsUart::setup();
 
-	HSV_t hsv{0, 1, 1};
-	double hueStep = 2.4;
 	while (1)
 	{
 		Charger::loop();
 		PCC::loop();
-		
-		IO::setLEDcolor(hsv);
-		hsv.h += hueStep;
-		if (hsv.h >= 120 || hsv.h <= 0)
-		{
-			hsv.h = std::clamp(hsv.h, 0.0, 120.0);
-			hueStep = -hueStep;
-		}
+
+		StatusLed::update();
 
 		commands->loop();
 		delay(20);
