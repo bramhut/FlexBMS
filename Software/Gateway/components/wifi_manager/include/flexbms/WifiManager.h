@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace FlexBms::Wifi
@@ -10,12 +12,46 @@ namespace FlexBms::Wifi
         Provisioning,
         Connecting,
         Connected,
+        Recovery,
     };
 
-    // Starts either first-time provisioning AP mode or the saved station connection.
-    // It never blocks the BMS UART path. false means Wi-Fi is unavailable for this boot.
-    bool start();
+    struct AccessPoint
+    {
+        bool active = false;
+        std::array<char, 33U> ssid{};
+        std::array<char, 16U> address{};
+    };
 
-    // This is intentionally only Wi-Fi state. MQTT ownership is added later.
+    struct ScanNetwork
+    {
+        std::array<char, 33U> ssid{};
+        int8_t rssi = 0;
+        bool secure = false;
+    };
+
+    struct ScanResults
+    {
+        std::array<ScanNetwork, 20U> networks{};
+        size_t count = 0U;
+    };
+
+    enum class ScanRequestResult : uint8_t { Started, Busy, RateLimited, Unavailable };
+
+    // Starts the ESP32 network stack without blocking the BMS UART path. The
+    // Gateway owns the HTTP server in every Wi-Fi state.
+    bool start();
+    void tick();
     State getState();
+    bool consumeStatusChanged();
+
+    // Station credentials are write-only. The SSID is exposed only as local
+    // status; the password is never returned from this component.
+    const char *getStationSsid();
+    AccessPoint getAccessPoint();
+    bool isAccessPointActive();
+    bool allowsBmsServices();
+    bool configure(const char *ssid, const char *password);
+
+    ScanRequestResult requestScan();
+    bool consumeScanResults(ScanResults &results);
 }

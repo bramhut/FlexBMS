@@ -10,7 +10,7 @@ namespace FlexBms
 {
     namespace
     {
-        constexpr gpio_num_t kStatusLedGpio = GPIO_NUM_17;
+        constexpr gpio_num_t kStatusLedGpio = GPIO_NUM_1;
         constexpr ledc_mode_t kLedcMode = LEDC_LOW_SPEED_MODE;
         constexpr ledc_timer_t kLedcTimer = LEDC_TIMER_0;
         constexpr ledc_channel_t kLedcChannel = LEDC_CHANNEL_0;
@@ -69,7 +69,7 @@ namespace FlexBms
             .channel = kLedcChannel,
             .intr_type = LEDC_INTR_DISABLE,
             .timer_sel = kLedcTimer,
-            .duty = kPwmMaximumDuty,
+            .duty = 0U,
             .hpoint = 0,
             .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
             .flags = {},
@@ -112,11 +112,9 @@ namespace FlexBms
             on = periodicOn(now, kHeartbeatPeriodUs, kHeartbeatOnUs);
         }
 
-        // Active-low hardware: logical on is a capped low-duty PWM level;
-        // logical off is a continuously high output.
-        const uint32_t activeLowDuty = kPwmMaximumDuty -
-            (kPwmMaximumDuty * kYellowBrightnessPercent / 100U);
-        check(ledc_set_duty(kLedcMode, kLedcChannel, on ? activeLowDuty : kPwmMaximumDuty));
+        const uint32_t activeHighDuty =
+            kPwmMaximumDuty * kYellowBrightnessPercent / 100U;
+        check(ledc_set_duty(kLedcMode, kLedcChannel, on ? activeHighDuty : 0U));
         check(ledc_update_duty(kLedcMode, kLedcChannel));
     }
 

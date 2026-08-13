@@ -306,6 +306,27 @@ void SPI2_IRQHandler(void)
 void USART1_IRQHandler(void)
 {
   /* USER CODE BEGIN USART1_IRQn 0 */
+  /*
+   * A core-only reset can leave an enabled USART interrupt behind while the
+   * C++ UART handle has returned to its reset state.  Do not enter the HAL
+   * handler until MX_USART1_UART_Init() has re-established that state.
+   */
+  if (huart1.gState == HAL_UART_STATE_RESET)
+  {
+    CLEAR_BIT(USART1->CR1, USART_CR1_IDLEIE);
+    USART1->ICR = USART_ICR_PECF | USART_ICR_FECF | USART_ICR_NECF |
+                  USART_ICR_ORECF | USART_ICR_IDLECF | USART_ICR_TCCF;
+    return;
+  }
+
+  /* IDLEIE is only valid while ReceiveToIdle DMA owns the RX state. */
+  if (huart1.RxState != HAL_UART_STATE_BUSY_RX &&
+      huart1.RxState != HAL_UART_STATE_BUSY_TX_RX &&
+      READ_BIT(USART1->CR1, USART_CR1_IDLEIE) != 0U)
+  {
+    CLEAR_BIT(USART1->CR1, USART_CR1_IDLEIE);
+    USART1->ICR = USART_ICR_IDLECF;
+  }
 
   /* USER CODE END USART1_IRQn 0 */
   HAL_UART_IRQHandler(&huart1);

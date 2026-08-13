@@ -1,0 +1,29 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { currentA, isFresh, ntcCelsius, socPercent, valueOrStale } from '../src/shared/model.ts'
+import { reconnectDelayMs } from '../src/shared/reconnect.ts'
+import { serviceResultLabel } from '../src/shared/service.ts'
+import { unavailableCapabilities } from '../src/transports/Transport.ts'
+
+test('raw UART v1 units convert in the presentation layer', () => {
+  assert.equal(currentA(-64), -1)
+  assert.equal(socPercent(65535), 200)
+  assert.equal(ntcCelsius(0), -20)
+})
+test('stale snapshots never render measurements as live zeroes', () => {
+  assert.equal(isFresh(null), false)
+  assert.equal(valueOrStale('0.000 V', false), 'Stale')
+})
+test('target capabilities disable unavailable functions', () => {
+  const capabilities = unavailableCapabilities()
+  assert.equal(capabilities.raw_terminal, false)
+  assert.equal(capabilities.firmware_update, false)
+  assert.equal(capabilities.wifi_configuration, false)
+})
+test('all named service results have UI labels', () => {
+  assert.equal(serviceResultLabel('ok'), 'Accepted')
+  assert.equal(serviceResultLabel('transport_error'), 'Transport error')
+})
+test('gateway reconnect is bounded exponential backoff', () => {
+  assert.deepEqual([0, 1, 2, 3, 4, 5].map(reconnectDelayMs), [1000, 2000, 4000, 8000, 10000, 10000])
+})

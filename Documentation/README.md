@@ -5,6 +5,13 @@ overview of the FlexBMS system, hardware, software, and planned integrations.
 
 The agreed Home-BESS Gateway, Companion, and firmware-update architecture is in
 [`architecture/home-bess-firmware-and-maintenance.md`](architecture/home-bess-firmware-and-maintenance.md).
+The canonical byte-level STM32--ESP32 protocol is
+[`protocol/uart-v1.md`](protocol/uart-v1.md); use it for all UART implementation
+and test work.
+
+The implementation specification for the BMS-only Companion restructure and
+its Gateway browser API is
+[`architecture/companion-restructure-and-gateway-api.md`](architecture/companion-restructure-and-gateway-api.md).
 
 ## Prerequisite
 

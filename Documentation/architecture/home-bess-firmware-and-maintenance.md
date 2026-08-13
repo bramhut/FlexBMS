@@ -23,6 +23,25 @@ never transmits on it.
 Loss of the ESP32, Wi-Fi, MQTT, Home Assistant, or the browser must never
 prevent the STM32 from protecting or isolating the battery.
 
+## Gateway Wi-Fi maintenance path
+
+Wi-Fi configuration is an ESP32/Gateway maintenance function, not a battery
+control path. The Gateway-hosted Companion can change credentials while it is
+on the trusted LAN and can recover through an open, temporary setup AP. Neither
+operation is sent to the STM32 or changes its safety ownership.
+
+On first use the Gateway exposes `FlexBMS-Setup-XXYYZZ` at `192.168.4.1` until
+configured. After a saved station network fails to acquire an IP for 30
+seconds, it exposes the same AP for ten minutes while retrying station mode;
+it then retries station-only for one minute and repeats until connected. The
+AP offers best-effort captive-portal DNS/HTTP behaviour, although users may
+need to open `http://192.168.4.1` manually on HTTPS-only clients.
+
+The AP is deliberately open and credentials reside in ordinary ESP32 NVS.
+While it is active, the Companion is monitor and Wi-Fi-configuration only:
+Gateway-to-STM32 service controls are disabled. Detailed API and validation
+requirements are in the Companion/Gateway specification.
+
 ## Operating request
 
 The STM32 owns one volatile `run_request` flag. Both Companion transports and
@@ -160,12 +179,12 @@ Assistant does not upload images or directly initiate safety-related actions.
 
 ## Status LED language
 
-All physical status LEDs are active-low. The Gateway has one yellow LED on
-IO1/GPIO17. The STM32 has usable red and green user-LED outputs, independently
-PWM controlled. The STM32 yellow LED is the USART1 TX line and must not be used
-as an indicator. The current STM32 firmware only performs a continuous colour
-sweep and the system overview previously listed its user LED as a TODO; that
-sweep is a hardware check, not a status language.
+The STM32 red and green status LEDs are active-low. The Gateway has one
+active-high yellow `USR_LED` on IO1/GPIO1 (ESP32-C3-WROOM-02U module pin 17).
+GPIO17 is not exposed by this module. The STM32 yellow LED is the USART1 TX
+line and must not be used as an indicator. The current STM32 firmware only
+performs a continuous colour sweep and the system overview previously listed
+its user LED as a TODO; that sweep is a hardware check, not a status language.
 
 The two controllers will use the same *temporal* language. Exact flash phase
 does not need synchronisation: in particular the endpoints cannot synchronise
@@ -221,11 +240,11 @@ Brightness is independently adjustable for every physical LED: STM32 red,
 STM32 green, and Gateway yellow. These values are named firmware configuration
 constants rather than hard-coded in pattern logic. They define the maximum
 duty/drive used by every normal operational pattern and default below full
-brightness; commissioning may tune each LED independently. Each controller
-inverts its logical on/off pattern to drive its active-low hardware, without
-changing its configured brightness. An optional separately capped attention
-brightness may be used for boot acknowledgement and fatal-local-failure
-indication, also below the hardware maximum.
+brightness; commissioning may tune each LED independently. The STM32
+controller inverts its logical on/off pattern for its active-low hardware; the
+Gateway drives its active-high LED directly. An optional separately capped
+attention brightness may be used for boot acknowledgement and
+fatal-local-failure indication, also below the hardware maximum.
 
 ## Telemetry and event contract
 
@@ -251,83 +270,28 @@ synchronised. Before then, they carry uptime and an explicit unknown-time state.
 
 ## STM32--ESP32 UART protocol
 
-The isolated UART target is 1 Mbit/s. Two Mbit/s is an allowed later option
-only after link validation. Protocol v1 uses a binary, length-framed packet:
+The canonical byte-level specification is
+[`Documentation/protocol/uart-v1.md`](../protocol/uart-v1.md). It defines the
+framing, CRC, numeric IDs, payload layouts, integer scales, fault/event
+mappings, service result values, ROM-bootloader handoff, and test vectors. It
+supersedes the earlier provisional UART description that appeared here.
 
-```text
-MAGIC(2) | VERSION(1) | TYPE(1) | SEQUENCE(1) | LENGTH(2) | PAYLOAD(0..512) | CRC-32(4)
-```
-
-All multi-byte fields are little-endian. `MAGIC` is a fixed two-byte
-resynchronisation marker. A receiver scans for it after corrupt data and accepts
-a candidate only when its length is within the 512-byte payload limit and its
-CRC-32 validates the header and payload. `SEQUENCE` is zero for unsolicited
-telemetry and nonzero for a service request and its response.
-
-The STM32 supplies raw integer measurements, not floating-point engineering
-values: for example millivolts, milliamps, deci-degrees Celsius, and a defined
-integer SoC scale. The Gateway, Companion, and Home Assistant convert for
-display. This is compact and deterministic and preserves the BMS source data.
-
-The initial type catalogue is:
-
-| Type | Direction | Purpose |
-|---|---|---|
-| `HEARTBEAT` | Both | Uptime and link liveness. Sent every 500 ms. |
-| `STATUS` | STM32 to Gateway | Firmware version, BMS state, `run_request`, actual HV state, fault bitmap, and UART health. |
-| `PACK_TELEMETRY` | STM32 to Gateway | Pack voltage/current, SoC, and min/max cell voltage and temperature. |
-| `CELL_TELEMETRY` | STM32 to Gateway | Module index, slave index, twelve cell voltages, and balancing bitmap. Two slave frames describe one 24-cell module. |
-| `TEMPERATURE_TELEMETRY` | STM32 to Gateway | Module index, slave index, and that slave's sensor temperatures. |
-| `SERVICE_REQUEST` | Gateway to STM32 | Named service identifier and its binary payload. |
-| `SERVICE_RESPONSE` | STM32 to Gateway | Request sequence, result, reason, and optional data. |
-| `EVENT` | STM32 to Gateway | Fault, UART, or HV state transition with timestamp. |
-| `UPDATE_*` | Both | Reserved for Stage 2 STM32 update transfer. |
-
-Telemetry frames are unsolicited and unacknowledged; old telemetry may be
-dropped under backpressure. A service request has one request in flight and an
-explicit response. Its response envelope contains the request sequence, one
-result (`OK`, `REJECTED`, `BUSY`, `INVALID`, or `FAILED`), a concise reason code,
-and optional response data. The initial named services are:
-
-| Service | Payload / result |
-|---|---|
-| `GET_STATUS` | Current BMS status and firmware version. |
-| `SET_RUN_REQUEST` | One Boolean request; accepted/rejected with effective/block reason. |
-| `CLEAR_FAULTS` | Accepted/rejected and revalidation progress. |
-| `READ_REGISTER` | CID and register address; returns value or error. |
-| `SET_RTC` | Unix seconds; applied or rejected. |
-
-Examples of service reason codes are `BLOCKING_FAULT`, `UART_NOT_READY`,
-`HV_NOT_SAFE`, and `UNSUPPORTED`. There is no generic remote-command service.
-
-The traffic categories are:
-
-- **telemetry:** STM32 to Gateway, latest-value semantics; old data may be
-  dropped under backpressure;
-- **service:** the named request/response operations above, acknowledgements,
-  result codes, and reasons for rejection; and
-- **update:** ordered acknowledged image chunks, retries, and transfer CRCs.
-
-The Gateway is required for normal BMS operation. Each endpoint expects a
-heartbeat every 500 ms; after three missed intervals (1.5 s) UART communication
-is lost. This includes an ESP32 reboot or unavailable ESP32 and raises a
-manually-cleared BMS communication error that disables the effective HV state.
-It does not clear a true `run_request`; after explicit fault clear and STM32
-revalidation, normal startup may resume. No other network availability loss is
-currently a warning or error.
+The isolated UART link is 1 Mbit/s. Telemetry is unsolicited/latest-value
+data; a Gateway service operation has one request in flight and an explicit
+response. The STM32 sends raw integer values and remains the safety authority.
 
 Existing line-oriented, `*!`-prefixed Companion messages remain supported only
 on the STM32 USB service path. The Gateway uses the clean binary messages above;
-it does not encapsulate legacy Companion payloads. The exact field layout,
-integer scales, service payloads, and test vectors belong in `Software/protocol`
-before implementation.
+it does not encapsulate legacy Companion payloads. UART loss is a
+communication-health condition only; it does not force the HV path off or
+change the run request.
 
 ## Firmware updates
 
-Images have a small manifest with target, hardware revision, semantic
-version/build identifier, byte length, and CRC-32. The trusted-LAN design does
-not require release signatures. CRC-32 detects corrupted storage and transfer;
-it is not an authentication mechanism.
+Images have a small manifest with semantic version/build identifier, byte
+length, and CRC-32. The trusted-LAN design does not require release signatures.
+CRC-32 detects corrupted storage and transfer; it is not an authentication
+mechanism.
 
 ### ESP32 OTA
 
@@ -338,16 +302,31 @@ An image is accepted as healthy once it reaches the Gateway main loop; automatic
 functional self-test and rollback policy are deliberately out of scope because
 manual ESP32 reflashing is an accepted recovery path.
 
-The fitted ESP32-C3-WROOM-02U-N4 has 4 MiB flash. The initial custom partition
-target is approximately two 1.25 MiB application slots and 1.44 MiB LittleFS,
-plus bootloader, partition, NVS, and PHY overhead. This is provisional until
-the actual Gateway image is measured.
+The fitted ESP32-C3-WROOM-02U-N4 has 4 MiB flash. `Software/Gateway/partitions.csv`
+defines the accepted layout. Its two 1.25 MiB OTA application slots accommodate
+the measured roughly 1.01 MiB Gateway image with room for ordinary firmware
+growth. The table is:
 
-LittleFS holds the Gateway Companion bundle, diagnostics, update metadata, and
-one staged STM32 image. STM32 flash is at most 512 KiB and likely materially
-smaller, so a BMS-only 500 KiB web-bundle budget leaves useful filesystem
-headroom. No partition table is final until real Gateway and Companion sizes
-have been measured.
+| Partition | Offset | Size | Purpose |
+|---|---:|---:|---|
+| `nvs` | `0x9000` | 24 KiB | Wi-Fi credentials and small update metadata. |
+| `otadata` | `0xF000` | 8 KiB | Selects the booted OTA slot. |
+| `phy_init` | `0x11000` | 4 KiB | Wi-Fi PHY initialisation data. |
+| `ota_0` | `0x20000` | 1.25 MiB | One ESP32 firmware image. |
+| `ota_1` | `0x160000` | 1.25 MiB | The other ESP32 firmware image. |
+| `bms_update` | `0x2A0000` | 512 KiB | Raw staging area for one complete STM32 image. |
+| `littlefs` | `0x320000` | 896 KiB | Companion bundle, diagnostics, and file metadata. |
+
+ESP32 OTA streams a verified image directly to the inactive application slot;
+it does not need a separate download partition. STM32 flash is at most 512 KiB
+and is staged in the dedicated raw partition. The Gateway verifies its expected
+length and CRC-32 before beginning the internal UART transfer.
+
+The Companion bundle must move to LittleFS before it approaches its 500 KiB
+budget: keeping that bundle embedded in both OTA application images would make
+the selected application-slot size unsustainable. The current partition change
+only reserves this space; the OTA, LittleFS-serving, and STM32-transfer code
+remain separate increments.
 
 ### STM32 update: two stages
 
@@ -357,9 +336,9 @@ USB/ST-Link. Gateway firmware uses ESP-IDF. The Gateway retains a 128 KiB
 circular diagnostic log for download through the maintenance page.
 
 **Stage 2** adds remote STM32 updating. The Gateway stages the image, validates
-target/size/CRC, and asks the STM32 to enter update mode. The STM32 accepts only
-from a confirmed safe-off state: HV outputs inactive, no update in progress,
-and external run/service actions inhibited. It then makes the same safe state
+size/CRC, and asks the STM32 to enter update mode. The STM32 accepts only from
+a confirmed safe-off state: HV outputs inactive, no update in progress, and
+external run/service actions inhibited. It then makes the same safe state
 explicit before jumping from its application into the immutable STM32 system
 memory bootloader on USART1 (PA9/PA10).
 

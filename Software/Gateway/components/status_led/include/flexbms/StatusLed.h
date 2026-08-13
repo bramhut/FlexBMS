@@ -7,8 +7,8 @@ namespace FlexBms
     class StatusLed
     {
     public:
-        // The IO1/GPIO17 LED is active-low. Tune this independently during
-        // commissioning; it remains below the hardware maximum by default.
+        // The board's USR_LED is active-high on GPIO1 / WROOM-02U IO1 (pin 17).
+        // GPIO17 is the module flash SPIQ signal and must never be configured.
         static constexpr uint8_t kYellowBrightnessPercent = 35U;
 
         void setup();

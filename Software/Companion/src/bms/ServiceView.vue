@@ -1,0 +1,13 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import type { BmsTransport, Capabilities, GatewayStatus, ServiceName } from '@/transports/Transport'
+import { serviceResultLabel } from '@/shared/service'
+const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities; gateway?: GatewayStatus }>()
+const requested = ref(false); const unixTime = ref(Math.floor(Date.now() / 1000)); const slave = ref(0); const register = ref(0); const result = ref('')
+const gatewayLogAvailable = computed(() => props.capabilities.diagnostic_log_download && props.gateway?.diagnostic_log.available)
+const availability = (capability: keyof Capabilities) => props.capabilities[capability] ? '' : 'Unavailable on this target.'
+async function invoke(service: ServiceName): Promise<void> { const argumentsByService = { set_run_request: { requested: requested.value }, clear_faults: {}, set_rtc: { unix_time_s: unixTime.value }, read_register: { slave_index: slave.value, register: register.value } } as const; const response = await props.transport.request(service, argumentsByService[service]); result.value = `${serviceResultLabel(response.result)}${response.data ? `: ${response.data.value}` : ''}` }
+</script>
+<template>
+  <main class="stack"><section><h2>Named BMS services</h2><label><input v-model="requested" type="checkbox" :disabled="!capabilities.set_run_request" /> Request BMS run</label><button :disabled="!capabilities.set_run_request" @click="invoke('set_run_request')">Set run request</button><small>{{ availability('set_run_request') }}</small><button :disabled="!capabilities.clear_faults" @click="invoke('clear_faults')">Clear faults</button><small>{{ availability('clear_faults') }}</small><label>UTC seconds <input v-model.number="unixTime" type="number" min="0" /></label><button :disabled="!capabilities.set_rtc" @click="invoke('set_rtc')">Set RTC</button></section><section><h2>Read-only register viewer</h2><label>Slave <input v-model.number="slave" type="number" min="0" max="255" /></label><label>Register <input v-model.number="register" type="number" min="0" max="255" /></label><button :disabled="!capabilities.read_register" @click="invoke('read_register')">Read register</button></section><p v-if="result"><b>{{ result }}</b> — a successful action only means the STM32 invoked the request; telemetry remains authoritative.</p><section><h2>Gateway diagnostics</h2><a v-if="gatewayLogAvailable" href="/api/diagnostic-log" download>Download diagnostic log ({{ gateway?.diagnostic_log.bytes }} bytes)</a><span v-else>Unavailable on this target or Gateway log is not available.</span></section><section><h2>Firmware update</h2><p>Unavailable: STM32 firmware updating is manual by USB/ST-Link.</p></section></main>
+</template>

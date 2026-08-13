@@ -126,6 +126,11 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
   if(uartHandle->Instance==USART1)
   {
   /* USER CODE BEGIN USART1_MspInit 0 */
+    /* A debugger core reset can retain USART state from a previous run. */
+    HAL_NVIC_DisableIRQ(USART1_IRQn);
+    __HAL_RCC_USART1_FORCE_RESET();
+    __HAL_RCC_USART1_RELEASE_RESET();
+    HAL_NVIC_ClearPendingIRQ(USART1_IRQn);
 
   /* USER CODE END USART1_MspInit 0 */
 

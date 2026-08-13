@@ -1,4 +1,5 @@
 #include "flexbms/Protocol.h"
+#include "flexbms/GatewayApi.h"
 #include "flexbms/StatusLed.h"
 #include "flexbms/WifiManager.h"
 
@@ -25,6 +26,7 @@ namespace
     int64_t lastValidFrameUs = 0;
     bool linkWasHealthy = false;
     bool uartLinkTimedOut = false;
+    uint8_t nextServiceSequence = 1U;
 
     void check(esp_err_t result)
     {
@@ -44,6 +46,41 @@ namespace
         {
             ESP_LOGW(kLogTag, "UART heartbeat transmit failed");
         }
+    }
+
+    bool sendBrowserService(FlexBms::GatewayApi::Service service, const uint8_t *arguments, uint8_t argumentLength, uint8_t &sequence)
+    {
+        if (argumentLength > 4U)
+        {
+            return false;
+        }
+        sequence = nextServiceSequence++;
+        if (nextServiceSequence == 0U)
+        {
+            nextServiceSequence = 1U;
+        }
+        FlexBms::UartV1::Frame frame{.type = FlexBms::UartV1::MessageType::ServiceRequest, .sequence = sequence, .length = static_cast<uint16_t>(argumentLength + 1U)};
+        frame.payload[0] = static_cast<uint8_t>(service);
+        for (uint8_t index = 0U; index < argumentLength; ++index)
+        {
+            frame.payload[index + 1U] = arguments[index];
+        }
+        std::array<uint8_t, FlexBms::UartV1::kMaxFrameBytes> bytes{};
+        const size_t length = FlexBms::UartV1::encode(frame, bytes.data(), bytes.size());
+        return length != 0U && uart_write_bytes(kBmsUart, bytes.data(), length) == static_cast<int>(length);
+    }
+
+    void handleServiceResponse(const FlexBms::UartV1::Frame &frame)
+    {
+        if (frame.length < 2U)
+        {
+            return;
+        }
+        FlexBms::GatewayApi::ServiceResult result = FlexBms::GatewayApi::ServiceResult::TransportError;
+        if (frame.payload[1] == 0U) result = FlexBms::GatewayApi::ServiceResult::Ok;
+        else if (frame.payload[1] == 1U) result = FlexBms::GatewayApi::ServiceResult::Denied;
+        else if (frame.payload[1] == 2U) result = FlexBms::GatewayApi::ServiceResult::Invalid;
+        FlexBms::GatewayApi::completeService(frame.sequence, result, frame.payload.data() + 2U, static_cast<uint8_t>(frame.length - 2U));
     }
 
     void logTelemetry(const FlexBms::UartV1::Frame &frame)
@@ -124,6 +161,11 @@ extern "C" void app_main(void)
         ESP_LOGE(kLogTag, "UART v1 codec self-test failed");
         abort();
     }
+    if (!FlexBms::GatewayApi::verifyBrowserApi())
+    {
+        ESP_LOGE(kLogTag, "Gateway browser API self-test failed");
+        abort();
+    }
 
     configureUart();
     FlexBms::StatusLed statusLed;
@@ -139,6 +181,11 @@ extern "C" void app_main(void)
     std::array<uint8_t, 128U> receiveBuffer{};
     int64_t nextHeartbeatUs = esp_timer_get_time();
     lastValidFrameUs = nextHeartbeatUs;
+    const bool gatewayApiStarted = FlexBms::GatewayApi::start(sendBrowserService);
+    if (!gatewayApiStarted)
+    {
+        ESP_LOGE(kLogTag, "Gateway HTTP/WebSocket service failed to start");
+    }
 
     while (true)
     {
@@ -154,6 +201,11 @@ extern "C" void app_main(void)
                     ESP_LOGI(kLogTag, "STM32 UART link healthy");
                 }
                 logTelemetry(frame);
+                FlexBms::GatewayApi::publishFrame(frame, static_cast<uint32_t>(esp_timer_get_time() / 1000));
+                if (frame.type == FlexBms::UartV1::MessageType::ServiceResponse)
+                {
+                    handleServiceResponse(frame);
+                }
             }
         }
 
@@ -170,6 +222,14 @@ extern "C" void app_main(void)
             ESP_LOGW(kLogTag, "STM32 UART link lost: no CRC-valid frame for 1.5 s");
         }
         uartLinkTimedOut = linkTimedOut;
+        FlexBms::GatewayApi::setUartHealthy(!uartLinkTimedOut && linkWasHealthy);
+
+        FlexBms::Wifi::tick();
+        if (FlexBms::Wifi::consumeStatusChanged())
+        {
+            FlexBms::GatewayApi::publishGatewayStatus();
+        }
+        FlexBms::GatewayApi::poll();
 
         statusLed.setUartLinkLost(uartLinkTimedOut);
         statusLed.setWifiWaiting(FlexBms::Wifi::getState() != FlexBms::Wifi::State::Connected);

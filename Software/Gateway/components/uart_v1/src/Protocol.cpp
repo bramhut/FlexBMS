@@ -232,6 +232,15 @@ namespace FlexBms::UartV1
         static constexpr std::array<uint8_t, 11U> heartbeat = {
             0x46U, 0x42U, 0x01U, 0x01U, 0x00U, 0x00U, 0x00U, 0x8FU, 0x7AU, 0xFBU, 0x7DU,
         };
+        static constexpr std::array<uint8_t, 12U> getStatus = {
+            0x46U, 0x42U, 0x01U, 0x10U, 0x2AU, 0x01U, 0x00U, 0x01U, 0x8FU, 0x21U, 0xB2U, 0x4BU,
+        };
+        static constexpr std::array<uint8_t, 13U> setRunRequest = {
+            0x46U, 0x42U, 0x01U, 0x10U, 0x2BU, 0x02U, 0x00U, 0x02U, 0x01U, 0x16U, 0x26U, 0xB1U, 0xDCU,
+        };
+        static constexpr std::array<uint8_t, 17U> readRegisterResponse = {
+            0x46U, 0x42U, 0x01U, 0x11U, 0x2CU, 0x06U, 0x00U, 0x04U, 0x00U, 0x03U, 0x20U, 0x34U, 0x12U, 0x1AU, 0x45U, 0xF6U, 0x9CU,
+        };
         if (crc32(crcInput.data(), crcInput.size()) != 0xCBF43926UL)
         {
             return false;
@@ -249,10 +258,32 @@ namespace FlexBms::UartV1
             return false;
         }
 
+        const auto decodeVector = [&decoder, &received](const auto &bytes) {
+            decoder.reset();
+            bool complete = false;
+            for (uint8_t byte : bytes) complete = decoder.consume(byte, received);
+            return complete;
+        };
+        if (!decodeVector(getStatus) || received.type != MessageType::ServiceRequest || received.sequence != 0x2AU ||
+            received.length != 1U || received.payload[0] != 0x01U)
+        {
+            return false;
+        }
+        if (!decodeVector(setRunRequest) || received.type != MessageType::ServiceRequest || received.sequence != 0x2BU ||
+            received.length != 2U || received.payload[0] != 0x02U || received.payload[1] != 0x01U)
+        {
+            return false;
+        }
+        if (!decodeVector(readRegisterResponse) || received.type != MessageType::ServiceResponse || received.sequence != 0x2CU ||
+            received.length != 6U || received.payload[0] != 0x04U || received.payload[1] != 0x00U ||
+            received.payload[2] != 0x03U || received.payload[3] != 0x20U || received.payload[4] != 0x34U || received.payload[5] != 0x12U)
+        {
+            return false;
+        }
+
         std::array<uint8_t, kMaxFrameBytes> encoded{};
         const Frame expected{.type = MessageType::Heartbeat, .sequence = 0U, .length = 0U};
         return encode(expected, encoded.data(), encoded.size()) == heartbeat.size() &&
                std::memcmp(encoded.data(), heartbeat.data(), heartbeat.size()) == 0;
     }
 }
-

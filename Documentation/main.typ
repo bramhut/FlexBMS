@@ -396,16 +396,20 @@ The ESP32 is not part of the battery safety chain. It is not allowed to transmit
 bus and must remain listen-only there. Loss of the ESP32 or Wi-Fi must not prevent the STM32 from
 protecting or isolating the battery.
 
-No ESP32 firmware is currently present in this repository. The agreed target is
-a local telemetry and maintenance Gateway: it uses isolated UART to the STM32,
-serves a BMS-only Companion page locally, publishes to Home Assistant through
-MQTT, and remains listen-only on shared BMS/GoodWe CAN. It is not a safety
-authority. The detailed transport, update, local-network, and recovery design
-is in `Documentation/architecture/home-bess-firmware-and-maintenance.md`.
+`Software/Gateway` contains the initial ESP32 firmware: the isolated UART v1
+codec and Wi-Fi provisioning/station connection. Its planned local Companion,
+MQTT, OTA, and CAN-observation work remains separate. The Gateway uses isolated
+UART to the STM32 and remains listen-only on shared BMS/GoodWe CAN. It is not a
+safety authority. The detailed transport, update, local-network, and recovery
+design is in `Documentation/architecture/home-bess-firmware-and-maintenance.md`.
 
 === STM32--ESP32 UART v1 contract
 
 #status("AGREED", kind: "planned")
+
+The canonical byte-level implementation contract is
+`Documentation/protocol/uart-v1.md`. The following overview is retained in the
+system document; resolve any discrepancy in favour of the Markdown contract.
 
 The STM32G491 BMS and ESP32-C3 Gateway communicate over isolated USART1 at 1 Mbit/s,
 8-N-1, full duplex, without hardware flow control. The STM32 is the safety authority. UART
@@ -626,12 +630,40 @@ image length 131072 bytes, image CRC32 0xA1B2C3D4
 ```
 
 === Pinout
-Logical pin numbering on ESP32-C3-WROOM-02U-N4:
-1. 3V3
-2. EN
-3. IO4 - CAN_TX
-4. IO5 - CAN_RX
-To be continued...
+The Gateway uses an ESP32-C3-WROOM-02U-N4. The module pin names and numbers
+below follow the Espressif datasheet; net names follow the Master schematic.
+GPIO17 is used internally for module flash and is not exposed.
+
+#table(
+  columns: (16mm, 27mm, 43mm, 64mm),
+  align: (left, left, left, left),
+  inset: 4pt,
+  stroke: (x: 0.25pt, y: 0.25pt),
+  table.header(
+    header-cell([*Module pin*]),
+    header-cell([*GPIO / module name*]),
+    header-cell([*Net*]),
+    header-cell([*Use*]),
+  ),
+  [1], [3V3], [`p3v3_INV`], [3.3 V supply],
+  [2], [EN], [`EN`], [Chip enable],
+  [3], [GPIO4 / IO4], [`CAN_TX`], [CAN controller transmit],
+  [4], [GPIO5 / IO5], [`CAN_RX`], [CAN controller receive],
+  [5], [GPIO6 / IO6], [`RS485_RO`], [RS-485 receiver output],
+  [6], [GPIO7 / IO7], [`RS485_DI`], [RS-485 driver input],
+  [7], [GPIO8 / IO8], [`IO8/STRAP`], [Strapping pin],
+  [8], [GPIO9 / IO9], [`IO9/BOOT`], [Boot-mode strap],
+  [9; EPAD 19], [GND], [`GND_INV`], [Ground and module ground pad],
+  [10], [GPIO10 / IO10], [`ESP_VBUS_SENSE`], [USB VBUS sense],
+  [11], [GPIO20 / RXD], [--], [Not connected; UART0 RX unused],
+  [12], [GPIO21 / TXD], [--], [Not connected; UART0 TX unused],
+  [13], [GPIO18 / IO18], [`USB_ESP32_N`], [USB D-],
+  [14], [GPIO19 / IO19], [`USB_ESP32_P`], [USB D+],
+  [15], [GPIO3 / IO3], [`UART_ESP_RX`], [STM32 USART1 TX input],
+  [16], [GPIO2 / IO2], [`UART_ESP_TX`], [STM32 USART1 RX output; strapping pin],
+  [17], [GPIO1 / IO1], [`USR_LED`], [Gateway user/status LED],
+  [18], [GPIO0 / IO0], [`RS485_EN`], [RS-485 driver enable],
+)
 
 
 #block(breakable: false)[
@@ -742,14 +774,14 @@ must never be interpreted as a current permission to charge, discharge, or close
   [`Software/Master`], [STM32G491 firmware and platform configuration.],
   [`Software/bms_companion`], [Legacy in-tree Companion copy; not a Home-BESS source of truth.],
   [`Software/Companion`], [Planned FlexBMS-owned BMS maintenance UI with USB and Gateway builds.],
-  [`Software/Gateway`], [Planned ESP32 network, MQTT, maintenance, OTA, and UART bridge firmware.],
-  [`Software/protocol`], [Planned STM32--ESP32 framing specification and test vectors.],
+  [`Software/Gateway`], [ESP32 UART v1 codec and Wi-Fi provisioning; MQTT, maintenance, OTA, and CAN work remain planned.],
+  [`Documentation/protocol/uart-v1.md`], [Canonical STM32--ESP32 framing specification and test vectors.],
   [`Simulations`], [Electrical simulation files used during hardware development.],
   [`Documentation`], [This system overview and its Typst build setup.],
 )
 
-The repository does not yet contain ESP32, EMS, Home Assistant, or FlexBMS Companion implementation
-directories. The ESP32, Companion, and protocol layouts are agreed; their implementation remains planned.
+The repository contains the initial ESP32 Gateway implementation. EMS, Home
+Assistant, and FlexBMS Companion implementations remain planned.
 
 = Open topics
 

@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "companion_version": "0.1.0",
+  "files": [
+    {
+      "path": "assets/index-bsNHk2Ci.css",
+      "bytes": 722,
+      "sha256": "6425004cdfafded52b38788ed0a83cb4b53f569d03baa4635ed223c976eade7f"
+    },
+    {
+      "path": "assets/index-DfCSuabk.js",
+      "bytes": 83408,
+      "sha256": "b9f2f1923704a9782bdd5a99725deb482b6f25f93d2856fd991b9fbb188033ed"
+    },
+    {
+      "path": "index.html",
+      "bytes": 373,
+      "sha256": "5617bea0d9836e30edd148b97eaf375c91598450d17e0db147c6591fe719a8de"
+    }
+  ],
+  "total_bytes": 84503
+}

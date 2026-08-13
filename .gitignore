@@ -7,3 +7,11 @@ Simulations/**.raw
 **/__pycache__
 *Project Outputs for*
 *Project Logs for*
+
+# Local Companion dependencies and direct-WebSerial build output. The Gateway
+# bundle under Software/Companion/dist/gateway is intentionally versioned.
+/Software/Companion/node_modules/
+/Software/Companion/dist/webserial/
+
+# ESP-IDF Component Manager cache. dependencies.lock pins its resolved inputs.
+/Software/Gateway/managed_components/

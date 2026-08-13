@@ -1,0 +1,23 @@
+{
+  "name": "flexbms-companion",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "FlexBMS monitoring and service Companion",
+  "scripts": {
+    "dev": "vite --mode webserial",
+    "check": "vue-tsc --noEmit && node --test tests/*.test.ts",
+    "build:webserial": "vite build --mode webserial --outDir dist/webserial",
+    "build:gateway": "vite build --mode gateway --outDir dist/gateway && node scripts/write-gateway-manifest.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "typescript": "^5.2.2",
+    "vite": "^5.2.0",
+    "vue": "^3.4.21",
+    "vue-tsc": "^2.0.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7"
+  }
+}

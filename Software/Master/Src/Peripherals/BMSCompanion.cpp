@@ -40,6 +40,7 @@ namespace BMSCompanion
         char printBuf[512] = {0};
 
         bool registerRequestFinished = false;
+        bool registerRequestWasNamedService = false;
         SlaveController::RegisterRequest registerRequest;
         SlaveController::RegisterReponse registerReponse;
 
@@ -47,6 +48,44 @@ namespace BMSCompanion
         uint32_t lastSeenMeasurement = 0;
 
         uint32_t secondaryLoopCounter = 0; // Counter for the secondary loop, used to send messages every 100ms
+
+        enum ServiceResult : uint8_t { SERVICE_OK = 0U, SERVICE_DENIED = 1U, SERVICE_INVALID = 2U };
+
+        void sendServiceResult(uint8_t serviceId, ServiceResult result)
+        {
+            snprintf(printBuf, sizeof(printBuf), "%02X%01X\n", serviceId, result);
+            CompanionHandler::transmitMessage(0x1F, string(printBuf));
+        }
+
+        bool isDecimal(const string &value)
+        {
+            return !value.empty() && value.size() <= 10U &&
+                   value.find_first_not_of("0123456789") == string::npos;
+        }
+
+        bool parseUnsigned(const string &value, uint8_t base, uint32_t maximum, uint32_t &result)
+        {
+            if (value.empty())
+            {
+                return false;
+            }
+            uint32_t parsed = 0U;
+            for (char character : value)
+            {
+                uint8_t digit = 0U;
+                if (character >= '0' && character <= '9') digit = static_cast<uint8_t>(character - '0');
+                else if (base == 16U && character >= 'A' && character <= 'F') digit = static_cast<uint8_t>(character - 'A' + 10U);
+                else if (base == 16U && character >= 'a' && character <= 'f') digit = static_cast<uint8_t>(character - 'a' + 10U);
+                else return false;
+                if (digit >= base || parsed > (maximum - digit) / base)
+                {
+                    return false;
+                }
+                parsed = parsed * base + digit;
+            }
+            result = parsed;
+            return true;
+        }
 
         // PRIVATE FUNCTIONS
         string encodeGeneralInfoMessage()
@@ -169,11 +208,20 @@ namespace BMSCompanion
                 {
                     // PRINTF_INFO("Register value: %d\n", registerReponse.regValue);
                     CompanionHandler::transmitMessage(0x15, encodeRegisterMessage(registerRequest.cid, registerRequest.regAddr, registerReponse.regValue));
+                    if (registerRequestWasNamedService)
+                    {
+                        sendServiceResult(0x15U, SERVICE_OK);
+                    }
                 }
                 else
                 {
                     PRINTF_ERR("STATUS: %d\n", registerReponse.status);
+                    if (registerRequestWasNamedService)
+                    {
+                        sendServiceResult(0x15U, SERVICE_DENIED);
+                    }
                 }
+                registerRequestWasNamedService = false;
             }
         }
 
@@ -182,14 +230,44 @@ namespace BMSCompanion
 
             if (msgID == 0x15)
             {
-                registerRequest = {.cid = (uint8_t)atoi(msgBody.substr(0, 2).c_str()), .regAddr = (uint8_t)std::stoi(msgBody.substr(2, 2).c_str(), nullptr, 16)};
+                if (msgBody.size() != 4U || msgBody.substr(0, 2).find_first_not_of("0123456789") != string::npos)
+                {
+                    sendServiceResult(0x15U, SERVICE_INVALID);
+                    return;
+                }
+                uint32_t cidValue = 0U;
+                uint32_t regValue = 0U;
+                if (!parseUnsigned(msgBody.substr(0, 2), 10U, UINT8_MAX, cidValue) ||
+                    !parseUnsigned(msgBody.substr(2, 2), 16U, UINT8_MAX, regValue))
+                {
+                    sendServiceResult(0x15U, SERVICE_INVALID);
+                    return;
+                }
+                const uint8_t cid = static_cast<uint8_t>(cidValue);
+                const uint8_t regAddr = static_cast<uint8_t>(regValue);
+                if (cid == 0U || cid > SlaveController::getNumOfSlaves())
+                {
+                    sendServiceResult(0x15U, SERVICE_INVALID);
+                    return;
+                }
+                registerRequest = {.cid = cid, .regAddr = regAddr};
                 if (!SlaveController::requestRegister(registerRequest, &registerRequestFinished, &registerReponse))
                 {
                     PRINTF_WARN("[BC] Register request rejected\n");
+                    sendServiceResult(0x15U, SERVICE_DENIED);
+                }
+                else
+                {
+                    registerRequestWasNamedService = true;
                 }
             }
             else if (msgID == 0x19)
             {
+                if (!isDecimal(msgBody))
+                {
+                    sendServiceResult(0x19U, SERVICE_INVALID);
+                    return;
+                }
                 // First get the old time
                 tm oldTime;
                 getRTCtimeUTC(oldTime);
@@ -197,12 +275,19 @@ namespace BMSCompanion
                 strftime(oldTimeStr, sizeof(oldTimeStr), "%c", &oldTime);
 
                 // Set the new time and print it
-                setRTCtime(std::stoi(msgBody.substr(0, 10)));
+                uint32_t unixTime = 0U;
+                if (!parseUnsigned(msgBody, 10U, UINT32_MAX, unixTime))
+                {
+                    sendServiceResult(0x19U, SERVICE_INVALID);
+                    return;
+                }
+                setRTCtime(unixTime);
                 tm newTime;
                 getRTCtimeUTC(newTime);
                 char newTimeStr[40];
                 strftime(newTimeStr, sizeof(newTimeStr), "%c", &newTime);
                 printf("[CH] Changed UTC time from %s to %s\n", oldTimeStr, newTimeStr);
+                sendServiceResult(0x19U, SERVICE_OK);
             }
             else if (msgID == 0x1B)
             {
@@ -210,7 +295,28 @@ namespace BMSCompanion
                 if (PCC::requestFaultClear())
                 {
                     SlaveController::clearFaults();
+                    sendServiceResult(0x1BU, SERVICE_OK);
                 }
+                else
+                {
+                    sendServiceResult(0x1BU, SERVICE_DENIED);
+                }
+            }
+            else if (msgID == 0x1E)
+            {
+                if (msgBody.size() != 1U || (msgBody[0] != '0' && msgBody[0] != '1'))
+                {
+                    sendServiceResult(0x1EU, SERVICE_INVALID);
+                    return;
+                }
+                const bool requested = msgBody[0] == '1';
+                if (requested && PCC::isFirmwareUpdateLocked())
+                {
+                    sendServiceResult(0x1EU, SERVICE_DENIED);
+                    return;
+                }
+                PCC::setRunRequest(requested);
+                sendServiceResult(0x1EU, SERVICE_OK);
             }
             else if (msgID == 0x1D)
             {
