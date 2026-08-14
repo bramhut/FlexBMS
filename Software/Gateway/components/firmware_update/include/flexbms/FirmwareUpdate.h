@@ -9,13 +9,16 @@ namespace FlexBms::FirmwareUpdate
 {
     enum class Target : uint8_t { Gateway, Stm32 };
     enum class Phase : uint8_t { Idle, Uploading, Installing, Complete, Failed };
+    enum class Stage : uint8_t { Idle, Upload, Validate, Restart, Handoff, RomBootloader, Erase, Program, Verify, Complete };
 
     struct Status
     {
         Phase phase = Phase::Idle;
         Target target = Target::Gateway;
+        Stage stage = Stage::Idle;
         uint32_t bytesReceived = 0U;
         uint32_t bytesExpected = 0U;
+        uint32_t progressBytes = 0U;
         const char *version = "";
         const char *detail = "";
     };

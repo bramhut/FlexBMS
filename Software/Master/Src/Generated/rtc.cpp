@@ -21,8 +21,6 @@
 #include "rtc.h"
 
 /* USER CODE BEGIN 0 */
-#include "time.h"
-#include "stdlib.h"
 /* USER CODE END 0 */
 
 RTC_HandleTypeDef hrtc;
@@ -60,12 +58,9 @@ void MX_RTC_Init(void)
 
   /* USER CODE BEGIN Check_RTC_BKUP */
 
-  // First setup the timezone
-  setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
-	tzset();
-
-  // We do not need to set the RTC, ever!
-  // This should only be done when communicating with BMS Companion.
+  // The RTC calendar is maintained in UTC by RtcTime.  Do not seed a
+  // plausible date after backup-domain loss; its validity marker records
+  // whether a successful external synchronisation has occurred.
   return;
   
   /* USER CODE END Check_RTC_BKUP */

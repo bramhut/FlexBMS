@@ -88,9 +88,28 @@ The application image belongs at the `ota_0` offset from `partitions.csv`,
 currently `0x20000`. The Gateway build derives its upload offset from that CSV;
 do not use the ESP-IDF default `0x10000` offset with this partition layout.
 
-## Wi-Fi setup and recovery
+## Wi-Fi setup, fallback, and recovery
 
-On a device without saved credentials, the Gateway starts an open temporary
+The saved NVS credentials are always the primary network. Before connecting,
+the Gateway scans; it selects the visible saved SSID first, then the first
+visible entry in its ordered local fallback list. This avoids connection
+attempts to SSIDs that are not currently in range. A candidate with an
+authentication failure is skipped for the rest of that selection cycle. Once
+connected, the Gateway stays on that network. If that connection later drops,
+it starts a fresh cycle and evaluates the saved NVS network before fallbacks
+again. Connecting to a fallback never replaces the saved NVS credentials.
+
+Fallback credentials are optional and intentionally local-only. Copy
+[`FallbackNetworks.local.example.h`](components/wifi_manager/include/flexbms/FallbackNetworks.local.example.h)
+to `FallbackNetworks.local.h` in the same directory, replace the placeholders,
+and list at most four networks in priority order. The real file is ignored by
+Git. These credentials are compiled into the firmware image, not protected as
+a secret store: someone who can read or extract the device firmware may recover
+them. Use only local fallback networks with credentials acceptable for that
+exposure, and do not add the local header to source control.
+
+On a device without saved credentials, configured local fallbacks are tried
+first. If none is visible or usable, the Gateway starts an open temporary
 access point named `FlexBMS-Setup-XXYYZZ`, where the suffix comes from its MAC
 address. Connect to it and open `http://192.168.4.1`. Common phone captive
 portal prompts should reach the same Companion page automatically, but
@@ -100,13 +119,13 @@ credentials are submitted.
 The Companion **Wi-Fi** page can scan nearby networks or accept a hidden SSID
 manually. Its password field is write-only. Saving credentials stores them in
 standard NVS, acknowledges the request, and restarts Gateway networking into
-station mode. There is no candidate-network test or multi-network list: if the
-replacement cannot connect, recovery provisioning is used.
+station mode. If the saved network is unavailable, fallback selection and then
+recovery provisioning are used.
 
 After 30 seconds without a station IP, the Gateway starts the same AP in
-AP+STA recovery mode for ten minutes while it continues station retries. It
-then stops the AP for a one-minute station-only retry interval and repeats
-until connected. A station IP stops the AP immediately.
+AP+STA recovery mode for ten minutes. It then stops the AP for a one-minute
+station-only selection interval and repeats until connected. A station IP
+stops the AP immediately.
 
 After DHCP assigns a station address, the Gateway announces the hostname
 `flexbms.local` with mDNS. It does not advertise mDNS during the setup or
@@ -121,12 +140,13 @@ failure or loss does not affect the STM32 UART link or safety decisions.
 
 `../../scripts/build-release.ps1` runs the Companion checks, produces the
 portable direct-USB Companion executable, and builds this Gateway firmware.
-The resulting `FlexBMS-Companion.exe`, `FlexBMS-Gateway.bin`,
-`FlexBMS-Gateway.manifest.json`, `FlexBMS-Gateway-factory.bin`,
-`FlexBMS-STM32.bin`, `FlexBMS-STM32.manifest.json`, `flash-release.ps1`, and
-`SHA256SUMS.txt` are placed in `release/FlexBMS-<version>/`. The interactive
-script prompts for the release version and synchronizes a newly entered version
-to the Companion package files; `-Version 0.1.1` is available for unattended
+The resulting `FlexBMS-Companion.exe`, `FlexBMS_bundle.fbu`,
+`FlexBMS-Gateway.bin`, `FlexBMS-Gateway-factory.bin`, `FlexBMS-STM32.bin`,
+`flash-release.ps1`, and `SHA256SUMS.txt` are placed in
+`release/FlexBMS-<version>/`. `FlexBMS_bundle.fbu` is the normal OTA artifact;
+the raw images and factory image remain for wired recovery. The interactive
+script prompts for the release version and synchronizes it to both the
+Companion package files and STM32 firmware-version header; `-Version 0.1.1` is available for unattended
 use. Repeating an existing version requires an explicit timestamped-repeat
 choice. The normal PlatformIO Gateway build continues to regenerate the
 compiled Gateway web bundle before compiling firmware.
@@ -140,10 +160,12 @@ the merged image at that location before it is released.
 
 ## Station-LAN OTA
 
-The local Companion page exposes Gateway and STM32 update controls only while
-the Gateway is connected to its station network. Select the matching release
-manifest and raw `.bin`; the Gateway streams the image, validates its declared
-length and CRC-32, and installs it. `FlexBMS-Gateway.bin` is the OTA image;
-`FlexBMS-Gateway-factory.bin` is only for the wired recovery script. Setup and
-recovery APs do not expose update controls. No account, signature, cloud, or
-automatic retry path is used; retain `flash-release.ps1` for recovery.
+The local Companion page exposes update controls only while the Gateway is
+connected to its station network. Select `FlexBMS_bundle.fbu`, then choose the
+included STM32 BMS and/or ESP32 Gateway image. Companion streams each selected
+image, and the Gateway validates its declared length and CRC-32 before
+installing it. If both are selected, Companion completes STM32 first and
+updates the rebooting Gateway last. `FlexBMS-Gateway-factory.bin` is only for
+the wired recovery script. Setup and recovery APs do not expose update
+controls. No account, signature, cloud, or automatic retry path is used; retain
+`flash-release.ps1` for recovery.

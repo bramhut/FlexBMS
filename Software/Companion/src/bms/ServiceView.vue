@@ -3,8 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { BmsTransport, Capabilities, GatewayStatus, ServiceResponse } from '@/transports/Transport'
 import { registerFields } from '@/shared/registers'
 import { serviceResultLabel } from '@/shared/service'
-import { advancingUnixTime, browserUnixTime } from '@/shared/time'
-import FirmwareUpdatePanel from './FirmwareUpdatePanel.vue'
+import { advancingUnixTime } from '@/shared/time'
 
 const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities; connected: boolean; runRequested: boolean; gateway?: GatewayStatus }>()
 const requested = ref(false)
@@ -31,6 +30,14 @@ const formattedDeviceTime = computed(() => {
   }
   const unixTime = advancingUnixTime(deviceUnixTime.value, deviceTimeSampledAt.value, clockNow.value)
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(unixTime * 1000))
+})
+const formattedNtpSync = computed(() => {
+  const timeSync = props.gateway?.time_sync
+  if (!timeSync) return 'Gateway only.'
+  if (timeSync.state === 'synchronized' && timeSync.last_sync_unix_s !== undefined) {
+    return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(timeSync.last_sync_unix_s * 1000))
+  }
+  return ({ waiting_for_network: 'Waiting for network.', waiting_for_ntp: 'Waiting for NTP.', waiting_for_stm32: 'Updating STM32.', synchronized: 'Waiting for NTP.' } as const)[timeSync.state]
 })
 
 function describe(response: ServiceResponse): string {
@@ -65,12 +72,6 @@ async function refreshDeviceTime(showFailure = true): Promise<void> {
   if (showFailure) result.value = `RTC read: ${describe(response)}`
 }
 
-async function setRtc(): Promise<void> {
-  const response = await props.transport.request('set_rtc', { unix_time_s: browserUnixTime() })
-  result.value = `RTC sync: ${serviceResultLabel(response.result)}`
-  if (response.result === 'ok') await refreshDeviceTime(false)
-}
-
 async function readRegister(): Promise<void> {
   const value = Number.parseInt(registerText.value, 16)
   if (!Number.isInteger(value) || value < 0 || value > 0xff || !Number.isInteger(slave.value) || slave.value < 0 || slave.value > 255) {
@@ -91,21 +92,20 @@ onBeforeUnmount(() => { if (clockTimer !== undefined) window.clearInterval(clock
 
 <template>
   <section class="panel controls-panel">
-    <div class="panel-heading"><div><p class="eyebrow">Maintenance</p><h2>BMS controls</h2></div><p>Named requests only; the STM32 remains the safety authority.</p></div>
+    <div class="panel-heading"><div><h2>BMS controls</h2></div><p>Named requests only; the STM32 remains the safety authority.</p></div>
     <div class="control-grid">
       <div class="control-block"><h3>Run request</h3><label class="ios-switch"><input v-model="requested" type="checkbox" role="switch" :disabled="!capabilities.set_run_request || changingRunRequest" @change="setRunRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Request BMS run</span></label><small>{{ availability('set_run_request') }}</small></div>
       <div class="control-block"><h3>Fault handling</h3><p>Clearing faults is accepted only when the STM32 considers it safe.</p><button class="danger" :disabled="!capabilities.clear_faults" @click="clearFaults">Clear faults</button><small>{{ availability('clear_faults') }}</small></div>
-      <div class="control-block"><h3>Real-time clock</h3><p>Device time: <b>{{ formattedDeviceTime }}</b></p><div class="button-row"><button :disabled="!capabilities.set_rtc" @click="setRtc">Set RTC from this browser</button><button :disabled="!connected || !capabilities.get_rtc" @click="refreshDeviceTime()">Refresh</button></div><small>{{ availability('get_rtc') }}</small></div>
+      <div class="control-block"><h3>Real-time clock</h3><p>Device time: <b>{{ formattedDeviceTime }}</b></p><p>Last NTP sync: <b>{{ formattedNtpSync }}</b></p><div class="button-row"><button :disabled="!connected || !capabilities.get_rtc" @click="refreshDeviceTime()">Refresh</button></div><small>{{ availability('get_rtc') }}</small></div>
     </div>
     <p v-if="result" class="action-result">{{ result }}</p>
   </section>
 
   <section class="panel register-panel">
-    <div class="panel-heading"><div><p class="eyebrow">Inspection</p><h2>Read BCC register</h2></div><p>Read-only. Slave indexes are zero-based.</p></div>
+    <div class="panel-heading"><div><h2>Read BCC register</h2></div><p>Read-only. Slave indexes are zero-based.</p></div>
     <div class="register-form"><label>Slave<input v-model.number="slave" type="number" min="0" max="255"></label><label>Register (hex)<input v-model="registerText" maxlength="2" inputmode="text"></label><button :disabled="!capabilities.read_register" @click="readRegister">Read register</button></div>
     <p v-if="registerError" class="warning-text">{{ registerError }}</p>
     <div v-if="registerValue !== null" class="register-result"><p><b>0x{{ registerKey }}</b> = <b>0x{{ registerValue.toString(16).padStart(4, '0').toUpperCase() }}</b></p><p class="mono">{{ bits }}</p><ul v-if="fields.length"><li v-for="field in fields" :key="field.name">{{ field.name }} ({{ field.bits }} bit{{ field.bits === 1 ? '' : 's' }})</li></ul><p v-else class="muted">No compact field description is available for this address.</p></div>
     <small>{{ availability('read_register') }}</small>
   </section>
-  <FirmwareUpdatePanel :capabilities="capabilities" :connected="connected" :gateway="gateway" />
 </template>

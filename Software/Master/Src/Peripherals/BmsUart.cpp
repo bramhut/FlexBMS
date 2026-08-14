@@ -2,18 +2,24 @@
 
 #include "FirmwareVersion.h"
 #include "FreeRTOS.h"
-#include "TimeFunctions.h"
+#include "RtcTime.h"
 #include "cmsis_os.h"
 #include "bcc/SlaveController.h"
 #include "bcc/bcc_utils.h"
 #include "main.h"
 #include "pcc.h"
 #include "queue.h"
+#include "task.h"
+#include "usb_device.h"
 #include "usart.h"
 #include "USBCOM.h"
 
 #include <array>
 #include <cstring>
+
+// Defined by the generated USB-device implementation.  A configured device
+// means a USB host has enumerated the STM32 CDC interface.
+extern USBD_HandleTypeDef hUsbDeviceFS;
 
 namespace BmsUart
 {
@@ -65,6 +71,7 @@ namespace BmsUart
             DENIED = 1U,
             INVALID = 2U,
             BUSY = 3U,
+            USB_HOST_ACTIVE = 4U,
         };
 
         enum class Link : uint8_t
@@ -626,23 +633,66 @@ namespace BmsUart
         [[noreturn]] void enterSystemBootloader()
         {
             (void)HAL_UART_Abort(&huart1);
+
+            // Keep the HAL timebase alive while HAL_RCC_DeInit() performs its
+            // bounded clock transitions, but prevent FreeRTOS from switching
+            // to another task after the system clock starts changing.
+            vTaskSuspendAll();
+            (void)HAL_RCC_DeInit();
+            HAL_SuspendTick();
             __disable_irq();
+
             SysTick->CTRL = 0U;
+            SysTick->LOAD = 0U;
+            SysTick->VAL = 0U;
+
+            // Reset every peripheral bus, then leave only the flash interface
+            // clocked while this function is still executing from application
+            // flash.  SYSCFG is enabled temporarily below for the required
+            // system-memory remap.
+            (void)HAL_DeInit();
+            RCC->AHB1ENR = RCC_AHB1ENR_FLASHEN;
+            RCC->AHB2ENR = 0U;
+            RCC->AHB3ENR = 0U;
+            RCC->APB1ENR1 = 0U;
+            RCC->APB1ENR2 = 0U;
+            RCC->APB2ENR = RCC_APB2ENR_SYSCFGEN;
+            __DSB();
+
+            // This is the final interrupt cleanup after every HAL call.  The
+            // NVIC registers cover external interrupts; PendSV and SysTick are
+            // system exceptions and must be cleared through SCB->ICSR.
             for (uint32_t index = 0U; index < 8U; ++index)
             {
                 NVIC->ICER[index] = 0xFFFFFFFFUL;
                 NVIC->ICPR[index] = 0xFFFFFFFFUL;
             }
+            SCB->ICSR = SCB_ICSR_PENDSVCLR_Msk | SCB_ICSR_PENDSTCLR_Msk;
 
-            HAL_RCC_DeInit();
+            // The STM32G491 system bootloader requires system flash to be
+            // visible at address zero when entered through a software jump.
+            __HAL_SYSCFG_REMAPMEMORY_SYSTEMFLASH();
+            __DSB();
+            RCC->APB2ENR = 0U;
             SCB->VTOR = SYSTEM_MEMORY_BASE;
             __DSB();
             __ISB();
             const uint32_t systemMsp = *reinterpret_cast<const uint32_t *>(SYSTEM_MEMORY_BASE);
             const uint32_t systemResetHandler = *reinterpret_cast<const uint32_t *>(SYSTEM_MEMORY_BASE + 4U);
             __set_MSP(systemMsp);
+
+            // This runs from a FreeRTOS task, which normally uses PSP with
+            // interrupt masking managed by the kernel.  The system-memory ROM
+            // starts as if it has just been reset: privileged thread mode on
+            // MSP, with exceptions unmasked.  Recreate that context before
+            // calling its reset handler.  SysTick and every NVIC line remain
+            // disabled above, so no application interrupt can run here.
+            __set_CONTROL(0U);
+            __set_BASEPRI(0U);
+            __set_FAULTMASK(0U);
             __DSB();
             __ISB();
+            __enable_irq();
             reinterpret_cast<void (*)(void)>(systemResetHandler)();
             while (true) {}
         }
@@ -773,7 +823,16 @@ namespace BmsUart
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
                     return;
                 }
-                setRTCtime(readLe32(frame.payload.data() + 1U));
+                if (!RtcTime::isSupportedUnixTime(readLe32(frame.payload.data() + 1U)))
+                {
+                    sendServiceResponse(frame.sequence, serviceId, INVALID);
+                    return;
+                }
+                if (!RtcTime::setUnixTime(readLe32(frame.payload.data() + 1U)))
+                {
+                    sendServiceResponse(frame.sequence, serviceId, DENIED);
+                    return;
+                }
                 sendServiceResponse(frame.sequence, serviceId, OK);
                 return;
 
@@ -784,14 +843,14 @@ namespace BmsUart
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
                     return;
                 }
-                time_t unixTime = 0;
-                if (!getRTCtimeUNIX(unixTime) || unixTime < 0 || static_cast<uint64_t>(unixTime) > UINT32_MAX)
+                uint32_t unixTime = 0U;
+                if (!RtcTime::getUnixTime(unixTime))
                 {
                     sendServiceResponse(frame.sequence, serviceId, DENIED);
                     return;
                 }
                 std::array<uint8_t, 4U> response = {};
-                writeLe32(response.data(), static_cast<uint32_t>(unixTime));
+                writeLe32(response.data(), unixTime);
                 sendServiceResponse(frame.sequence, serviceId, OK, response.data(), response.size());
                 return;
             }
@@ -814,6 +873,14 @@ namespace BmsUart
                 if (frame.length != 13U)
                 {
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
+                    return;
+                }
+                if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED)
+                {
+                    // The STM32 ROM bootloader gives an enumerated USB host
+                    // precedence over USART1.  USB power without a host does
+                    // not configure this device and remains supported.
+                    sendServiceResponse(frame.sequence, serviceId, USB_HOST_ACTIVE);
                     return;
                 }
                 const uint32_t imageLength = readLe32(frame.payload.data() + 5U);

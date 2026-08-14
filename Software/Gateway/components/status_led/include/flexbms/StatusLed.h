@@ -20,6 +20,10 @@ namespace FlexBms
         void setFirmwareUpdateActive(bool active);
         void setFatalLocalFailure(bool active);
 
+        // Follow the STM32's shared 2-second LED phase while the UART is
+        // healthy.  STATUS frames refresh this estimate at least every 500 ms.
+        void synchronizeToStm32Uptime(uint32_t uptimeMs);
+
     private:
         bool wifiWaiting = true;
         bool mqttUnavailable = false;
@@ -27,5 +31,8 @@ namespace FlexBms
         bool firmwareUpdateActive = false;
         bool fatalLocalFailure = false;
         int64_t bootStartedUs = 0;
+        bool stm32PhaseAvailable = false;
+        int64_t stm32PhaseAtReceiptUs = 0;
+        int64_t stm32PhaseReceivedUs = 0;
     };
 }

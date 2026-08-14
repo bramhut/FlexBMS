@@ -183,6 +183,7 @@ Service response payload: `service_id:u8 | result:u8 | response_data...`.
 | `DENIED` | 1 | Valid request cannot safely run in the current STM32 state. |
 | `INVALID` | 2 | Unknown service, invalid length/argument, or nonexistent slave. |
 | `BUSY` | 3 | Another named BMS service is still in progress. |
+| `USB_HOST_ACTIVE` | 4 | A USB host has enumerated the STM32; it cannot enter the UART ROM bootloader. |
 
 `OK` means accepted and invoked; `STATUS` and `EVENT` show the resulting state.
 Only one named service is active across UART and USB at a time. The STM32
@@ -195,10 +196,16 @@ reads, to the link and sequence that originated them.
 | `0x02` | `SET_RUN_REQUEST` | `requested:u8` (`0` or `1`) | None |
 | `0x03` | `CLEAR_FAULTS` | None | None |
 | `0x04` | `READ_REGISTER` | `slave_index:u8, register:u8` | `slave_index:u8, register:u8, value:u16` |
-| `0x05` | `SET_RTC` | `unix_time_s:u32` UTC | None |
+| `0x05` | `SET_RTC` | `unix_time_s:u32` UTC, 2000--2099 | None |
 | `0x06` | `GET_DEVICE_INFO` | None | `firmware_version:u32` |
 | `0x07` | `ENTER_STM32_BOOTLOADER` | `firmware_version:u32, image_length:u32, image_crc32:u32` | None |
 | `0x08` | `GET_RTC` | None | `unix_time_s:u32` UTC |
+
+The STM32 calendar stores UTC only. It accepts `SET_RTC` only for 2000--2099
+and returns `INVALID` for another timestamp or `DENIED` if the hardware write
+fails. `GET_RTC` returns `DENIED` until a successful set has marked the backup
+domain valid. The Gateway is the normal setter: it obtains NTP after station
+connection and forwards the result through this same service slot.
 
 `SET_RUN_REQUEST(0)` immediately removes the request through the STM32 PCC
 path. A request of 1 does not guarantee an HV start. `CLEAR_FAULTS` is denied
@@ -216,7 +223,9 @@ already have staged and CRC-checked the image. The STM32 validates the request
 shape and image length; it cannot verify staged bytes it never receives.
 
 The STM32 returns `DENIED` unless run request is off and it can de-energise the
-HV path and inhibit normal services. After `OK`, it drains that response, stops
+HV path and inhibit normal services. It returns `USB_HOST_ACTIVE` if its USB CDC
+device is enumerated by a host, because the ROM bootloader would select USB DFU.
+USB-only power without host enumeration is allowed. After `OK`, it drains that response, stops
 framed UART, and enters the STM32 ROM bootloader. The Gateway then performs ROM
 bootloader sync, transfer, readback verification, and `Go` on USART1; these are
 not FlexBMS UART frames. On return, the Gateway waits for heartbeat. There are

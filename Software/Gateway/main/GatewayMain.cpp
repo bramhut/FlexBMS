@@ -2,6 +2,7 @@
 #include "flexbms/GatewayApi.h"
 #include "flexbms/FirmwareUpdate.h"
 #include "flexbms/StatusLed.h"
+#include "flexbms/TimeSync.h"
 #include "flexbms/WifiManager.h"
 
 #include "driver/uart.h"
@@ -27,7 +28,6 @@ namespace
     int64_t lastValidFrameUs = 0;
     bool linkWasHealthy = false;
     bool uartLinkTimedOut = false;
-    uint8_t nextServiceSequence = 1U;
 
     void check(esp_err_t result)
     {
@@ -49,16 +49,11 @@ namespace
         }
     }
 
-    bool sendBrowserService(FlexBms::GatewayApi::Service service, const uint8_t *arguments, uint8_t argumentLength, uint8_t &sequence)
+    bool sendService(FlexBms::GatewayApi::Service service, const uint8_t *arguments, uint8_t argumentLength, uint8_t sequence)
     {
         if (argumentLength > 4U)
         {
             return false;
-        }
-        sequence = nextServiceSequence++;
-        if (nextServiceSequence == 0U)
-        {
-            nextServiceSequence = 1U;
         }
         FlexBms::UartV1::Frame frame{.type = FlexBms::UartV1::MessageType::ServiceRequest, .sequence = sequence, .length = static_cast<uint16_t>(argumentLength + 1U)};
         frame.payload[0] = static_cast<uint8_t>(service);
@@ -69,6 +64,11 @@ namespace
         std::array<uint8_t, FlexBms::UartV1::kMaxFrameBytes> bytes{};
         const size_t length = FlexBms::UartV1::encode(frame, bytes.data(), bytes.size());
         return length != 0U && uart_write_bytes(kBmsUart, bytes.data(), length) == static_cast<int>(length);
+    }
+
+    void completeTimeSync(FlexBms::GatewayApi::ServiceResult result)
+    {
+        FlexBms::TimeSync::completeStm32Sync(result == FlexBms::GatewayApi::ServiceResult::Ok);
     }
 
     void handleServiceResponse(const FlexBms::UartV1::Frame &frame)
@@ -82,6 +82,7 @@ namespace
         else if (frame.payload[1] == 1U) result = FlexBms::GatewayApi::ServiceResult::Denied;
         else if (frame.payload[1] == 2U) result = FlexBms::GatewayApi::ServiceResult::Invalid;
         else if (frame.payload[1] == 3U) result = FlexBms::GatewayApi::ServiceResult::Busy;
+        else if (frame.payload[1] == 4U) result = FlexBms::GatewayApi::ServiceResult::UsbHostActive;
         FlexBms::GatewayApi::completeService(frame.sequence, result, frame.payload.data() + 2U, static_cast<uint8_t>(frame.length - 2U));
     }
 
@@ -178,13 +179,17 @@ extern "C" void app_main(void)
     {
         ESP_LOGW(kLogTag, "Wi-Fi unavailable for this boot; UART remains active");
     }
+    else if (!FlexBms::TimeSync::start())
+    {
+        ESP_LOGW(kLogTag, "NTP time synchronisation unavailable for this boot");
+    }
 
     FlexBms::UartV1::StreamDecoder decoder;
     FlexBms::UartV1::Frame frame{};
     std::array<uint8_t, 128U> receiveBuffer{};
     int64_t nextHeartbeatUs = esp_timer_get_time();
     lastValidFrameUs = nextHeartbeatUs;
-    const bool gatewayApiStarted = FlexBms::GatewayApi::start(sendBrowserService);
+    const bool gatewayApiStarted = FlexBms::GatewayApi::start(sendService);
     if (!gatewayApiStarted)
     {
         ESP_LOGE(kLogTag, "Gateway HTTP/WebSocket service failed to start");
@@ -206,6 +211,14 @@ extern "C" void app_main(void)
                         ESP_LOGI(kLogTag, "STM32 UART link healthy");
                     }
                     FlexBms::FirmwareUpdate::onFrame(frame);
+                    if (frame.type == FlexBms::UartV1::MessageType::Status)
+                    {
+                        FlexBms::UartV1::Status status{};
+                        if (FlexBms::UartV1::decodeStatus(frame, status))
+                        {
+                            statusLed.synchronizeToStm32Uptime(status.uptimeMs);
+                        }
+                    }
                     logTelemetry(frame);
                     FlexBms::GatewayApi::publishFrame(frame, static_cast<uint32_t>(esp_timer_get_time() / 1000));
                     if (frame.type == FlexBms::UartV1::MessageType::ServiceResponse)
@@ -232,7 +245,27 @@ extern "C" void app_main(void)
         FlexBms::GatewayApi::setUartHealthy(!uartLinkTimedOut && linkWasHealthy);
 
         FlexBms::Wifi::tick();
+        FlexBms::TimeSync::setStationConnected(FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected);
         if (FlexBms::Wifi::consumeStatusChanged())
+        {
+            FlexBms::GatewayApi::publishGatewayStatus();
+        }
+        uint32_t pendingUnixTime = 0U;
+        if (!FlexBms::FirmwareUpdate::ownsUart() && FlexBms::TimeSync::pendingStm32Sync(pendingUnixTime))
+        {
+            const std::array<uint8_t, 4U> timeArguments = {
+                static_cast<uint8_t>(pendingUnixTime),
+                static_cast<uint8_t>(pendingUnixTime >> 8U),
+                static_cast<uint8_t>(pendingUnixTime >> 16U),
+                static_cast<uint8_t>(pendingUnixTime >> 24U),
+            };
+            if (FlexBms::GatewayApi::beginInternalService(FlexBms::GatewayApi::Service::SetRtc, timeArguments.data(),
+                                                          timeArguments.size(), completeTimeSync))
+            {
+                FlexBms::TimeSync::stm32SyncStarted(pendingUnixTime);
+            }
+        }
+        if (FlexBms::TimeSync::consumeStatusChanged())
         {
             FlexBms::GatewayApi::publishGatewayStatus();
         }

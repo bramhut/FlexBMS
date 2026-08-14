@@ -3,7 +3,7 @@ import test from 'node:test'
 import { bmsStatusSummary, currentA, icCelsius, isFresh, ntcCelsius, socPercent, valueOrStale } from '../src/shared/model.ts'
 import { reconnectDelayMs } from '../src/shared/reconnect.ts'
 import { serviceResultLabel } from '../src/shared/service.ts'
-import { advancingUnixTime, browserUnixTime } from '../src/shared/time.ts'
+import { advancingUnixTime } from '../src/shared/time.ts'
 import { unavailableCapabilities } from '../src/transports/Transport.ts'
 
 test('raw UART v1 units convert in the presentation layer', () => {
@@ -29,8 +29,7 @@ test('all named service results have UI labels', () => {
 test('gateway reconnect is bounded exponential backoff', () => {
   assert.deepEqual([0, 1, 2, 3, 4, 5].map(reconnectDelayMs), [1000, 2000, 4000, 8000, 10000, 10000])
 })
-test('browser RTC time is sampled when the action runs', () => {
-  assert.equal(browserUnixTime(1_786_655_390_999), 1_786_655_390)
+test('displayed RTC time advances from its device sample', () => {
   assert.equal(advancingUnixTime(1_786_655_390, 1_000, 4_999), 1_786_655_393)
 })
 test('stale BMS status identifies the state and active fault', () => {

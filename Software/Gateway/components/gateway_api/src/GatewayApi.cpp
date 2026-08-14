@@ -1,6 +1,7 @@
 #include "flexbms/GatewayApi.h"
 #include "flexbms/GatewayAssets.h"
 #include "flexbms/FirmwareUpdate.h"
+#include "flexbms/TimeSync.h"
 #include "flexbms/WifiManager.h"
 
 #include "cJSON.h"
@@ -22,6 +23,7 @@ namespace FlexBms::GatewayApi
         constexpr size_t kMaxBrowserMessageBytes = 4096U;
         constexpr size_t kMaxRequestIdBytes = 64U;
         constexpr size_t kMaxSlaves = 16U;
+        constexpr uint8_t kFirmwareReceiveTimeoutLimit = 3U;
         httpd_handle_t server = nullptr;
         ServiceSender serviceSender = nullptr;
         bool uartHealthy = false;
@@ -29,10 +31,12 @@ namespace FlexBms::GatewayApi
         bool serviceCapabilityKnown = false;
         bool serviceCapability = false;
         uint8_t pendingSequence = 0U;
+        uint8_t nextServiceSequence = 1U;
         int pendingServiceSocket = -1;
         int64_t pendingServiceStartedUs = 0;
         char pendingRequestId[kMaxRequestIdBytes + 1U] = {};
         Service pendingService = Service::SetRunRequest;
+        InternalServiceCompletion internalServiceCompletion = nullptr;
         int pendingScanSocket = -1;
         char pendingScanRequestId[kMaxRequestIdBytes + 1U] = {};
         UartV1::Status status{};
@@ -64,6 +68,7 @@ namespace FlexBms::GatewayApi
             case Service::ClearFaults: return "clear_faults";
             case Service::SetRtc: return "set_rtc";
             case Service::GetRtc: return "get_rtc";
+            case Service::GetDeviceInfo: return "get_device_info";
             case Service::ReadRegister: return "read_register";
             }
             return "";
@@ -77,6 +82,7 @@ namespace FlexBms::GatewayApi
             case ServiceResult::Denied: return "denied";
             case ServiceResult::Invalid: return "invalid";
             case ServiceResult::Busy: return "busy";
+            case ServiceResult::UsbHostActive: return "usb_host_active";
             default: return "transport_error";
             }
         }
@@ -96,6 +102,23 @@ namespace FlexBms::GatewayApi
         const char *updateTargetName(FirmwareUpdate::Target target)
         {
             return target == FirmwareUpdate::Target::Gateway ? "gateway" : "stm32";
+        }
+
+        const char *updateStageName(FirmwareUpdate::Stage stage)
+        {
+            switch (stage)
+            {
+            case FirmwareUpdate::Stage::Upload: return "upload";
+            case FirmwareUpdate::Stage::Validate: return "validate";
+            case FirmwareUpdate::Stage::Restart: return "restart";
+            case FirmwareUpdate::Stage::Handoff: return "handoff";
+            case FirmwareUpdate::Stage::RomBootloader: return "rom";
+            case FirmwareUpdate::Stage::Erase: return "erase";
+            case FirmwareUpdate::Stage::Program: return "program";
+            case FirmwareUpdate::Stage::Verify: return "verify";
+            case FirmwareUpdate::Stage::Complete: return "complete";
+            default: return "idle";
+            }
         }
 
         bool sendJsonTo(int socket, cJSON *root)
@@ -157,6 +180,10 @@ namespace FlexBms::GatewayApi
             }
             cJSON_AddStringToObject(root, "uart_state", uartHealthy ? "healthy" : (hasStatus ? "lost" : "starting"));
             cJSON_AddStringToObject(root, "mqtt_state", "unavailable");
+            const TimeSync::Status timeSync = TimeSync::getStatus();
+            cJSON *timeSyncJson = cJSON_AddObjectToObject(root, "time_sync");
+            cJSON_AddStringToObject(timeSyncJson, "state", TimeSync::stateName(timeSync.state));
+            if (timeSync.hasLastSync) cJSON_AddNumberToObject(timeSyncJson, "last_sync_unix_s", timeSync.lastSyncUnixS);
             cJSON *log = cJSON_AddObjectToObject(root, "diagnostic_log");
             cJSON_AddBoolToObject(log, "available", false);
             cJSON_AddNumberToObject(log, "bytes", 0);
@@ -164,8 +191,10 @@ namespace FlexBms::GatewayApi
             cJSON *updateJson = cJSON_AddObjectToObject(root, "firmware_update");
             cJSON_AddStringToObject(updateJson, "phase", updatePhaseName(update.phase));
             cJSON_AddStringToObject(updateJson, "target", updateTargetName(update.target));
+            cJSON_AddStringToObject(updateJson, "stage", updateStageName(update.stage));
             cJSON_AddNumberToObject(updateJson, "received_bytes", update.bytesReceived);
             cJSON_AddNumberToObject(updateJson, "expected_bytes", update.bytesExpected);
+            cJSON_AddNumberToObject(updateJson, "progress_bytes", update.progressBytes);
             cJSON_AddStringToObject(updateJson, "version", update.version);
             cJSON_AddStringToObject(updateJson, "detail", update.detail);
         }
@@ -174,14 +203,14 @@ namespace FlexBms::GatewayApi
         {
             const bool bmsServices = Wifi::allowsBmsServices();
             cJSON *root = base("hello");
-            cJSON_AddStringToObject(root, "gateway_version", "0.1.0");
+            cJSON_AddStringToObject(root, "gateway_version", GatewayAssets::kCompanionVersion);
             cJSON *caps = cJSON_AddObjectToObject(root, "capabilities");
             cJSON_AddBoolToObject(caps, "monitor", true);
             cJSON_AddBoolToObject(caps, "csv_logging", true);
             cJSON_AddBoolToObject(caps, "set_run_request", bmsServices);
             cJSON_AddBoolToObject(caps, "clear_faults", bmsServices);
-            cJSON_AddBoolToObject(caps, "set_rtc", bmsServices);
             cJSON_AddBoolToObject(caps, "get_rtc", bmsServices);
+            cJSON_AddBoolToObject(caps, "get_device_info", bmsServices);
             cJSON_AddBoolToObject(caps, "read_register", bmsServices);
             cJSON_AddBoolToObject(caps, "wifi_configuration", Wifi::getState() != Wifi::State::Unavailable);
             cJSON_AddBoolToObject(caps, "diagnostic_log_download", false);
@@ -328,21 +357,17 @@ namespace FlexBms::GatewayApi
                 return true;
             }
             uint32_t value = 0U;
-            if (std::strcmp(name->valuestring, "set_rtc") == 0)
-            {
-                if (!objectHasExactly(args, {"unix_time_s"}) || !jsonInteger(cJSON_GetObjectItemCaseSensitive(args, "unix_time_s"), UINT32_MAX, value)) return false;
-                service = Service::SetRtc;
-                arguments[0] = static_cast<uint8_t>(value);
-                arguments[1] = static_cast<uint8_t>(value >> 8U);
-                arguments[2] = static_cast<uint8_t>(value >> 16U);
-                arguments[3] = static_cast<uint8_t>(value >> 24U);
-                argumentLength = 4U;
-                return true;
-            }
             if (std::strcmp(name->valuestring, "get_rtc") == 0)
             {
                 if (!objectHasExactly(args, {})) return false;
                 service = Service::GetRtc;
+                argumentLength = 0U;
+                return true;
+            }
+            if (std::strcmp(name->valuestring, "get_device_info") == 0)
+            {
+                if (!objectHasExactly(args, {})) return false;
+                service = Service::GetDeviceInfo;
                 argumentLength = 0U;
                 return true;
             }
@@ -429,6 +454,11 @@ namespace FlexBms::GatewayApi
                 if (std::strcmp(path, GatewayAssets::kAssets[index].path) == 0)
                 {
                     httpd_resp_set_type(request, GatewayAssets::kAssets[index].mime);
+                    // The HTML shell names versioned JavaScript and CSS files.
+                    // It must never remain cached across a Gateway firmware
+                    // swap, while those content-addressed assets are safe to
+                    // cache indefinitely.
+                    httpd_resp_set_hdr(request, "Cache-Control", std::strcmp(path, "index.html") == 0 ? "no-store" : "public, max-age=31536000, immutable");
                     return httpd_resp_send(request, reinterpret_cast<const char *>(GatewayAssets::kAssets[index].data), GatewayAssets::kAssets[index].bytes);
                 }
             }
@@ -511,14 +541,22 @@ namespace FlexBms::GatewayApi
             }
             std::array<uint8_t, 1024U> chunk{};
             int remaining = request->content_len;
+            uint8_t receiveTimeouts = 0U;
             while (remaining > 0)
             {
                 const int received = httpd_req_recv(request, reinterpret_cast<char *>(chunk.data()), std::min<int>(remaining, static_cast<int>(chunk.size())));
+                if (received == HTTPD_SOCK_ERR_TIMEOUT)
+                {
+                    if (++receiveTimeouts < kFirmwareReceiveTimeoutLimit) continue;
+                    FirmwareUpdate::abortUpload("Browser upload timed out");
+                    return httpd_resp_send_err(request, HTTPD_408_REQ_TIMEOUT, "Firmware upload timed out");
+                }
                 if (received <= 0 || !FirmwareUpdate::writeUpload(chunk.data(), static_cast<size_t>(received)))
                 {
                     FirmwareUpdate::abortUpload("Browser upload failed");
                     return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Firmware upload failed");
                 }
+                receiveTimeouts = 0U;
                 remaining -= received;
             }
             if (!FirmwareUpdate::finishUpload()) return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Firmware image validation failed");
@@ -564,17 +602,20 @@ namespace FlexBms::GatewayApi
                     else if (!uartHealthy || serviceSender == nullptr) sendServiceResult(socket, requestId, requestedService, ServiceResult::TransportError);
                     else
                     {
-                        uint8_t sequence = 0U;
-                        if (!serviceSender(requestedService, arguments.data(), argumentLength, sequence)) sendServiceResult(socket, requestId, requestedService, ServiceResult::TransportError);
-                        else
+                        const uint8_t sequence = nextServiceSequence++;
+                        if (nextServiceSequence == 0U) nextServiceSequence = 1U;
+                        std::strncpy(pendingRequestId, requestId, kMaxRequestIdBytes);
+                        pendingRequestId[kMaxRequestIdBytes] = '\0';
+                        pendingService = requestedService;
+                        pendingSequence = sequence;
+                        pendingServiceSocket = socket;
+                        pendingServiceStartedUs = esp_timer_get_time();
+                        serviceInFlight = true;
+                        if (!serviceSender(requestedService, arguments.data(), argumentLength, sequence))
                         {
-                            std::strncpy(pendingRequestId, requestId, kMaxRequestIdBytes);
-                            pendingRequestId[kMaxRequestIdBytes] = '\0';
-                            pendingService = requestedService;
-                            pendingSequence = sequence;
-                            pendingServiceSocket = socket;
-                            pendingServiceStartedUs = esp_timer_get_time();
-                            serviceInFlight = true;
+                            serviceInFlight = false;
+                            pendingServiceSocket = -1;
+                            sendServiceResult(socket, requestId, requestedService, ServiceResult::TransportError);
                         }
                     }
                 }
@@ -644,9 +685,23 @@ namespace FlexBms::GatewayApi
         }
         if (serviceInFlight && esp_timer_get_time() - pendingServiceStartedUs >= 3000000LL)
         {
-            sendServiceResult(pendingServiceSocket, pendingRequestId, pendingService, ServiceResult::TransportError);
+            const InternalServiceCompletion completion = internalServiceCompletion;
+            const int socket = pendingServiceSocket;
+            const Service service = pendingService;
+            char requestId[kMaxRequestIdBytes + 1U] = {};
+            std::strncpy(requestId, pendingRequestId, kMaxRequestIdBytes);
+            internalServiceCompletion = nullptr;
             serviceInFlight = false;
             pendingServiceSocket = -1;
+            if (completion != nullptr)
+            {
+                completion(ServiceResult::TransportError);
+                publishGatewayStatus();
+            }
+            else
+            {
+                sendServiceResult(socket, requestId, service, ServiceResult::TransportError);
+            }
         }
     }
 
@@ -719,6 +774,16 @@ namespace FlexBms::GatewayApi
     void completeService(uint8_t sequence, ServiceResult result, const uint8_t *data, uint8_t dataLength)
     {
         if (!serviceInFlight || sequence != pendingSequence) return;
+        const InternalServiceCompletion completion = internalServiceCompletion;
+        internalServiceCompletion = nullptr;
+        if (completion != nullptr)
+        {
+            serviceInFlight = false;
+            pendingServiceSocket = -1;
+            completion(result);
+            publishGatewayStatus();
+            return;
+        }
         cJSON *root = base("service_result");
         cJSON_AddStringToObject(root, "request_id", pendingRequestId);
         cJSON_AddStringToObject(root, "service", serviceName(pendingService));
@@ -738,12 +803,42 @@ namespace FlexBms::GatewayApi
                                                             (static_cast<uint32_t>(data[2]) << 16U) |
                                                             (static_cast<uint32_t>(data[3]) << 24U));
         }
+        else if (result == ServiceResult::Ok && pendingService == Service::GetDeviceInfo && dataLength == 4U)
+        {
+            cJSON *value = cJSON_AddObjectToObject(root, "data");
+            cJSON_AddNumberToObject(value, "firmware_version_packed", static_cast<uint32_t>(data[0]) |
+                                                                     (static_cast<uint32_t>(data[1]) << 8U) |
+                                                                     (static_cast<uint32_t>(data[2]) << 16U) |
+                                                                     (static_cast<uint32_t>(data[3]) << 24U));
+        }
         (void)sendJsonTo(pendingServiceSocket, root);
         serviceInFlight = false;
         pendingServiceSocket = -1;
     }
 
     bool serviceBusy() { return serviceInFlight; }
+
+    bool beginInternalService(Service service, const uint8_t *arguments, uint8_t argumentLength, InternalServiceCompletion completion)
+    {
+        if (arguments == nullptr || completion == nullptr || argumentLength > 4U || serviceInFlight || !Wifi::allowsBmsServices() ||
+            !uartHealthy || serviceSender == nullptr || FirmwareUpdate::getStatus().phase == FirmwareUpdate::Phase::Uploading ||
+            FirmwareUpdate::getStatus().phase == FirmwareUpdate::Phase::Installing)
+        {
+            return false;
+        }
+        const uint8_t sequence = nextServiceSequence++;
+        if (nextServiceSequence == 0U) nextServiceSequence = 1U;
+        pendingService = service;
+        pendingSequence = sequence;
+        pendingServiceSocket = -1;
+        pendingServiceStartedUs = esp_timer_get_time();
+        internalServiceCompletion = completion;
+        serviceInFlight = true;
+        if (serviceSender(service, arguments, argumentLength, sequence)) return true;
+        serviceInFlight = false;
+        internalServiceCompletion = nullptr;
+        return false;
+    }
 
     bool verifyBrowserApi()
     {
@@ -756,6 +851,9 @@ namespace FlexBms::GatewayApi
         cJSON *getRtc = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"get_rtc\",\"arguments\":{}}");
         const bool getRtcAccepted = parseService(getRtc, service, arguments, length) && service == Service::GetRtc && length == 0U;
         cJSON_Delete(getRtc);
+        cJSON *deviceInfo = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"get_device_info\",\"arguments\":{}}");
+        const bool deviceInfoAccepted = parseService(deviceInfo, service, arguments, length) && service == Service::GetDeviceInfo && length == 0U;
+        cJSON_Delete(deviceInfo);
         cJSON *invalidCredentials = cJSON_Parse("{\"v\":1,\"type\":\"wifi_configure\",\"request_id\":\"x\",\"ssid\":\"\",\"password\":\"x\"}");
         const char *ssid = nullptr;
         const char *password = nullptr;
@@ -770,6 +868,6 @@ namespace FlexBms::GatewayApi
         const bool statusMessageValid = cJSON_IsString(messageType) && std::strcmp(messageType->valuestring, "bms_status") == 0 &&
                                         cJSON_IsObject(messageStatus) && cJSON_HasObjectItem(messageStatus, "measurements_fresh");
         cJSON_Delete(statusMessage);
-        return serviceRejected && getRtcAccepted && credentialsRejected && scanAccepted && statusMessageValid;
+        return serviceRejected && getRtcAccepted && deviceInfoAccepted && credentialsRejected && scanAccepted && statusMessageValid;
     }
 }

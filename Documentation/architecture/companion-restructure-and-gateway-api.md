@@ -29,7 +29,7 @@ The first release includes:
 
 - live BMS/HV monitoring, including cells, balancing, and temperatures;
 - browser-local CSV logging;
-- named BMS services: run request, fault clear, RTC synchronisation, and
+- named BMS services: run request, fault clear, device-time readback, and
   read-only register reads;
 - Gateway Wi-Fi configuration, scan, and UART diagnostics; and
 - a direct USB/Web Serial service fallback using the same named BMS actions.
@@ -125,8 +125,8 @@ One source tree produces two web targets selected at build time, not at runtime:
 
 | Target | Transport | Included capabilities | Excluded capabilities |
 |---|---|---|---|
-| `webserial` | Chromium Web Serial to STM32 USB | Monitoring, CSV, register reads, RTC sync, fault clear, run request | Gateway diagnostics/logs, raw terminal, all update UI |
-| `gateway` | WebSocket to the hosting ESP32 Gateway | Monitoring, CSV, register reads, RTC sync, fault clear, run request, and Gateway Wi-Fi state/configuration | Web Serial, raw terminal, diagnostic-log download until that Gateway service exists, and all update UI |
+| `webserial` | Chromium Web Serial to STM32 USB | Monitoring, CSV, register reads, device-time readback, fault clear, run request | Gateway NTP status, diagnostics/logs, raw terminal, all update UI |
+| `gateway` | WebSocket to the hosting ESP32 Gateway | Monitoring, CSV, register reads, NTP/device-time status, fault clear, run request, and Gateway Wi-Fi state/configuration | Web Serial, raw terminal, diagnostic-log download until that Gateway service exists, and all update UI |
 
 The Gateway build is the only committed generated build. It is written to
 `dist/gateway` with relative asset URLs. The Gateway PlatformIO pre-build hook
@@ -201,8 +201,8 @@ The common service names are:
 |---|---|---|
 | `set_run_request` | `requested: boolean` | none |
 | `clear_faults` | none | none |
-| `set_rtc` | `unix_time_s: number` UTC integer | none |
 | `get_rtc` | none | `unix_time_s` UTC integer |
+| `get_device_info` | none | `firmware_version_packed` little-endian `major.minor.patch.build` bytes |
 | `read_register` | `slave_index: number`, `register: number` | `slave_index`, `register`, `value` |
 
 Actions show `Accepted`, `Denied`, `Invalid`, `Busy`, or `Transport error`.
@@ -216,12 +216,14 @@ invented zero values. The shared snapshot stores the source units from UART v1: 
 raw amperes times 64, BCC SoC raw, NTC raw, and IC raw. The BMS presentation
 layer alone converts them to V, A, percent, and degrees Celsius according to
 `uart-v1.md`. A snapshot with `measurements_fresh: false` is displayed as stale
-for every measurement value; it is not displayed as live zero data.
+for every measurement value; it is not displayed as live zero data. Gateway
+transport also treats a non-healthy UART state as stale immediately, while
+retaining the last snapshot only for context.
 
 ### Dashboard and service views
 
-The application has a persistent connection header, a BMS dashboard, and an
-optional Gateway Wi-Fi page.
+The application has a persistent connection header, a BMS dashboard, an
+optional Gateway Wi-Fi page, and a Firmware page.
 
 The header reads exactly **Direct USB to STM32** for the Web Serial target and
 **Via ESP32 Gateway** for the Gateway target. It shows transport connection
@@ -240,19 +242,26 @@ index; the header is created once after the first complete fresh snapshot.
 Named action controls and the read-only register viewer are embedded in the
 dashboard. The run request is an immediate accessible switch: changing it sends
 one explicit `set_run_request` request and a denied/failed request restores the
-last reported STM32 state. RTC synchronisation has one **Set RTC from this
-browser** action; it samples the browser's UTC time when pressed rather than
-exposing an epoch input. The same section reads the STM32 RTC with `get_rtc`
-and shows the advancing device time formatted in the browser's locale. A
-disabled control states why it is unavailable on the selected target. The
+last reported STM32 state. The Gateway obtains NTP time only after station
+connection and forwards UTC to the STM32; Companion exposes no manual setter.
+The service section reads the STM32 RTC with `get_rtc`, shows the advancing
+device time in the browser's locale, and, in Gateway mode, reports the latest
+successful NTP-to-STM32 sync or its waiting state. Direct USB states that NTP
+status is Gateway-only. The
 compact register field descriptions are informational only; the read remains
 read-only.
 
-Only the Gateway build renders firmware controls, and only while connected in
-station mode without an active setup/recovery AP. The direct Web Serial build
-has no firmware controls. Each Gateway control takes a release manifest and
-matching raw `.bin`, streams it to a target-specific HTTP endpoint, and reports
-the Gateway update state. Wired release flashing remains the recovery path.
+The Firmware page displays the ESP32 Gateway version when connected through the
+Gateway and reads the STM32 version through `get_device_info`; direct Web Serial
+therefore still shows the STM32 version. Only the Gateway build renders firmware
+update controls, and only while connected in station mode without an active
+setup/recovery AP. It accepts the single `FlexBMS_bundle.fbu` release package,
+shows checkboxes for its STM32 and Gateway members, streams selected members to
+the target-specific HTTP endpoints, and reports the Gateway update state as a
+step flow with byte progress while uploading, programming, and verifying an
+STM32 image.
+When both are selected it completes STM32 first and updates the rebooting
+Gateway last. Wired release flashing remains the recovery path.
 
 ## Gateway browser API
 
@@ -270,12 +279,13 @@ frames, and payloads over 4096 bytes are rejected and do not reach UART.
 `POST /api/firmware/gateway` and `POST /api/firmware/stm32` are station-mode
 only endpoints. Their body is the selected raw binary, with
 `X-FlexBMS-Target`, `X-FlexBMS-Version`, `X-FlexBMS-Length`, and
-`X-FlexBMS-CRC32` headers copied from the matching release manifest. The
+`X-FlexBMS-CRC32` headers copied from the selected bundle member manifest. The
 Gateway rejects an active setup/recovery AP, concurrent update, malformed
 headers, content-length mismatch, target mismatch, oversize image, write
 failure, or final CRC mismatch. A successful response is
-`{"result":"accepted"}`; the update phase and detail are then reported in
-`gateway_status.firmware_update`. The factory image is never accepted here.
+`{"result":"accepted"}`; the update phase, stage, byte progress, and detail
+are then reported in `gateway_status.firmware_update`. The factory image is
+never accepted here.
 
 The first server message has this exact shape; `gateway_status` has the fields
 defined below.
@@ -290,8 +300,8 @@ defined below.
     "csv_logging": true,
     "set_run_request": true,
     "clear_faults": true,
-    "set_rtc": true,
     "get_rtc": true,
+    "get_device_info": true,
     "read_register": true,
     "wifi_configuration": true,
     "diagnostic_log_download": false,
@@ -310,10 +320,16 @@ The Gateway sends these server-to-browser messages:
 | `bms_status` | `status` | Current UART v1 `STATUS`, sent even while measurements are stale. |
 | `snapshot` | `status`, `pack`, `cells`, `temperatures` | Complete current source-unit BMS view. `status` includes `measurements_fresh`. |
 | `event` | `event_id`, `value`, `gateway_uptime_ms` | Direct representation of a UART v1 event; informational only. |
-| `gateway_status` | `wifi_state`, optional `wifi_ssid`, `setup_ap`, `uart_state`, `mqtt_state`, `diagnostic_log` | Local Gateway state, setup AP details, and diagnostic-log availability. |
+| `gateway_status` | `wifi_state`, optional `wifi_ssid`, `setup_ap`, `uart_state`, `mqtt_state`, `time_sync`, `diagnostic_log` | Local Gateway state, setup AP details, NTP state, and diagnostic-log availability. |
 | `service_result` | `request_id`, `service`, `result`, optional `data` | Result for exactly one browser service request. |
 | `wifi_configuration_result` | `request_id`, `result` | Accepted or failed local credential persistence/restart request. |
 | `wifi_scan_result` | `request_id`, `result`, optional `networks` | Completion of an on-demand nearby-network scan. |
+
+`gateway_status.time_sync` is `{ "state": "waiting_for_network | waiting_for_ntp |
+waiting_for_stm32 | synchronized", "last_sync_unix_s": 0 }`. The last-sync
+field is omitted until an NTP sample has been accepted by the STM32 and is not
+persisted across a Gateway reboot. SNTP uses `0.nl.pool.ntp.org` through
+`3.nl.pool.ntp.org`, starts only after station connection, and polls hourly.
 
 `snapshot` has this exact shape. All numeric measurement fields preserve the
 source raw units and map directly to the identically named UART v1 fields.
@@ -394,14 +410,13 @@ network command is accepted.
   "v": 1,
   "type": "service",
   "request_id": "opaque client string up to 64 ASCII characters",
-  "service": "set_run_request | clear_faults | set_rtc | get_rtc | read_register",
+  "service": "set_run_request | clear_faults | get_rtc | get_device_info | read_register",
   "arguments": {}
 }
 ```
 
 `arguments` must exactly match the common service table. Numbers are JSON
-integers: `slave_index` and `register` are 0--255, and `unix_time_s` is a
-non-negative 32-bit integer. `set_run_request` requires exactly
+integers: `slave_index` and `register` are 0--255. `set_run_request` requires exactly
 `{ "requested": true | false }`; services with no arguments require `{}`.
 When the open setup/recovery AP is active, valid BMS service requests receive
 `denied` locally and do not reach UART.
@@ -431,7 +446,7 @@ The scan request requires exactly those fields. Its eventual
 contains `networks`, each with `ssid`, `rssi`, and `secure`.
 
 The result object has this exact shape. `data` is omitted for every service
-except a successful `read_register` or `get_rtc`.
+except a successful `read_register`, `get_rtc`, or `get_device_info`.
 
 ```json
 {
@@ -450,10 +465,11 @@ returns `busy` rather than queueing a second request. It maps UART v1 results
 `busy`; it uses
 `transport_error` for unavailable UART, timeout, malformed response, or local
 Gateway failure. `service_result.data` is present only for a successful
-`read_register` or `get_rtc` and has the fields in the common service table.
+`read_register`, `get_rtc`, or `get_device_info` and has the fields in the
+common service table.
 
 The `capabilities` object in `hello` has Boolean keys
-`monitor`, `csv_logging`, `set_run_request`, `clear_faults`, `set_rtc`, `get_rtc`,
+`monitor`, `csv_logging`, `set_run_request`, `clear_faults`, `get_rtc`, `get_device_info`,
 `read_register`, `diagnostic_log_download`, `raw_terminal`, and
 `firmware_update`, plus `wifi_configuration`. In normal connected station mode
 the BMS-service keys, `wifi_configuration`, and `firmware_update` are true. In
@@ -498,7 +514,7 @@ and `npm run build:desktop` succeed from `Software/Companion`.
    at most 512,000 bytes, and is regenerated deterministically by a clean
    Gateway build.
 4. Unit tests cover raw-unit conversion including centikelvin IC temperature,
-   stale-status rendering, browser-time RTC synchronisation and advancing
+   stale-status rendering, NTP-sync status and advancing
    device-time display, transport capability gating, service-result rendering,
    and Gateway reconnect timing.
 5. Gateway API parsing rejects malformed/extra-field Wi-Fi messages and invalid
@@ -517,6 +533,6 @@ and `npm run build:desktop` succeed from `Software/Companion`.
 9. STM32 tests cover USB `0x1E` run-request handling and `0x1F` results for
    every named service, including denied and invalid cases.
 10. A manual browser check confirms stale-status explanation, live telemetry,
-    CSV creation, register read, RTC sync, fault clear, and run request.
+    CSV creation, register read, NTP RTC sync/status, fault clear, and run request.
     Hardware operation and contactor behaviour are not claimed validated by
     browser/unit tests alone.

@@ -1,6 +1,6 @@
 import type { BmsTransport, Capabilities, ConnectionState, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport.ts'
 import { unavailableCapabilities } from './Transport.ts'
-import { decodeCell, decodePack, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId, writeLe32 } from '../shared/uartV1.ts'
+import { decodeCell, decodePack, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId } from '../shared/uartV1.ts'
 
 type SerialPortLike = { open(options: { baudRate: number }): Promise<void>; close(): Promise<void>; readable?: ReadableStream<Uint8Array>; writable?: WritableStream<Uint8Array> }
 declare global { interface Navigator { serial?: { requestPort(): Promise<SerialPortLike> } } }
@@ -80,8 +80,8 @@ export class WebSerialTransport implements BmsTransport {
   private servicePayload<S extends ServiceName>(service: S, args: ServiceArguments[S]): Uint8Array {
     if (service === 'set_run_request') return Uint8Array.of(serviceId.setRunRequest, (args as ServiceArguments['set_run_request']).requested ? 1 : 0)
     if (service === 'clear_faults') return Uint8Array.of(serviceId.clearFaults)
-    if (service === 'set_rtc') { const payload = Uint8Array.of(serviceId.setRtc, 0, 0, 0, 0); writeLe32(payload, 1, (args as ServiceArguments['set_rtc']).unix_time_s); return payload }
     if (service === 'get_rtc') return Uint8Array.of(serviceId.getRtc)
+    if (service === 'get_device_info') return Uint8Array.of(serviceId.getDeviceInfo)
     const register = args as ServiceArguments['read_register']
     return Uint8Array.of(serviceId.readRegister, register.slave_index, register.register)
   }
@@ -148,6 +148,7 @@ export class WebSerialTransport implements BmsTransport {
     let data: ServiceResponse['data']
     if (result === 'ok' && pending.service === 'read_register' && payload.length === 6) data = { slave_index: payload[2], register: payload[3], value: readLe16(payload, 4) }
     if (result === 'ok' && pending.service === 'get_rtc' && payload.length === 6) data = { unix_time_s: readLe32(payload, 2) }
+    if (result === 'ok' && pending.service === 'get_device_info' && payload.length === 6) data = { firmware_version_packed: readLe32(payload, 2) }
     pending.resolve({ request_id: '', service: pending.service, result, ...(data ? { data } : {}) })
   }
 

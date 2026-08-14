@@ -19,12 +19,17 @@ namespace FlexBms::FirmwareUpdate
         constexpr int kNormalBaud = 1'000'000;
         constexpr int kRomBaud = 115200;
         constexpr uint32_t kStm32FlashAddress = 0x08000000UL;
-        constexpr uint16_t kStm32BootloaderId = 0x00D2U;
+        // The STM32 ROM GET ID command reports the device product ID, not the
+        // bootloader revision. STM32G491 reports PID 0x0479.
+        constexpr uint16_t kStm32ProductId = 0x0479U;
         constexpr uint32_t kStm32MaxBytes = 512U * 1024U;
         constexpr int kShortTimeoutMs = 500;
         constexpr int kEraseTimeoutMs = 20'000;
+        constexpr int64_t kStm32RomStartDelayUs = 200'000;
+        constexpr int64_t kStm32HeartbeatTimeoutUs = 10'000'000;
         constexpr uint8_t kAck = 0x79U;
-        constexpr uint8_t kNack = 0x1FU;
+
+        enum class Stm32Operation : uint8_t { Idle, RomBootloader, Erase, Program, Verify, StartApplication, AwaitHeartbeat };
 
         Status status{};
         uint32_t expectedCrc = 0U;
@@ -36,8 +41,15 @@ namespace FlexBms::FirmwareUpdate
         bool resetFramedUart = false;
         bool stm32HandoffSent = false;
         bool stm32RomStarted = false;
+        bool stm32AwaitingHeartbeat = false;
+        Stm32Operation stm32Operation = Stm32Operation::Idle;
         bool statusChanged = false;
         int64_t restartAtUs = 0;
+        int64_t stm32RomReadyAtUs = 0;
+        int64_t stm32HeartbeatDeadlineUs = 0;
+        uint32_t stm32Offset = 0U;
+        uint32_t stm32PaddedBytes = 0U;
+        uint32_t stm32ReadbackCrc = 0xFFFFFFFFU;
         char version[48]{};
         char detail[96]{};
 
@@ -54,13 +66,24 @@ namespace FlexBms::FirmwareUpdate
             return crc;
         }
 
-        void setStatus(Phase phase, const char *message)
+        void setStatus(Phase phase, Stage stage, const char *message)
         {
             status.phase = phase;
+            status.stage = stage;
             std::strncpy(detail, message, sizeof(detail) - 1U);
             detail[sizeof(detail) - 1U] = '\0';
             status.detail = detail;
             statusChanged = true;
+        }
+
+        void setProgress(uint32_t bytes)
+        {
+            const uint32_t bounded = std::min(bytes, status.bytesExpected);
+            if (bounded == status.progressBytes) return;
+            const uint32_t previousPercent = status.bytesExpected == 0U ? 0U : (status.progressBytes * 100U) / status.bytesExpected;
+            status.progressBytes = bounded;
+            const uint32_t currentPercent = status.bytesExpected == 0U ? 0U : (status.progressBytes * 100U) / status.bytesExpected;
+            if (currentPercent != previousPercent) statusChanged = true;
         }
 
         void configureNormalUart()
@@ -85,14 +108,18 @@ namespace FlexBms::FirmwareUpdate
             }
             uploadOpen = false;
             stm32RomStarted = false;
+            stm32AwaitingHeartbeat = false;
             stm32HandoffSent = false;
+            stm32Operation = Stm32Operation::Idle;
+            stm32RomReadyAtUs = 0;
+            stm32HeartbeatDeadlineUs = 0;
             if (uartOwned)
             {
                 configureNormalUart();
                 uartOwned = false;
                 resetFramedUart = true;
             }
-            setStatus(Phase::Failed, message);
+            setStatus(Phase::Failed, status.stage, message);
         }
 
         bool writeBytes(const uint8_t *data, size_t length)
@@ -127,7 +154,7 @@ namespace FlexBms::FirmwareUpdate
             return writeBytes(bytes.data(), bytes.size()) && expectAck();
         }
 
-        bool getBootloaderId()
+        bool verifyStm32ProductId()
         {
             if (!command(0x02U)) return false;
             uint8_t length = 0U;
@@ -135,7 +162,7 @@ namespace FlexBms::FirmwareUpdate
             uint8_t high = 0U;
             uint8_t low = 0U;
             return readByte(high, kShortTimeoutMs) && readByte(low, kShortTimeoutMs) && expectAck() &&
-                   static_cast<uint16_t>((static_cast<uint16_t>(high) << 8U) | low) == kStm32BootloaderId;
+                   static_cast<uint16_t>((static_cast<uint16_t>(high) << 8U) | low) == kStm32ProductId;
         }
 
         bool eraseStm32()
@@ -173,7 +200,7 @@ namespace FlexBms::FirmwareUpdate
             return command(0x21U) && address(kStm32FlashAddress);
         }
 
-        bool transferStm32()
+        bool enterStm32RomBootloader()
         {
             uart_config_t config{};
             config.baud_rate = kRomBaud;
@@ -185,31 +212,7 @@ namespace FlexBms::FirmwareUpdate
             if (uart_param_config(kUart, &config) != ESP_OK) return false;
             (void)uart_flush_input(kUart);
             const uint8_t sync = 0x7FU;
-            if (!writeBytes(&sync, 1U) || !expectAck() || !getBootloaderId() || !eraseStm32()) return false;
-
-            std::array<uint8_t, 256U> block{};
-            uint32_t offset = 0U;
-            const uint32_t paddedBytes = (status.bytesExpected + 7U) & ~7U;
-            while (offset < paddedBytes)
-            {
-                const size_t count = std::min<size_t>(block.size(), paddedBytes - offset);
-                std::fill(block.begin(), block.begin() + count, 0xFFU);
-                const size_t sourceCount = std::min<size_t>(count, status.bytesExpected - std::min<uint32_t>(offset, status.bytesExpected));
-                if (sourceCount != 0U && esp_partition_read(stagedPartition, offset, block.data(), sourceCount) != ESP_OK) return false;
-                if (!writeStm32Block(kStm32FlashAddress + offset, block.data(), count)) return false;
-                offset += static_cast<uint32_t>(count);
-            }
-
-            uint32_t readbackCrc = 0xFFFFFFFFU;
-            offset = 0U;
-            while (offset < status.bytesExpected)
-            {
-                const size_t count = std::min<size_t>(block.size(), status.bytesExpected - offset);
-                if (!readStm32Block(kStm32FlashAddress + offset, block.data(), count)) return false;
-                readbackCrc = crc32Update(readbackCrc, block.data(), count);
-                offset += static_cast<uint32_t>(count);
-            }
-            return (readbackCrc ^ 0xFFFFFFFFU) == expectedCrc && goStm32();
+            return writeBytes(&sync, 1U) && expectAck() && verifyStm32ProductId();
         }
 
         bool sendBootloaderRequest()
@@ -238,13 +241,20 @@ namespace FlexBms::FirmwareUpdate
     bool beginUpload(Target target, const char *requestedVersion, uint32_t bytes, uint32_t crc32)
     {
         if (!isAvailable() || requestedVersion == nullptr || bytes == 0U || (target == Target::Stm32 && bytes > kStm32MaxBytes)) return false;
+        stm32HandoffSent = false;
+        stm32RomStarted = false;
+        stm32AwaitingHeartbeat = false;
+        stm32Operation = Stm32Operation::Idle;
+        stm32RomReadyAtUs = 0;
+        stm32HeartbeatDeadlineUs = 0;
         std::strncpy(version, requestedVersion, sizeof(version) - 1U);
         version[sizeof(version) - 1U] = '\0';
-        status = {.phase = Phase::Uploading, .target = target, .bytesReceived = 0U, .bytesExpected = bytes, .version = version, .detail = detail};
+        status = {.phase = Phase::Uploading, .target = target, .stage = Stage::Upload, .bytesReceived = 0U, .bytesExpected = bytes,
+                  .progressBytes = 0U, .version = version, .detail = detail};
         expectedCrc = crc32;
         runningCrc = 0xFFFFFFFFU;
         uploadOpen = true;
-        setStatus(Phase::Uploading, "Uploading image");
+        setStatus(Phase::Uploading, Stage::Upload, "Uploading image");
         if (target == Target::Gateway)
         {
             const esp_partition_t *partition = esp_ota_get_next_update_partition(nullptr);
@@ -266,6 +276,7 @@ namespace FlexBms::FirmwareUpdate
         if (result != ESP_OK) { fail("Image write failed"); return false; }
         runningCrc = crc32Update(runningCrc, data, bytes);
         status.bytesReceived += static_cast<uint32_t>(bytes);
+        setProgress(status.bytesReceived);
         return true;
     }
 
@@ -278,12 +289,12 @@ namespace FlexBms::FirmwareUpdate
             const esp_partition_t *partition = esp_ota_get_next_update_partition(nullptr);
             if (otaHandle == 0U || esp_ota_end(otaHandle) != ESP_OK || esp_ota_set_boot_partition(partition) != ESP_OK) { otaHandle = 0U; fail("Gateway OTA validation failed"); return false; }
             otaHandle = 0U;
-            setStatus(Phase::Installing, "Gateway reboot pending");
+            setStatus(Phase::Installing, Stage::Restart, "Restarting Gateway");
             restartAtUs = esp_timer_get_time() + 1'000'000;
         }
         else
         {
-            setStatus(Phase::Installing, "Waiting for STM32 safe-off handoff");
+            setStatus(Phase::Installing, Stage::Handoff, "Waiting for STM32 safe-off handoff");
         }
         return true;
     }
@@ -295,16 +306,21 @@ namespace FlexBms::FirmwareUpdate
         if (status.target != Target::Stm32 || status.phase != Phase::Installing) return;
         if (frame.type == UartV1::MessageType::ServiceResponse && frame.sequence == 0xFEU && frame.length >= 2U && frame.payload[0] == 0x07U)
         {
+            if (frame.payload[1] == 4U) { fail("Disconnect STM32 USB data connection before updating"); return; }
             if (frame.payload[1] != 0U) { fail("STM32 denied update handoff"); return; }
             uartOwned = true;
             stm32RomStarted = true;
-            setStatus(Phase::Installing, "Programming STM32");
+            stm32RomReadyAtUs = esp_timer_get_time() + kStm32RomStartDelayUs;
+            setStatus(Phase::Installing, Stage::RomBootloader, "Starting STM32 ROM bootloader");
         }
-        else if (stm32RomStarted && frame.type == UartV1::MessageType::Heartbeat)
+        else if (stm32AwaitingHeartbeat && frame.type == UartV1::MessageType::Heartbeat)
         {
             uartOwned = false;
-            stm32RomStarted = false;
-            setStatus(Phase::Complete, "STM32 update complete");
+            stm32AwaitingHeartbeat = false;
+            stm32HeartbeatDeadlineUs = 0;
+            stm32Operation = Stm32Operation::Idle;
+            setProgress(status.bytesExpected);
+            setStatus(Phase::Complete, Stage::Complete, "STM32 update complete");
         }
     }
 
@@ -321,16 +337,94 @@ namespace FlexBms::FirmwareUpdate
             if (!sendBootloaderRequest()) fail("STM32 handoff send failed");
             return;
         }
+        if (stm32AwaitingHeartbeat)
+        {
+            if (esp_timer_get_time() >= stm32HeartbeatDeadlineUs)
+            {
+                fail("STM32 application heartbeat timed out after Go");
+            }
+            return;
+        }
         if (stm32RomStarted)
         {
+            if (esp_timer_get_time() < stm32RomReadyAtUs) return;
             stm32RomStarted = false;
-            if (!transferStm32()) { fail("STM32 ROM transfer failed"); return; }
+            stm32RomReadyAtUs = 0;
+            stm32Operation = Stm32Operation::RomBootloader;
+            setStatus(Phase::Installing, Stage::RomBootloader, "Synchronising STM32 ROM bootloader");
+            return;
+        }
+
+        switch (stm32Operation)
+        {
+        case Stm32Operation::RomBootloader:
+            if (!enterStm32RomBootloader()) { fail("STM32 ROM transfer failed"); return; }
+            stm32Operation = Stm32Operation::Erase;
+            setStatus(Phase::Installing, Stage::Erase, "Erasing STM32 flash");
+            return;
+
+        case Stm32Operation::Erase:
+            if (!eraseStm32()) { fail("STM32 ROM transfer failed"); return; }
+            stm32Offset = 0U;
+            stm32PaddedBytes = (status.bytesExpected + 7U) & ~7U;
+            status.progressBytes = 0U;
+            stm32Operation = Stm32Operation::Program;
+            setStatus(Phase::Installing, Stage::Program, "Programming STM32");
+            return;
+
+        case Stm32Operation::Program:
+        {
+            if (stm32Offset >= stm32PaddedBytes)
+            {
+                stm32Offset = 0U;
+                stm32ReadbackCrc = 0xFFFFFFFFU;
+                status.progressBytes = 0U;
+                stm32Operation = Stm32Operation::Verify;
+                setStatus(Phase::Installing, Stage::Verify, "Verifying STM32 image");
+                return;
+            }
+            std::array<uint8_t, 256U> block{};
+            const size_t count = std::min<size_t>(block.size(), stm32PaddedBytes - stm32Offset);
+            std::fill(block.begin(), block.begin() + count, 0xFFU);
+            const size_t sourceCount = std::min<size_t>(count, status.bytesExpected - std::min(stm32Offset, status.bytesExpected));
+            if (sourceCount != 0U && esp_partition_read(stagedPartition, stm32Offset, block.data(), sourceCount) != ESP_OK) { fail("STM32 staged image read failed"); return; }
+            if (!writeStm32Block(kStm32FlashAddress + stm32Offset, block.data(), count)) { fail("STM32 ROM transfer failed"); return; }
+            stm32Offset += static_cast<uint32_t>(count);
+            setProgress(stm32Offset);
+            return;
+        }
+
+        case Stm32Operation::Verify:
+        {
+            if (stm32Offset >= status.bytesExpected)
+            {
+                if ((stm32ReadbackCrc ^ 0xFFFFFFFFU) != expectedCrc) { fail("STM32 ROM readback CRC mismatch"); return; }
+                stm32Operation = Stm32Operation::StartApplication;
+                setStatus(Phase::Installing, Stage::Restart, "Restarting STM32 application");
+                return;
+            }
+            std::array<uint8_t, 256U> block{};
+            const size_t count = std::min<size_t>(block.size(), status.bytesExpected - stm32Offset);
+            if (!readStm32Block(kStm32FlashAddress + stm32Offset, block.data(), count)) { fail("STM32 ROM transfer failed"); return; }
+            stm32ReadbackCrc = crc32Update(stm32ReadbackCrc, block.data(), count);
+            stm32Offset += static_cast<uint32_t>(count);
+            setProgress(stm32Offset);
+            return;
+        }
+
+        case Stm32Operation::StartApplication:
+            if (!goStm32()) { fail("STM32 ROM start application failed"); return; }
             configureNormalUart();
             resetFramedUart = true;
-            // The next valid application heartbeat completes the update.
-            stm32RomStarted = true;
+            stm32AwaitingHeartbeat = true;
+            stm32Operation = Stm32Operation::AwaitHeartbeat;
+            stm32HeartbeatDeadlineUs = esp_timer_get_time() + kStm32HeartbeatTimeoutUs;
             uartOwned = false;
-            setStatus(Phase::Installing, "Waiting for STM32 heartbeat");
+            setStatus(Phase::Installing, Stage::Restart, "Waiting for STM32 heartbeat");
+            return;
+
+        default:
+            return;
         }
     }
 

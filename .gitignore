@@ -20,3 +20,7 @@ Simulations/**.raw
 
 # ESP-IDF Component Manager cache. dependencies.lock pins its resolved inputs.
 /Software/Gateway/managed_components/
+
+# Local Gateway fallback Wi-Fi credentials. The committed example beside this
+# file documents the expected macro and is safe to copy before editing.
+/Software/Gateway/components/wifi_manager/include/flexbms/FallbackNetworks.local.h

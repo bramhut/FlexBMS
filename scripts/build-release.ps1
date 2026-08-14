@@ -8,6 +8,7 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $companionDirectory = Join-Path $repositoryRoot 'Software\Companion'
 $gatewayDirectory = Join-Path $repositoryRoot 'Software\Gateway'
 $masterDirectory = Join-Path $repositoryRoot 'Software\Master'
+$stm32VersionHeader = Join-Path $masterDirectory 'Inc\FirmwareVersion.h'
 $releaseScript = Join-Path $PSScriptRoot 'release\flash-release.ps1'
 $npm = 'C:\Program Files\nodejs\npm.cmd'
 $platformio = 'C:\Users\Bram\.platformio\penv\Scripts\platformio.exe'
@@ -19,6 +20,35 @@ if (-not (Test-Path -LiteralPath $releaseScript)) { throw "Release flash script 
 function Assert-SemanticVersion([string]$Candidate) {
     if ($Candidate -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
         throw "Version '$Candidate' must use semantic version format, for example 0.1.1 or 0.2.0-rc.1."
+    }
+}
+
+function Set-Stm32FirmwareVersion([string]$ReleaseVersion) {
+    $match = [regex]::Match($ReleaseVersion, '^(?<major>[0-9]+)\.(?<minor>[0-9]+)\.(?<patch>[0-9]+)')
+    if (-not $match.Success) { throw "Unable to derive STM32 firmware version from '$ReleaseVersion'." }
+    $parts = @([uint32]$match.Groups['major'].Value, [uint32]$match.Groups['minor'].Value, [uint32]$match.Groups['patch'].Value)
+    if ($parts | Where-Object { $_ -gt 255 }) { throw 'STM32 firmware version components must fit in one byte.' }
+
+    $contents = @"
+#pragma once
+
+#include <cstdint>
+
+// Written by scripts/build-release.ps1 for every STM32 release image.
+inline constexpr uint8_t FIRMWARE_VERSION_MAJOR = $($parts[0])U;
+inline constexpr uint8_t FIRMWARE_VERSION_MINOR = $($parts[1])U;
+inline constexpr uint8_t FIRMWARE_VERSION_PATCH = $($parts[2])U;
+inline constexpr uint8_t FIRMWARE_VERSION_BUILD = 0U;
+
+inline constexpr uint32_t FIRMWARE_VERSION_PACKED =
+    static_cast<uint32_t>(FIRMWARE_VERSION_MAJOR) |
+    (static_cast<uint32_t>(FIRMWARE_VERSION_MINOR) << 8U) |
+    (static_cast<uint32_t>(FIRMWARE_VERSION_PATCH) << 16U) |
+    (static_cast<uint32_t>(FIRMWARE_VERSION_BUILD) << 24U);
+"@
+    $contents = $contents.TrimStart("`r", "`n") + [Environment]::NewLine
+    if ((Get-Content -Raw -LiteralPath $stm32VersionHeader) -ne $contents) {
+        [System.IO.File]::WriteAllText($stm32VersionHeader, $contents, [System.Text.UTF8Encoding]::new($false))
     }
 }
 
@@ -41,16 +71,37 @@ namespace FlexBms {
 '@
 }
 
-function Write-OtaManifest([string]$Target, [string]$ImageName, [string]$ManifestName) {
-    $imagePath = Join-Path $releaseDirectory $ImageName
-    $manifest = [ordered]@{
-        target = $Target
-        version = $Version
-        image_file = $ImageName
-        image_bytes = (Get-Item -LiteralPath $imagePath).Length
-        image_crc32 = [FlexBms.ReleaseCrc32]::FileHex($imagePath)
+function Write-OtaBundle {
+    $imagePaths = @(
+        (Join-Path $releaseDirectory 'FlexBMS-STM32.bin')
+        (Join-Path $releaseDirectory 'FlexBMS-Gateway.bin')
+    )
+    $images = @()
+    foreach ($imagePath in $imagePaths) {
+        $target = if ((Split-Path -Leaf $imagePath) -eq 'FlexBMS-STM32.bin') { 'stm32' } else { 'gateway' }
+        $images += [ordered]@{ target = $target; version = $Version; image_bytes = (Get-Item -LiteralPath $imagePath).Length; image_crc32 = [FlexBms.ReleaseCrc32]::FileHex($imagePath) }
     }
-    $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $releaseDirectory $ManifestName) -Encoding utf8
+    $manifest = [ordered]@{ format_version = 1; version = $Version; images = $images }
+    $manifestBytes = [System.Text.Encoding]::UTF8.GetBytes(($manifest | ConvertTo-Json -Compress -Depth 3))
+    $bundlePath = Join-Path $releaseDirectory 'FlexBMS_bundle.fbu'
+    $stream = [System.IO.File]::Open($bundlePath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    try {
+        $writer = [System.IO.BinaryWriter]::new($stream, [System.Text.Encoding]::UTF8, $true)
+        try {
+            $writer.Write([byte[]](0x46, 0x42, 0x55, 0x31))
+            $writer.Write([uint32]$manifestBytes.Length)
+            $writer.Write($manifestBytes)
+            foreach ($imagePath in $imagePaths) {
+                $writer.Write([System.IO.File]::ReadAllBytes($imagePath))
+            }
+        }
+        finally { $writer.Dispose() }
+    }
+    finally { $stream.Dispose() }
+    $payloadBytes = [uint64]0
+    foreach ($image in $images) { $payloadBytes += [uint64]$image['image_bytes'] }
+    $expectedBytes = 8 + $manifestBytes.Length + $payloadBytes
+    if ((Get-Item -LiteralPath $bundlePath).Length -ne $expectedBytes) { throw 'Firmware bundle size does not match its manifest.' }
 }
 
 $packagePath = Join-Path $companionDirectory 'package.json'
@@ -67,6 +118,7 @@ else {
     $Version = if ([string]::IsNullOrWhiteSpace($enteredVersion)) { $currentVersion } else { $enteredVersion.Trim() }
 }
 Assert-SemanticVersion $Version
+Set-Stm32FirmwareVersion $Version
 
 $repeatRelease = $false
 $releaseBaseDirectory = Join-Path $repositoryRoot "release\FlexBMS-$Version"
@@ -188,8 +240,7 @@ if ($gatewayFactoryBytes.Length -le $gatewayAppOffsetValue -or $gatewayFactoryBy
     throw "Gateway factory image does not contain the application at ota_0 offset $gatewayAppOffset."
 }
 
-Write-OtaManifest 'gateway' 'FlexBMS-Gateway.bin' 'FlexBMS-Gateway.manifest.json'
-Write-OtaManifest 'stm32' 'FlexBMS-STM32.bin' 'FlexBMS-STM32.manifest.json'
+Write-OtaBundle
 
 $hashes = Get-ChildItem -LiteralPath $releaseDirectory -File |
     Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |

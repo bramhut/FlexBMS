@@ -82,6 +82,9 @@ namespace FlexBms
     void StatusLed::update()
     {
         const int64_t now = esp_timer_get_time();
+        const int64_t phaseNow = stm32PhaseAvailable
+                                     ? stm32PhaseAtReceiptUs + (now - stm32PhaseReceivedUs)
+                                     : now;
         bool on = false;
         if (now - bootStartedUs < kBootAcknowledgementUs)
         {
@@ -93,23 +96,23 @@ namespace FlexBms
         }
         else if (firmwareUpdateActive)
         {
-            on = periodicOn(now, kUpdateHalfPeriodUs * 2, kUpdateHalfPeriodUs);
+            on = periodicOn(phaseNow, kUpdateHalfPeriodUs * 2, kUpdateHalfPeriodUs);
         }
         else if (uartLinkLost)
         {
-            on = codeOn(now, 3U);
+            on = codeOn(phaseNow, 3U);
         }
         else if (wifiWaiting)
         {
-            on = periodicOn(now, kWaitingHalfPeriodUs * 2, kWaitingHalfPeriodUs);
+            on = periodicOn(phaseNow, kWaitingHalfPeriodUs * 2, kWaitingHalfPeriodUs);
         }
         else if (mqttUnavailable)
         {
-            on = codeOn(now, 2U);
+            on = codeOn(phaseNow, 2U);
         }
         else
         {
-            on = periodicOn(now, kHeartbeatPeriodUs, kHeartbeatOnUs);
+            on = periodicOn(phaseNow, kHeartbeatPeriodUs, kHeartbeatOnUs);
         }
 
         const uint32_t activeHighDuty =
@@ -120,7 +123,18 @@ namespace FlexBms
 
     void StatusLed::setWifiWaiting(bool active) { wifiWaiting = active; }
     void StatusLed::setMqttUnavailable(bool active) { mqttUnavailable = active; }
-    void StatusLed::setUartLinkLost(bool active) { uartLinkLost = active; }
+    void StatusLed::setUartLinkLost(bool active)
+    {
+        uartLinkLost = active;
+        if (active) stm32PhaseAvailable = false;
+    }
     void StatusLed::setFirmwareUpdateActive(bool active) { firmwareUpdateActive = active; }
     void StatusLed::setFatalLocalFailure(bool active) { fatalLocalFailure = active; }
+
+    void StatusLed::synchronizeToStm32Uptime(uint32_t uptimeMs)
+    {
+        stm32PhaseAtReceiptUs = static_cast<int64_t>(uptimeMs % 2000U) * 1000LL;
+        stm32PhaseReceivedUs = esp_timer_get_time();
+        stm32PhaseAvailable = true;
+    }
 }

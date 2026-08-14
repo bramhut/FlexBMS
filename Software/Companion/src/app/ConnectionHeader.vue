@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import type { ConnectionState, GatewayStatus } from '@/transports/Transport'
-defineProps<{ label: string; state: ConnectionState; fresh: boolean; gateway?: GatewayStatus }>()
-const emit = defineEmits<{ connect: []; disconnect: [] }>()
+defineProps<{ label: string; message: string; tone: 'healthy' | 'waiting' | 'problem'; allowManualConnect: boolean }>()
+const emit = defineEmits<{ connect: [] }>()
 </script>
+
 <template>
-  <header class="connection-header"><div><strong>{{ label }}</strong><span class="muted"> · {{ state }} · {{ fresh ? 'telemetry fresh' : 'telemetry stale' }}</span><span v-if="gateway" class="muted"> · Wi-Fi {{ gateway.wifi_state }} · UART {{ gateway.uart_state }}</span></div><button v-if="state === 'disconnected'" @click="emit('connect')">Connect</button><button v-else @click="emit('disconnect')">Disconnect</button></header>
+  <header class="connection-header" :data-tone="tone">
+    <div class="connection-status"><span class="status-dot" aria-hidden="true"></span><strong>{{ label }}</strong><span>{{ message }}</span></div>
+    <button v-if="allowManualConnect" @click="emit('connect')">Connect USB</button>
+  </header>
 </template>

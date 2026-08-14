@@ -19,9 +19,13 @@ export class GatewayTransport implements BmsTransport {
   private pending = new Map<string, Pending>()
   private pendingWifiConfiguration = new Map<string, PendingWifiConfiguration>()
   private pendingWifiScan = new Map<string, PendingWifiScan>()
+  private nextRequestId = 1
   private reconnectAttempt = 0
   private reconnectTimer: number | null = null
   private explicitlyDisconnected = false
+  private gatewayStatus: GatewayStatus | undefined
+  private loadedGatewayVersion: string | undefined
+  private lastBmsStatus: Status | undefined
 
   async connect(): Promise<void> {
     this.explicitlyDisconnected = false
@@ -37,7 +41,7 @@ export class GatewayTransport implements BmsTransport {
   onState(listener: (state: ConnectionState, gateway?: GatewayStatus) => void): () => void { const wrapped: Listener<[ConnectionState, GatewayStatus | undefined]> = ([state, gateway]) => listener(state, gateway); this.stateListeners.add(wrapped); return () => this.stateListeners.delete(wrapped) }
   request<S extends ServiceName>(service: S, args: ServiceArguments[S]): Promise<ServiceResponse> {
     if (this.socket?.readyState !== WebSocket.OPEN) return Promise.resolve({ request_id: '', service, result: 'transport_error' })
-    const request_id = crypto.randomUUID().replace(/-/g, '').slice(0, 32)
+    const request_id = this.allocateRequestId()
     return new Promise((resolve, reject) => {
       this.pending.set(request_id, { service, resolve, reject })
       this.socket?.send(JSON.stringify({ v: 1, type: 'service', request_id, service, arguments: args }))
@@ -46,7 +50,7 @@ export class GatewayTransport implements BmsTransport {
   }
   configureWifi(ssid: string, password: string): Promise<WifiConfigurationResponse> {
     if (this.socket?.readyState !== WebSocket.OPEN) return Promise.resolve({ request_id: '', result: 'transport_error' })
-    const request_id = crypto.randomUUID().replace(/-/g, '').slice(0, 32)
+    const request_id = this.allocateRequestId()
     return new Promise(resolve => {
       this.pendingWifiConfiguration.set(request_id, { resolve })
       this.socket?.send(JSON.stringify({ v: 1, type: 'wifi_configure', request_id, ssid, password }))
@@ -55,7 +59,7 @@ export class GatewayTransport implements BmsTransport {
   }
   scanWifi(): Promise<WifiScanResponse> {
     if (this.socket?.readyState !== WebSocket.OPEN) return Promise.resolve({ request_id: '', result: 'transport_error' })
-    const request_id = crypto.randomUUID().replace(/-/g, '').slice(0, 32)
+    const request_id = this.allocateRequestId()
     return new Promise(resolve => {
       this.pendingWifiScan.set(request_id, { resolve })
       this.socket?.send(JSON.stringify({ v: 1, type: 'wifi_scan', request_id }))
@@ -76,16 +80,27 @@ export class GatewayTransport implements BmsTransport {
     let parsed: Record<string, unknown>
     try { parsed = JSON.parse(message.data) as Record<string, unknown> } catch { return }
     if (parsed.v !== 1 || typeof parsed.type !== 'string') return
-    if (parsed.type === 'hello') { this.capabilities = parsed.capabilities as Capabilities; this.emitState(parsed.gateway_status as GatewayStatus); return }
-    if (parsed.type === 'bms_status') this.statusListeners.forEach(listener => listener(parsed.status as Status))
-    if (parsed.type === 'snapshot') { const snapshot = { status: parsed.status, pack: parsed.pack, cells: parsed.cells, temperatures: parsed.temperatures } as Snapshot; this.statusListeners.forEach(listener => listener(snapshot.status)); this.snapshotListeners.forEach(listener => listener(snapshot)) }
+    if (parsed.type === 'hello') {
+      const gatewayVersion = typeof parsed.gateway_version === 'string' ? parsed.gateway_version : undefined
+      if (gatewayVersion && this.loadedGatewayVersion && gatewayVersion !== this.loadedGatewayVersion) { window.location.reload(); return }
+      this.loadedGatewayVersion = gatewayVersion ?? this.loadedGatewayVersion
+      this.capabilities = parsed.capabilities as Capabilities
+      this.gatewayStatus = { ...(parsed.gateway_status as GatewayStatus), gateway_version: gatewayVersion }
+      this.emitState(this.gatewayStatus)
+      return
+    }
+    if (parsed.type === 'bms_status') this.publishBmsStatus(parsed.status as Status)
+    if (parsed.type === 'snapshot') { const snapshot = { status: this.normaliseBmsStatus(parsed.status as Status), pack: parsed.pack, cells: parsed.cells, temperatures: parsed.temperatures } as Snapshot; this.lastBmsStatus = snapshot.status; this.statusListeners.forEach(listener => listener(snapshot.status)); this.snapshotListeners.forEach(listener => listener(snapshot)) }
     if (parsed.type === 'event') this.eventListeners.forEach(listener => listener(parsed as never))
-    if (parsed.type === 'gateway_status') this.emitState(parsed as unknown as GatewayStatus)
+    if (parsed.type === 'gateway_status') { this.gatewayStatus = { ...this.gatewayStatus, ...(parsed as unknown as GatewayStatus) }; this.emitState(this.gatewayStatus); if (this.gatewayStatus.uart_state !== 'healthy' && this.lastBmsStatus?.measurements_fresh) this.publishBmsStatus(this.lastBmsStatus) }
     if (parsed.type === 'service_result' && typeof parsed.request_id === 'string') { const pending = this.pending.get(parsed.request_id); if (pending) { this.pending.delete(parsed.request_id); pending.resolve(parsed as unknown as ServiceResponse) } }
     if (parsed.type === 'wifi_configuration_result' && typeof parsed.request_id === 'string') { const pending = this.pendingWifiConfiguration.get(parsed.request_id); if (pending) { this.pendingWifiConfiguration.delete(parsed.request_id); pending.resolve(parsed as unknown as WifiConfigurationResponse) } }
     if (parsed.type === 'wifi_scan_result' && typeof parsed.request_id === 'string') { const pending = this.pendingWifiScan.get(parsed.request_id); if (pending) { this.pendingWifiScan.delete(parsed.request_id); pending.resolve(parsed as unknown as WifiScanResponse) } }
   }
   private scheduleReconnect(): void { const delay = reconnectDelayMs(this.reconnectAttempt++); this.reconnectTimer = window.setTimeout(() => this.open(), delay) }
+  private allocateRequestId(): string { return `r${this.nextRequestId++}` }
   private setState(state: ConnectionState): void { this.state = state; this.emitState(undefined) }
   private emitState(gateway: GatewayStatus | undefined): void { this.stateListeners.forEach(listener => listener([this.state, gateway])) }
+  private normaliseBmsStatus(status: Status): Status { return this.gatewayStatus?.uart_state === 'healthy' || this.gatewayStatus === undefined ? status : { ...status, measurements_fresh: false } }
+  private publishBmsStatus(status: Status): void { this.lastBmsStatus = this.normaliseBmsStatus(status); this.statusListeners.forEach(listener => listener(this.lastBmsStatus!)) }
 }

@@ -1,22 +1,22 @@
 {
   "format": 1,
-  "companion_version": "0.1.0",
+  "companion_version": "0.1.6",
   "files": [
     {
-      "path": "assets/index-C8pclAOF.css",
-      "bytes": 6205,
-      "sha256": "e9a22c42b963e9435d4530d924b0e674c3a2e6ebb8386f9fe9c6618ffa40400b"
+      "path": "assets/index-D4Qe9t9m.js",
+      "bytes": 89787,
+      "sha256": "247ee70df09ea51d498d1edd5b50cd8847fd9b5500a7cc0268ac87d83b692cfe"
     },
     {
-      "path": "assets/index-DpupuBtJ.js",
-      "bytes": 83229,
-      "sha256": "90ed7859e6bb854d2dd2f61024f2ee53555392f6d84412448b6635bea1e34693"
+      "path": "assets/index-z2hbMaqh.css",
+      "bytes": 8381,
+      "sha256": "6720aa7a0aa5d5459fc20d7f6afb7563a21018fd1d94678491035d7f5c9d6b61"
     },
     {
       "path": "index.html",
       "bytes": 373,
-      "sha256": "e24083771f75a93647a4f13af389266d8de6550c99fefb819b8fba1262510be7"
+      "sha256": "4a6c09fbe25daa6874128785a3482a5c812345ced4ea2523740dbdd889129337"
     }
   ],
-  "total_bytes": 89807
+  "total_bytes": 98541
 }

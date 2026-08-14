@@ -50,6 +50,30 @@ namespace FlexBms::Wifi
             std::array<char, kMaxPasswordBytes + 1U> password{};
         };
 
+        // This optional, ignored header is deliberately compiled into the
+        // firmware. See FallbackNetworks.local.example.h before creating it.
+        struct FallbackNetwork
+        {
+            const char *ssid;
+            const char *password;
+        };
+
+#if __has_include("flexbms/FallbackNetworks.local.h")
+#include "flexbms/FallbackNetworks.local.h"
+#endif
+
+#ifndef FLEXBMS_WIFI_FALLBACK_NETWORKS
+#define FLEXBMS_WIFI_FALLBACK_NETWORKS
+#endif
+
+        constexpr size_t kFallbackNetworkCapacity = 4U;
+        constexpr std::array<FallbackNetwork, kFallbackNetworkCapacity> kFallbackNetworks = {{FLEXBMS_WIFI_FALLBACK_NETWORKS}};
+        constexpr size_t kFallbackNetworkCount = kFallbackNetworks.size();
+        constexpr size_t kNoFallbackNetwork = kFallbackNetworkCount;
+
+        enum class ScanPurpose : uint8_t { None, UserRequest, NetworkSelection };
+        enum class CandidateKind : uint8_t { None, Primary, Fallback };
+
         std::atomic<State> state{State::Unavailable};
         std::atomic<bool> statusChanged{false};
         std::atomic<bool> accessPointActive{false};
@@ -58,14 +82,25 @@ namespace FlexBms::Wifi
         bool mdnsStarted = false;
         std::atomic<bool> scanPending{false};
         std::atomic<bool> scanReady{false};
+        std::atomic<ScanPurpose> scanPurpose{ScanPurpose::None};
         int64_t stationWindowStartedUs = 0;
         int64_t stationRecoveryDelayUs = kInitialRecoveryDelayUs;
         int64_t accessPointStartedUs = 0;
         int64_t lastScanStartedUs = -kScanCooldownUs;
         std::atomic<int64_t> scanStartedUs{0};
-        Credentials credentials{};
+        Credentials primaryCredentials{};
+        Credentials activeCredentials{};
+        bool primaryConfigured = false;
+        bool primaryAuthenticationFailed = false;
+        std::array<bool, kFallbackNetworkCount> fallbackAuthenticationFailed{};
+        CandidateKind activeCandidate = CandidateKind::None;
+        size_t activeFallbackNetwork = kNoFallbackNetwork;
         AccessPoint accessPoint{};
         ScanResults scanResults{};
+        // Wi-Fi events run on ESP-IDF's small sys_evt task stack. One scan is
+        // active at a time, so this shared buffer avoids placing 20 records on
+        // that stack in either the automatic or browser-initiated scan path.
+        std::array<wifi_ap_record_t, 20U> scanRecords{};
 
         void logError(const char *operation, esp_err_t error)
         {
@@ -328,6 +363,7 @@ namespace FlexBms::Wifi
             scanResults.successful = successful;
             if (!successful) scanResults.count = 0U;
             scanPending.store(false, std::memory_order_release);
+            scanPurpose.store(ScanPurpose::None, std::memory_order_release);
             scanReady.store(true, std::memory_order_release);
         }
 
@@ -343,9 +379,8 @@ namespace FlexBms::Wifi
                 return;
             }
             const uint16_t count = std::min<uint16_t>(available, scanResults.networks.size());
-            std::array<wifi_ap_record_t, 20U> records{};
             uint16_t received = count;
-            if (received > 0U && esp_wifi_scan_get_ap_records(&received, records.data()) != ESP_OK)
+            if (received > 0U && esp_wifi_scan_get_ap_records(&received, scanRecords.data()) != ESP_OK)
             {
                 finishScan(false);
                 return;
@@ -355,48 +390,167 @@ namespace FlexBms::Wifi
             {
                 auto &target = scanResults.networks[index];
                 target = {};
-                const size_t length = strnlen(reinterpret_cast<const char *>(records[index].ssid), target.ssid.size() - 1U);
-                std::memcpy(target.ssid.data(), records[index].ssid, length);
-                target.rssi = records[index].rssi;
-                target.secure = records[index].authmode != WIFI_AUTH_OPEN;
+                const size_t length = strnlen(reinterpret_cast<const char *>(scanRecords[index].ssid), target.ssid.size() - 1U);
+                std::memcpy(target.ssid.data(), scanRecords[index].ssid, length);
+                target.rssi = scanRecords[index].rssi;
+                target.secure = scanRecords[index].authmode != WIFI_AUTH_OPEN;
             }
             finishScan(true);
+        }
+
+        bool isAuthenticationFailure(uint8_t reason)
+        {
+            return reason == WIFI_REASON_AUTH_EXPIRE || reason == WIFI_REASON_AUTH_FAIL ||
+                   reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT;
+        }
+
+        bool isVisible(const wifi_ap_record_t &record, const char *ssid)
+        {
+            return ssid != nullptr && ssid[0] != '\0' &&
+                   std::strncmp(reinterpret_cast<const char *>(record.ssid), ssid, kMaxSsidBytes) == 0;
+        }
+
+        bool startCandidate(const Credentials &candidate, CandidateKind kind, size_t fallbackNetwork = kNoFallbackNetwork)
+        {
+            wifi_config_t config{};
+            std::memcpy(config.sta.ssid, candidate.ssid.data(), std::strlen(candidate.ssid.data()));
+            std::memcpy(config.sta.password, candidate.password.data(), std::strlen(candidate.password.data()));
+            const esp_err_t result = esp_wifi_set_config(WIFI_IF_STA, &config);
+            if (result != ESP_OK)
+            {
+                logError("Selecting Wi-Fi network", result);
+                return false;
+            }
+            activeCredentials = candidate;
+            activeCandidate = kind;
+            activeFallbackNetwork = fallbackNetwork;
+            setState(State::Connecting);
+            ESP_LOGI(kLogTag, "Connecting to selected %s network", kind == CandidateKind::Primary ? "primary" : "fallback");
+            if (esp_wifi_connect() != ESP_OK)
+            {
+                ESP_LOGE(kLogTag, "Starting Wi-Fi connection failed");
+                return false;
+            }
+            return true;
+        }
+
+        bool selectVisibleNetwork(const std::array<wifi_ap_record_t, 20U> &records, size_t count)
+        {
+            if (primaryConfigured && !primaryAuthenticationFailed)
+            {
+                for (size_t index = 0U; index < count; ++index)
+                {
+                    if (isVisible(records[index], primaryCredentials.ssid.data()))
+                    {
+                        return startCandidate(primaryCredentials, CandidateKind::Primary);
+                    }
+                }
+            }
+
+            for (size_t fallback = 0U; fallback < kFallbackNetworkCount; ++fallback)
+            {
+                const auto &network = kFallbackNetworks[fallback];
+                if (network.ssid == nullptr || network.ssid[0] == '\0' || network.password == nullptr ||
+                    fallbackAuthenticationFailed[fallback])
+                {
+                    continue;
+                }
+                for (size_t index = 0U; index < count; ++index)
+                {
+                    if (!isVisible(records[index], network.ssid)) continue;
+                    Credentials candidate{};
+                    std::strncpy(candidate.ssid.data(), network.ssid, candidate.ssid.size() - 1U);
+                    std::strncpy(candidate.password.data(), network.password, candidate.password.size() - 1U);
+                    return startCandidate(candidate, CandidateKind::Fallback, fallback);
+                }
+            }
+            return false;
+        }
+
+        void startNetworkSelection()
+        {
+            if (state.load() == State::Connected || scanPending.load(std::memory_order_acquire)) return;
+
+            wifi_scan_config_t config{};
+            const int64_t now = esp_timer_get_time();
+            scanPurpose.store(ScanPurpose::NetworkSelection, std::memory_order_release);
+            scanPending.store(true, std::memory_order_release);
+            scanStartedUs.store(now, std::memory_order_release);
+            const esp_err_t result = esp_wifi_scan_start(&config, false);
+            if (result != ESP_OK)
+            {
+                scanPending.store(false, std::memory_order_release);
+                scanPurpose.store(ScanPurpose::None, std::memory_order_release);
+                logError("Scanning for configured Wi-Fi networks", result);
+                (void)startAccessPoint(primaryConfigured);
+                return;
+            }
+            stationWindowStartedUs = now;
+            setState(State::Connecting);
+            ESP_LOGI(kLogTag, "Scanning for primary and fallback Wi-Fi networks");
+        }
+
+        void finishNetworkSelection()
+        {
+            uint16_t available = 0U;
+            if (esp_wifi_scan_get_ap_num(&available) != ESP_OK)
+            {
+                available = 0U;
+            }
+            const uint16_t capped = std::min<uint16_t>(available, 20U);
+            uint16_t received = capped;
+            if (received > 0U && esp_wifi_scan_get_ap_records(&received, scanRecords.data()) != ESP_OK)
+            {
+                received = 0U;
+            }
+            scanPending.store(false, std::memory_order_release);
+            scanPurpose.store(ScanPurpose::None, std::memory_order_release);
+            if (!selectVisibleNetwork(scanRecords, received))
+            {
+                ESP_LOGW(kLogTag, "No visible primary or fallback Wi-Fi network");
+                (void)startAccessPoint(primaryConfigured);
+            }
         }
 
         void onWifiEvent(void *, esp_event_base_t eventBase, int32_t eventId, void *eventData)
         {
             if (eventBase == WIFI_EVENT && eventId == WIFI_EVENT_STA_START)
             {
-                if (credentials.ssid[0] == '\0')
-                {
-                    setState(State::Provisioning);
-                }
-                else
-                {
-                    setState(State::Connecting);
-                    const esp_err_t result = esp_wifi_connect();
-                    if (result != ESP_OK) logError("Starting Wi-Fi connection", result);
-                }
+                setState(State::Connecting);
             }
             else if (eventBase == WIFI_EVENT && eventId == WIFI_EVENT_STA_DISCONNECTED)
             {
-                if (!accessPointActive.load())
-                {
-                    if (state.load() == State::Connected)
-                    {
-                        stationWindowStartedUs = esp_timer_get_time();
-                        stationRecoveryDelayUs = kInitialRecoveryDelayUs;
-                    }
-                    setState(State::Connecting);
-                }
                 const auto *event = static_cast<const wifi_event_sta_disconnected_t *>(eventData);
-                ESP_LOGW(kLogTag, "Wi-Fi disconnected (reason %u); reconnecting", event->reason);
-                const esp_err_t result = esp_wifi_connect();
-                if (result != ESP_OK) logError("Reconnecting Wi-Fi", result);
+                if (isAuthenticationFailure(event->reason))
+                {
+                    if (activeCandidate == CandidateKind::Primary) primaryAuthenticationFailed = true;
+                    if (activeCandidate == CandidateKind::Fallback && activeFallbackNetwork < kFallbackNetworkCount)
+                    {
+                        fallbackAuthenticationFailed[activeFallbackNetwork] = true;
+                    }
+                }
+                if (state.load() == State::Connected)
+                {
+                    // A later link loss starts a new priority cycle: retry the
+                    // saved NVS network before any fallback again.
+                    primaryAuthenticationFailed = false;
+                    fallbackAuthenticationFailed.fill(false);
+                }
+                activeCandidate = CandidateKind::None;
+                activeFallbackNetwork = kNoFallbackNetwork;
+                ESP_LOGW(kLogTag, "Wi-Fi disconnected (reason %u); selecting a visible network", event->reason);
+                if (!accessPointActive.load()) startNetworkSelection();
             }
             else if (eventBase == WIFI_EVENT && eventId == WIFI_EVENT_SCAN_DONE)
             {
-                storeScanResults();
+                if (scanPurpose.load(std::memory_order_acquire) == ScanPurpose::NetworkSelection)
+                {
+                    finishNetworkSelection();
+                }
+                else
+                {
+                    storeScanResults();
+                }
             }
             else if (eventBase == IP_EVENT && eventId == IP_EVENT_STA_GOT_IP)
             {
@@ -448,11 +602,7 @@ namespace FlexBms::Wifi
 
         bool startStation()
         {
-            wifi_config_t config{};
-            std::memcpy(config.sta.ssid, credentials.ssid.data(), std::strlen(credentials.ssid.data()));
-            std::memcpy(config.sta.password, credentials.password.data(), std::strlen(credentials.password.data()));
             esp_err_t result = esp_wifi_set_mode(WIFI_MODE_STA);
-            if (result == ESP_OK) result = esp_wifi_set_config(WIFI_IF_STA, &config);
             if (result == ESP_OK) result = esp_wifi_start();
             if (result != ESP_OK)
             {
@@ -464,6 +614,7 @@ namespace FlexBms::Wifi
             stationRecoveryDelayUs = kInitialRecoveryDelayUs;
             setState(State::Connecting);
             ESP_LOGI(kLogTag, "Wi-Fi station started");
+            startNetworkSelection();
             return true;
         }
     }
@@ -480,8 +631,11 @@ namespace FlexBms::Wifi
         if (!initialiseNetworkStack()) return false;
 
         bool provisioned = false;
-        if (!readCredentials(credentials, provisioned)) return false;
-        return provisioned ? startStation() : startAccessPoint(false);
+        if (!readCredentials(primaryCredentials, provisioned)) return false;
+        primaryConfigured = provisioned;
+        // Start STA even without NVS credentials so local fallback entries are
+        // considered before the first-time setup AP.
+        return startStation();
     }
 
     void tick()
@@ -491,7 +645,16 @@ namespace FlexBms::Wifi
         {
             ESP_LOGW(kLogTag, "Wi-Fi scan timed out");
             (void)esp_wifi_scan_stop();
-            finishScan(false);
+            if (scanPurpose.load(std::memory_order_acquire) == ScanPurpose::NetworkSelection)
+            {
+                scanPending.store(false, std::memory_order_release);
+                scanPurpose.store(ScanPurpose::None, std::memory_order_release);
+                (void)startAccessPoint(primaryConfigured);
+            }
+            else
+            {
+                finishScan(false);
+            }
         }
         const State current = state.load();
         if (current == State::Connecting)
@@ -507,14 +670,14 @@ namespace FlexBms::Wifi
             {
                 stationWindowStartedUs = now;
                 stationRecoveryDelayUs = kRecoveryStationGapUs;
-                setState(State::Connecting);
+                startNetworkSelection();
             }
         }
     }
 
     State getState() { return state.load(); }
     bool consumeStatusChanged() { return statusChanged.exchange(false); }
-    const char *getStationSsid() { return credentials.ssid.data(); }
+    const char *getStationSsid() { return activeCredentials.ssid.data(); }
     AccessPoint getAccessPoint() { return accessPoint; }
     bool isAccessPointActive() { return accessPointActive.load(); }
     bool allowsBmsServices() { return state.load() == State::Connected; }
@@ -526,7 +689,9 @@ namespace FlexBms::Wifi
         std::strncpy(replacement.ssid.data(), ssid, replacement.ssid.size() - 1U);
         std::strncpy(replacement.password.data(), password, replacement.password.size() - 1U);
         if (!writeCredentials(replacement)) return false;
-        credentials = replacement;
+        primaryCredentials = replacement;
+        activeCredentials = replacement;
+        primaryConfigured = true;
         return scheduleRestart();
     }
 
@@ -547,6 +712,7 @@ namespace FlexBms::Wifi
         }
         lastScanStartedUs = now;
         scanStartedUs.store(now, std::memory_order_release);
+        scanPurpose.store(ScanPurpose::UserRequest, std::memory_order_release);
         scanPending.store(true, std::memory_order_release);
         scanReady.store(false, std::memory_order_release);
         return ScanRequestResult::Started;

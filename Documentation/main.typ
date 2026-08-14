@@ -397,7 +397,7 @@ protecting or isolating the battery.
 `Software/Gateway` implements isolated UART v1, Wi-Fi
 provisioning/station/recovery, and the local compiled Companion maintenance
 page. The Companion provides stale-status diagnostics, fresh BMS monitoring,
-CSV logging, register reads, browser-time RTC synchronisation and device-time
+CSV logging, register reads, Gateway NTP RTC synchronisation and device-time
 readback, fault clear, immediate run-request actions, and station-LAN firmware
 updates. MQTT and CAN observation remain separate planned increments. The Gateway uses isolated UART to the STM32 and
 remains listen-only on shared BMS/GoodWe CAN. It is not a safety authority. The
@@ -582,9 +582,10 @@ EVENT is a convenience notification; STATUS is authoritative, so loss of an even
 
 The service-request payload is `service_id:u8 | arguments...`; the service-response payload is
 `service_id:u8 | result:u8 | response_data...`. Result values are `0 OK`, `1 DENIED`,
-`2 INVALID`, and `3 BUSY`. `INVALID` covers an unknown service, bad request length, bad argument,
+`2 INVALID`, `3 BUSY`, and `4 USB_HOST_ACTIVE`. `INVALID` covers an unknown service, bad request length, bad argument,
 or nonexistent slave index. `DENIED` means a valid request cannot safely be performed in the current
-STM32 state. `BUSY` means another named service is still in progress. `OK` means that the STM32
+STM32 state. `BUSY` means another named service is still in progress. `USB_HOST_ACTIVE` means an
+enumerated USB host prevents the STM32 ROM bootloader from accepting USART1. `OK` means that the STM32
 accepted and invoked the requested operation; STATUS and EVENT show the resulting operating state.
 
 #table(
@@ -614,7 +615,9 @@ HV supervisor. `firmware_version` is packed as
 already have staged and CRC-checked the image. The STM32 validates the request shape and image
 length; `firmware_version` and `image_crc32` identify the Gateway-staged image but cannot be
 verified by an STM32 that does not receive its bytes. It returns `DENIED` unless the run request is
-off and it can de-energise the HV path and inhibit normal services. After `OK`, the STM32 drains
+off and it can de-energise the HV path and inhibit normal services. It returns `USB_HOST_ACTIVE`
+when its USB CDC device is enumerated; USB-only power without host enumeration remains allowed.
+After `OK`, the STM32 drains
 that response, stops framed UART traffic, and enters
 the STM32 ROM bootloader. The Gateway then performs the ROM bootloader sync, transfer, readback
 verification, and `Go` command directly on USART1; these are not FlexBMS UART messages. On return
@@ -726,14 +729,15 @@ maintenance. A portable, unsigned Windows executable packages the direct-USB tar
 Electron/Chromium wrapper. It has no installer, updater, or native serial-protocol implementation.
 
 Both targets provide stale-status explanation, live fresh telemetry, CSV logging, named service requests,
-browser-time RTC synchronisation with device-time readback, and read-only register inspection. The
-Gateway target also shows Wi-Fi and UART state and, only in connected station
-mode, release-manifest firmware updates. The direct-USB target exposes neither
+device-time readback, and read-only register inspection. The Gateway obtains UTC
+from NTP and shows its latest successful RTC sync in the browser locale; direct USB
+shows that NTP status is Gateway-only. The Gateway target also shows Wi-Fi and UART state and, only in connected station
+mode, single-bundle firmware updates. The direct-USB target exposes neither
 a raw terminal nor firmware-update UI; Gateway requests use an explicit allowlist.
 
 `scripts/build-release.ps1` interactively confirms the release version, updates the Companion package
 version when a new one is entered, and builds the Companion, Gateway, and STM32 artifacts with checksums
-and per-image OTA manifests containing the target, version, byte length, and CRC-32.
+and one #code("FlexBMS_bundle.fbu") OTA package containing both targets, versions, byte lengths, and CRC-32 values.
 `-Version` supports unattended use. Each release includes `flash-release.ps1`: ST-Link/SWD flashes the
 STM32 image, while a selected ESP32-C3 COM port flashes a complete Gateway factory image. Both actions
 start immediately after checksum verification. Repeating an existing version requires an explicit choice

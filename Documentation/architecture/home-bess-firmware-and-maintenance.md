@@ -113,7 +113,7 @@ does not include a raw terminal and the Gateway rejects unknown or raw requests
 even if a browser client attempts to send them.
 
 Both builds support stale-status explanation, live BMS monitoring, register
-reads, browser-time RTC sync and device-time readback, fault-clear requests,
+reads, Gateway NTP RTC sync and device-time readback, fault-clear requests,
 the immediate BMS run-request switch, and browser-local CSV logging. The Gateway build additionally offers Gateway
 Wi-Fi/link diagnostics. Its page prominently identifies the active connection
 as either Direct USB to STM32 or Via ESP32 Gateway and disables capabilities
@@ -209,14 +209,18 @@ Assistant does not upload images or directly initiate safety-related actions.
 The STM32 red and green status LEDs are active-low. The Gateway has one
 active-high yellow `USR_LED` on IO1/GPIO1 (ESP32-C3-WROOM-02U module pin 17).
 GPIO17 is not exposed by this module. The STM32 yellow LED is the USART1 TX
-line and must not be used as an indicator. The current STM32 firmware only
-performs a continuous colour sweep and the system overview previously listed
-its user LED as a TODO; that sweep is a hardware check, not a status language.
+line and must not be used as an indicator. The STM32 red/green LEDs implement
+the status language below; their active-low PWM handling is local to the
+STM32 board-I/O layer.
 
-The two controllers will use the same *temporal* language. Exact flash phase
-does not need synchronisation: in particular the endpoints cannot synchronise
-after the UART has failed. They do use the same visible cadence and the same
-meaning for the UART-loss code.
+The two controllers use the same *temporal* language and, while the UART is
+healthy, the Gateway follows the STM32 phase. Each STM32 `STATUS` carries its
+uptime every 500 ms or faster; the Gateway extrapolates that timestamp between
+frames and uses it for the shared 2-second patterns. This keeps common pattern
+edges aligned within normal UART and scheduling latency, while correcting clock
+drift without a new wire format. On UART loss the Gateway falls back to its
+local phase, so the two endpoints cannot remain synchronised during code 3.
+Different controller states may deliberately use different patterns.
 
 | Pattern | Timing | Common meaning |
 |---|---|---|
@@ -313,8 +317,9 @@ only; it does not force the HV path off or change the run request.
 
 ## Firmware updates
 
-`scripts/build-release.ps1` writes one JSON manifest beside each OTA-capable
-raw image. It contains the target, semantic version, image filename, byte
+`scripts/build-release.ps1` writes one `FlexBMS_bundle.fbu` OTA package. Its
+`FBU1` header contains a compact JSON manifest followed by the STM32 and
+Gateway raw images. The manifest identifies each target, semantic version, byte
 length, and CRC-32. The station LAN is trusted: there are no release signatures
 or login checks. CRC-32 detects corrupted storage and transfer; it is not an
 authentication mechanism.
@@ -322,13 +327,15 @@ authentication mechanism.
 ### ESP32 OTA
 
 Only the station-LAN Gateway Companion page exposes firmware controls. The
-operator selects a release manifest and its matching raw image; the browser
-streams that image to the target-specific Gateway endpoint. Provisioning and
-recovery APs never expose update controls. The Gateway checks the declared
-length and CRC-32 while streaming a Gateway image into the inactive OTA slot,
-selects it for boot, acknowledges the browser, and reboots. It marks itself
-healthy once normal Gateway startup reaches the main loop. Manual USB factory
-flashing remains the recovery path; no extra rollback policy is added.
+operator selects `FlexBMS_bundle.fbu` and checks the STM32 BMS and/or ESP32
+Gateway image shown by its manifest. Companion streams each selected raw image
+to the target-specific Gateway endpoint; it completes STM32 first and the
+rebooting Gateway last. Provisioning and recovery APs never expose update
+controls. The Gateway checks the declared length and CRC-32 while streaming a
+Gateway image into the inactive OTA slot, selects it for boot, acknowledges the
+browser, and reboots. It marks itself healthy once normal Gateway startup
+reaches the main loop. Manual USB factory flashing remains the recovery path;
+no extra rollback policy is added.
 
 The fitted ESP32-C3-WROOM-02U-N4 has 4 MiB flash. `Software/Gateway/partitions.csv`
 defines the accepted layout. Its two 1.5 MiB OTA application slots accommodate
