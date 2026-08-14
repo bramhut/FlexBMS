@@ -1,59 +1,179 @@
-import type { BmsTransport, Capabilities, ConnectionState, ServiceArguments, ServiceName, ServiceResponse, Snapshot, WifiConfigurationResponse, WifiScanResponse } from './Transport'
-import { unavailableCapabilities } from './Transport'
+import type { BmsTransport, Capabilities, ConnectionState, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport.ts'
+import { unavailableCapabilities } from './Transport.ts'
+import { decodeCell, decodePack, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId, writeLe32 } from '../shared/uartV1.ts'
 
 type SerialPortLike = { open(options: { baudRate: number }): Promise<void>; close(): Promise<void>; readable?: ReadableStream<Uint8Array>; writable?: WritableStream<Uint8Array> }
 declare global { interface Navigator { serial?: { requestPort(): Promise<SerialPortLike> } } }
+
+type Pending = { service: ServiceName; resolve: (response: ServiceResponse) => void; timeout: number }
+type Listener<T> = (value: T) => void
+
+const resultByWire = ['ok', 'denied', 'invalid', 'busy'] as const
 
 export class WebSerialTransport implements BmsTransport {
   readonly label = 'Direct USB to STM32'
   private port: SerialPortLike | null = null
   private state: ConnectionState = 'disconnected'
-  private stateListeners = new Set<(state: ConnectionState) => void>()
-  private rawListeners = new Set<(line: string) => void>()
-  private snapshotListeners = new Set<(snapshot: Snapshot) => void>()
-  private eventListeners = new Set<(event: { event_id: number; value: number }) => void>()
-  private pending = new Map<string, { service: ServiceName; resolve: (response: ServiceResponse) => void }>()
-  private legacyStatus: Snapshot['status'] = { bms_state: 0, hv_state: 0, flags: 0, slave_count: 0, bms_active_faults: 0, bms_latched_faults: 0, hv_active_faults: 0, hv_latched_faults: 0, uptime_ms: 0, measurements_fresh: false, run_request: false }
-  private legacyPack: Snapshot['pack'] = { pack_voltage_uV: 0, pack_current_raw: 0, soc_raw: 0, min_cell_uV: 0, max_cell_uV: 0, min_ntc_raw: 0, max_ntc_raw: 0, min_ic_raw: 0, max_ic_raw: 0 }
-  private legacyCells = new Map<number, Snapshot['cells'][number]>()
-  private legacyTemperatures = new Map<number, Snapshot['temperatures'][number]>()
-  private lastRegister: ServiceResponse['data'] | undefined
-  private readonly capabilities: Capabilities = { ...unavailableCapabilities(), raw_terminal: true }
+  private stateListeners = new Set<Listener<ConnectionState>>()
+  private statusListeners = new Set<Listener<Status>>()
+  private snapshotListeners = new Set<Listener<Snapshot>>()
+  private eventListeners = new Set<Listener<{ event_id: number; value: number }>>()
+  private pending = new Map<number, Pending>()
+  private nextSequence = 1
+  private heartbeatTimer: number | undefined
+  private writeChain: Promise<void> = Promise.resolve()
+  private decoder = new FrameDecoder()
+  private status: Status | null = null
+  private pack: Snapshot['pack'] | null = null
+  private cells = new Map<number, Snapshot['cells'][number]>()
+  private temperatures = new Map<number, Snapshot['temperatures'][number]>()
+  private readonly capabilities: Capabilities = unavailableCapabilities()
+
   async connect(): Promise<void> {
     if (!navigator.serial) throw new Error('Web Serial is unavailable in this browser.')
-    this.setState('connecting'); this.port = await navigator.serial.requestPort(); await this.port.open({ baudRate: 115200 }); this.setState('connected'); void this.readLines()
+    if (this.port) return
+    this.setState('connecting')
+    const port = await navigator.serial.requestPort()
+    await port.open({ baudRate: 115200 })
+    this.port = port
+    this.decoder = new FrameDecoder()
+    this.setState('connected')
+    void this.readFrames(port)
+    void this.sendHeartbeat()
+    this.heartbeatTimer = window.setInterval(() => { void this.sendHeartbeat() }, 500)
   }
-  disconnect(): void { const port = this.port; this.port = null; if (port) void port.close(); this.setState('disconnected') }
+
+  disconnect(): void {
+    const port = this.port
+    this.port = null
+    this.stopHeartbeat()
+    this.resolvePendingAsTransportError()
+    if (port) void port.close()
+    this.setState('disconnected')
+  }
+
   getConnectionState(): ConnectionState { return this.state }
   getCapabilities(): Capabilities { return this.capabilities }
   async configureWifi(_ssid: string, _password: string): Promise<WifiConfigurationResponse> { return { request_id: '', result: 'transport_error' } }
   async scanWifi(): Promise<WifiScanResponse> { return { request_id: '', result: 'unavailable' } }
-  onSnapshot(listener: (snapshot: Snapshot) => void): () => void { this.snapshotListeners.add(listener); return () => this.snapshotListeners.delete(listener) }
-  onEvent(listener: (event: { event_id: number; value: number }) => void): () => void { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener) }
-  onState(listener: (state: ConnectionState) => void): () => void { this.stateListeners.add(listener); return () => this.stateListeners.delete(listener) }
-  onRaw(listener: (line: string) => void): () => void { this.rawListeners.add(listener); return () => this.rawListeners.delete(listener) }
-  async sendRaw(line: string): Promise<void> { await this.write(`${line.endsWith('\n') ? line : `${line}\n`}`) }
-  async request<S extends ServiceName>(service: S, args: ServiceArguments[S]): Promise<ServiceResponse> {
-    const request_id = crypto.randomUUID().slice(0, 32)
-    let line = ''
-    if (service === 'set_run_request') line = `*!1E${(args as ServiceArguments['set_run_request']).requested ? '1' : '0'}`
-    else if (service === 'clear_faults') line = '*!1B'
-    else if (service === 'set_rtc') line = `*!19${(args as ServiceArguments['set_rtc']).unix_time_s}`
-    else { const register = args as ServiceArguments['read_register']; line = `*!15${(register.slave_index + 1).toString().padStart(2, '0')}${register.register.toString(16).padStart(2, '0')}` }
-    return new Promise(async resolve => { this.pending.set(service, { service, resolve }); try { await this.write(`${line}\n`) } catch { this.pending.delete(service); resolve({ request_id, service, result: 'transport_error' }) } })
+  onBmsStatus(listener: Listener<Status>): () => void { this.statusListeners.add(listener); return () => this.statusListeners.delete(listener) }
+  onSnapshot(listener: Listener<Snapshot>): () => void { this.snapshotListeners.add(listener); return () => this.snapshotListeners.delete(listener) }
+  onEvent(listener: Listener<{ event_id: number; value: number }>): () => void { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener) }
+  onState(listener: Listener<ConnectionState>): () => void { this.stateListeners.add(listener); return () => this.stateListeners.delete(listener) }
+
+  request<S extends ServiceName>(service: S, args: ServiceArguments[S]): Promise<ServiceResponse> {
+    if (!this.port?.writable) return Promise.resolve({ request_id: '', service, result: 'transport_error' })
+    const sequence = this.allocateSequence()
+    const payload = this.servicePayload(service, args)
+    return new Promise(resolve => {
+      const timeout = window.setTimeout(() => {
+        const pending = this.pending.get(sequence)
+        if (!pending) return
+        this.pending.delete(sequence)
+        resolve({ request_id: '', service, result: 'transport_error' })
+      }, 5000)
+      this.pending.set(sequence, { service, resolve, timeout })
+      void this.writeFrame(messageType.serviceRequest, sequence, payload).catch(() => this.completeTransportError(sequence))
+    })
   }
-  private async write(line: string): Promise<void> { if (!this.port?.writable) throw new Error('USB is disconnected.'); const writer = this.port.writable.getWriter(); try { await writer.write(new TextEncoder().encode(line)) } finally { writer.releaseLock() } }
-  private async readLines(): Promise<void> { if (!this.port?.readable) return; const reader = this.port.readable.getReader(); const decoder = new TextDecoder(); let buffer = ''; try { while (this.port && true) { const { value, done } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() ?? ''; lines.forEach(line => this.handleLine(line)) } } finally { reader.releaseLock(); this.setState('disconnected') } }
-  private handleLine(line: string): void {
-    this.rawListeners.forEach(listener => listener(line))
-    if (/^\*!15[0-9A-F]{8}$/i.test(line)) { const cid = Number.parseInt(line.slice(4, 6), 10); this.lastRegister = { slave_index: cid - 1, register: Number.parseInt(line.slice(6, 8), 16), value: Number.parseInt(line.slice(8, 12), 16) }; return }
-    if (line.startsWith('*!12') && line.length >= 20) { this.legacyPack.pack_voltage_uV = Number.parseInt(line.slice(4, 12), 16); const current = Number.parseInt(line.slice(12, 16), 16); this.legacyPack.pack_current_raw = current > 0x7fff ? current - 0x10000 : current; this.legacyPack.soc_raw = Number.parseInt(line.slice(-5, -1), 16); return }
-    if (line.startsWith('*!13')) { const slave = Number.parseInt(line.slice(4, 6), 10); const readings: number[] = []; let balance = 0; for (let offset = 6, index = 0; offset + 9 <= line.length - 1; offset += 9, index += 1) { readings.push(Number.parseInt(line.slice(offset, offset + 8), 16)); if (line[offset + 8] === '1') balance |= 1 << index } this.legacyCells.set(slave, { slave_index: slave, balance_mask: balance, cell_voltage_uV: readings }); this.legacyStatus.slave_count = this.legacyCells.size; return }
-    if (line.startsWith('*!14')) { const slave = Number.parseInt(line.slice(4, 6), 10); const values: number[] = []; for (let offset = 6; offset + 4 <= line.length - 1; offset += 4) values.push(Number.parseInt(line.slice(offset, offset + 4), 16)); this.legacyTemperatures.set(slave, { slave_index: slave, ntc_raw: values.slice(0, 4), ic_temp_raw: 0 }); return }
-    if (/^\*!17[0-9A-F]{5}$/i.test(line)) { this.legacyStatus.bms_state = Number.parseInt(line.slice(4, 5), 16); this.legacyStatus.bms_active_faults = Number.parseInt(line.slice(5, 9), 16); this.legacyStatus.bms_latched_faults = this.legacyStatus.bms_active_faults; return }
-    if (/^\*!1C[0-9A-F]{10}$/i.test(line)) { this.legacyStatus.hv_state = Number.parseInt(line.slice(4, 5), 16); this.legacyStatus.hv_active_faults = Number.parseInt(line.slice(5, 6), 16); this.legacyStatus.hv_latched_faults = this.legacyStatus.hv_active_faults; return }
-    if (line === '*!1A') { this.legacyStatus.measurements_fresh = true; this.legacyStatus.flags |= 1 << 3; this.snapshotListeners.forEach(listener => listener({ status: { ...this.legacyStatus }, pack: { ...this.legacyPack }, cells: [...this.legacyCells.values()].sort((a, b) => a.slave_index - b.slave_index), temperatures: [...this.legacyTemperatures.values()].sort((a, b) => a.slave_index - b.slave_index) })); return }
-    const match = /^\*!1F([0-9A-F]{2})([0-2])$/i.exec(line); if (!match) return; const services: Record<string, ServiceName> = { '15': 'read_register', '19': 'set_rtc', '1B': 'clear_faults', '1E': 'set_run_request' }; const service = services[match[1].toUpperCase()]; const pending = service ? this.pending.get(service) : undefined; if (pending) { this.pending.delete(service); pending.resolve({ request_id: '', service, result: ['ok', 'denied', 'invalid'][Number(match[2])] as ServiceResponse['result'], ...(service === 'read_register' && match[2] === '0' && this.lastRegister ? { data: this.lastRegister } : {}) }); this.lastRegister = undefined }
+
+  private servicePayload<S extends ServiceName>(service: S, args: ServiceArguments[S]): Uint8Array {
+    if (service === 'set_run_request') return Uint8Array.of(serviceId.setRunRequest, (args as ServiceArguments['set_run_request']).requested ? 1 : 0)
+    if (service === 'clear_faults') return Uint8Array.of(serviceId.clearFaults)
+    if (service === 'set_rtc') { const payload = Uint8Array.of(serviceId.setRtc, 0, 0, 0, 0); writeLe32(payload, 1, (args as ServiceArguments['set_rtc']).unix_time_s); return payload }
+    if (service === 'get_rtc') return Uint8Array.of(serviceId.getRtc)
+    const register = args as ServiceArguments['read_register']
+    return Uint8Array.of(serviceId.readRegister, register.slave_index, register.register)
   }
+
+  private allocateSequence(): number { const sequence = this.nextSequence; this.nextSequence = this.nextSequence === 255 ? 1 : this.nextSequence + 1; return sequence }
+  private async sendHeartbeat(): Promise<void> { if (this.port?.writable) await this.writeFrame(messageType.heartbeat, 0, new Uint8Array()) }
+  private async writeFrame(type: number, sequence: number, payload: Uint8Array): Promise<void> { await this.write(encodeFrame({ type, sequence, payload })) }
+  private write(bytes: Uint8Array): Promise<void> {
+    const port = this.port
+    if (!port?.writable) return Promise.reject(new Error('USB is disconnected.'))
+    const send = async (): Promise<void> => {
+      if (this.port !== port || !port.writable) throw new Error('USB is disconnected.')
+      const writer = port.writable.getWriter()
+      try { await writer.write(bytes) } finally { writer.releaseLock() }
+    }
+    const queued = this.writeChain.then(send, send)
+    this.writeChain = queued.catch(() => undefined)
+    return queued
+  }
+
+  private async readFrames(port: SerialPortLike): Promise<void> {
+    if (!port.readable) return
+    const reader = port.readable.getReader()
+    try {
+      while (this.port === port) {
+        const { value, done } = await reader.read()
+        if (done) break
+        if (value) for (const frame of this.decoder.consume(value)) this.handleFrame(frame.type, frame.sequence, frame.payload)
+      }
+    } finally {
+      reader.releaseLock()
+      if (this.port === port) {
+        this.port = null
+        this.stopHeartbeat()
+        this.resolvePendingAsTransportError()
+        this.setState('disconnected')
+      }
+    }
+  }
+
+  private handleFrame(type: number, sequence: number, payload: Uint8Array): void {
+    if (type === messageType.status) {
+      const status = decodeStatus(payload)
+      if (!status) return
+      this.status = status
+      if (!status.measurements_fresh) { this.pack = null; this.cells.clear(); this.temperatures.clear() }
+      this.emitStatus()
+      this.emitSnapshotIfComplete()
+      return
+    }
+    if (type === messageType.pack) { const pack = decodePack(payload); if (pack) { this.pack = pack; this.emitSnapshotIfComplete() }; return }
+    if (type === messageType.cell) { const cell = decodeCell(payload); if (cell) { this.cells.set(cell.slave_index, cell); this.emitSnapshotIfComplete() }; return }
+    if (type === messageType.temperature) { const temperature = decodeTemperature(payload); if (temperature) { this.temperatures.set(temperature.slave_index, temperature); this.emitSnapshotIfComplete() }; return }
+    if (type === messageType.event && payload.length === 3) { this.applyEvent(payload[0], readLe16(payload, 1)); return }
+    if (type === messageType.serviceResponse) this.completeService(sequence, payload)
+  }
+
+  private completeService(sequence: number, payload: Uint8Array): void {
+    const pending = this.pending.get(sequence)
+    if (!pending || payload.length < 2) return
+    this.pending.delete(sequence)
+    window.clearTimeout(pending.timeout)
+    const result = resultByWire[payload[1]] ?? 'transport_error'
+    let data: ServiceResponse['data']
+    if (result === 'ok' && pending.service === 'read_register' && payload.length === 6) data = { slave_index: payload[2], register: payload[3], value: readLe16(payload, 4) }
+    if (result === 'ok' && pending.service === 'get_rtc' && payload.length === 6) data = { unix_time_s: readLe32(payload, 2) }
+    pending.resolve({ request_id: '', service: pending.service, result, ...(data ? { data } : {}) })
+  }
+
+  private applyEvent(event_id: number, value: number): void {
+    if (this.status) {
+      if (event_id === 1) this.status.bms_state = value
+      else if (event_id === 2) this.status.hv_state = value
+      else if (event_id === 3) this.status.bms_active_faults = value
+      else if (event_id === 4) this.status.bms_latched_faults = value
+      else if (event_id === 5) this.status.hv_active_faults = value
+      else if (event_id === 6) this.status.hv_latched_faults = value
+      else if (event_id === 7) { this.status.measurements_fresh = value !== 0; if (value === 0) { this.pack = null; this.cells.clear(); this.temperatures.clear() } }
+      this.emitStatus()
+    }
+    this.eventListeners.forEach(listener => listener({ event_id, value }))
+  }
+
+  private emitStatus(): void { if (this.status) this.statusListeners.forEach(listener => listener({ ...this.status! })) }
+  private emitSnapshotIfComplete(): void {
+    if (!this.status?.measurements_fresh || !this.pack || this.status.slave_count === 0) return
+    for (let slave = 0; slave < this.status.slave_count; slave += 1) if (!this.cells.has(slave) || !this.temperatures.has(slave)) return
+    this.snapshotListeners.forEach(listener => listener({ status: { ...this.status! }, pack: { ...this.pack! }, cells: Array.from(this.cells.values()).sort((a, b) => a.slave_index - b.slave_index), temperatures: Array.from(this.temperatures.values()).sort((a, b) => a.slave_index - b.slave_index) }))
+  }
+
+  private completeTransportError(sequence: number): void { const pending = this.pending.get(sequence); if (!pending) return; this.pending.delete(sequence); window.clearTimeout(pending.timeout); pending.resolve({ request_id: '', service: pending.service, result: 'transport_error' }) }
+  private resolvePendingAsTransportError(): void { for (const [sequence] of this.pending) this.completeTransportError(sequence) }
+  private stopHeartbeat(): void { if (this.heartbeatTimer !== undefined) { window.clearInterval(this.heartbeatTimer); this.heartbeatTimer = undefined } }
   private setState(state: ConnectionState): void { this.state = state; this.stateListeners.forEach(listener => listener(state)) }
 }

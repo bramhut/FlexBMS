@@ -12,6 +12,11 @@ Simulations/**.raw
 # bundle under Software/Companion/dist/gateway is intentionally versioned.
 /Software/Companion/node_modules/
 /Software/Companion/dist/webserial/
+/Software/Companion/dist/desktop/
+/Software/Companion/electron-dist/
+
+# Local packaged release artifacts are reproducible from scripts/build-release.ps1.
+/release/
 
 # ESP-IDF Component Manager cache. dependencies.lock pins its resolved inputs.
 /Software/Gateway/managed_components/

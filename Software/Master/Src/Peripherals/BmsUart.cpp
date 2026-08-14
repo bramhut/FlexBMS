@@ -10,6 +10,7 @@
 #include "pcc.h"
 #include "queue.h"
 #include "usart.h"
+#include "USBCOM.h"
 
 #include <array>
 #include <cstring>
@@ -28,6 +29,7 @@ namespace BmsUart
         constexpr uint32_t HEARTBEAT_PERIOD_MS = 500U;
         constexpr uint32_t SNAPSHOT_PERIOD_MS = 500U;
         constexpr uint32_t GATEWAY_LOSS_MS = 1500U;
+        constexpr uint32_t USB_COMPANION_LOSS_MS = 1500U;
         constexpr uint32_t REGISTER_READ_TIMEOUT_MS = 500U;
         constexpr uint32_t TX_TIMEOUT_MS = 50U;
         constexpr uint32_t APP_FLASH_BYTES = 512U * 1024U;
@@ -54,6 +56,7 @@ namespace BmsUart
             SET_RTC = 0x05U,
             GET_DEVICE_INFO = 0x06U,
             ENTER_STM32_BOOTLOADER = 0x07U,
+            GET_RTC = 0x08U,
         };
 
         enum ServiceResult : uint8_t
@@ -61,10 +64,18 @@ namespace BmsUart
             OK = 0U,
             DENIED = 1U,
             INVALID = 2U,
+            BUSY = 3U,
+        };
+
+        enum class Link : uint8_t
+        {
+            Uart,
+            Usb,
         };
 
         struct ReceivedFrame
         {
+            Link link = Link::Uart;
             uint8_t type;
             uint8_t sequence;
             uint16_t length;
@@ -74,6 +85,7 @@ namespace BmsUart
         struct PendingRegisterRead
         {
             bool active = false;
+            Link link = Link::Uart;
             bool finished = false;
             uint8_t sequence = 0U;
             uint8_t slaveIndex = 0U;
@@ -127,8 +139,17 @@ namespace BmsUart
         volatile bool hasValidGatewayFrame = false;
         volatile uint32_t lastValidGatewayFrameMs = 0U;
         volatile uint32_t uartStartedMs = 0U;
+        volatile uint32_t lastValidUsbHeartbeatMs = 0U;
+
+        // CDC shares a port with the engineering text console. Hold only
+        // bytes beginning a possible FB frame; every other byte continues to
+        // the existing console unchanged.
+        std::array<uint8_t, MAX_FRAME_BYTES> usbCandidate = {};
+        size_t usbCandidateLength = 0U;
+        size_t usbCandidateExpectedLength = 0U;
 
         PendingRegisterRead pendingRegisterRead;
+        Link currentResponseLink = Link::Uart;
         EventCache eventCache;
         uint32_t lastSeenMeasurement = 0U;
 
@@ -199,9 +220,10 @@ namespace BmsUart
             }
         }
 
-        void enqueueFrameFromIsr()
+        void enqueueFrameFromIsr(Link link)
         {
             ReceivedFrame frame = {};
+            frame.link = link;
             frame.type = rxParserBuffer[3];
             frame.sequence = rxParserBuffer[4];
             frame.length = rxPayloadLength;
@@ -213,8 +235,11 @@ namespace BmsUart
             BaseType_t taskWoken = pdFALSE;
             (void)xQueueSendFromISR(rxQueue, &frame, &taskWoken);
             portYIELD_FROM_ISR(taskWoken);
-            hasValidGatewayFrame = true;
-            lastValidGatewayFrameMs = HAL_GetTick();
+            if (link == Link::Uart)
+            {
+                hasValidGatewayFrame = true;
+                lastValidGatewayFrameMs = HAL_GetTick();
+            }
         }
 
         void parseByteFromIsr(uint8_t byte)
@@ -272,7 +297,7 @@ namespace BmsUart
                     const uint32_t receivedCrc = readLe32(rxParserBuffer.data() + bodyLength);
                     if (crc32(rxParserBuffer.data(), bodyLength) == receivedCrc)
                     {
-                        enqueueFrameFromIsr();
+                        enqueueFrameFromIsr(Link::Uart);
                         resetParser();
                     }
                     else
@@ -284,11 +309,125 @@ namespace BmsUart
             }
         }
 
-        bool sendFrame(uint8_t type, uint8_t sequence, const uint8_t *payload, uint16_t payloadLength)
+        void forwardConsoleByteFromIsr(uint8_t byte)
+        {
+            (void)USBCOM::rxAddData(&byte, 1U);
+        }
+
+        void resetUsbCandidate()
+        {
+            usbCandidateLength = 0U;
+            usbCandidateExpectedLength = 0U;
+        }
+
+        void resynchroniseUsbCandidate()
+        {
+            for (size_t index = 1U; index + 1U < usbCandidateLength; ++index)
+            {
+                if (usbCandidate[index] != MAGIC_0 || usbCandidate[index + 1U] != MAGIC_1)
+                {
+                    continue;
+                }
+
+                const size_t remaining = usbCandidateLength - index;
+                if (remaining >= HEADER_BYTES)
+                {
+                    const uint16_t payloadLength = readLe16(usbCandidate.data() + index + 5U);
+                    if (usbCandidate[index + 2U] != VERSION || payloadLength > MAX_PAYLOAD_BYTES)
+                    {
+                        continue;
+                    }
+                    usbCandidateExpectedLength = HEADER_BYTES + payloadLength + CRC_BYTES;
+                }
+                else
+                {
+                    usbCandidateExpectedLength = 0U;
+                }
+                std::memmove(usbCandidate.data(), usbCandidate.data() + index, remaining);
+                usbCandidateLength = remaining;
+                return;
+            }
+            const bool endsWithMagic0 = usbCandidateLength != 0U && usbCandidate[usbCandidateLength - 1U] == MAGIC_0;
+            resetUsbCandidate();
+            if (endsWithMagic0)
+            {
+                usbCandidate[0] = MAGIC_0;
+                usbCandidateLength = 1U;
+            }
+        }
+
+        void enqueueUsbCandidateFromIsr()
+        {
+            ReceivedFrame frame = {};
+            frame.link = Link::Usb;
+            frame.type = usbCandidate[3];
+            frame.sequence = usbCandidate[4];
+            frame.length = readLe16(usbCandidate.data() + 5U);
+            if (frame.length != 0U)
+            {
+                std::memcpy(frame.payload.data(), usbCandidate.data() + HEADER_BYTES, frame.length);
+            }
+            BaseType_t taskWoken = pdFALSE;
+            (void)xQueueSendFromISR(rxQueue, &frame, &taskWoken);
+            portYIELD_FROM_ISR(taskWoken);
+        }
+
+        void consumeUsbByteFromIsr(uint8_t byte)
+        {
+            if (usbCandidateLength == 0U)
+            {
+                if (byte == MAGIC_0)
+                {
+                    usbCandidate[0] = byte;
+                    usbCandidateLength = 1U;
+                }
+                else
+                {
+                    forwardConsoleByteFromIsr(byte);
+                }
+                return;
+            }
+
+            if (usbCandidateLength == 1U && byte != MAGIC_1)
+            {
+                forwardConsoleByteFromIsr(MAGIC_0);
+                resetUsbCandidate();
+                consumeUsbByteFromIsr(byte);
+                return;
+            }
+
+            if (usbCandidateLength >= usbCandidate.size())
+            {
+                resynchroniseUsbCandidate();
+                return;
+            }
+            usbCandidate[usbCandidateLength++] = byte;
+            if (usbCandidateLength == HEADER_BYTES)
+            {
+                const uint16_t payloadLength = readLe16(usbCandidate.data() + 5U);
+                if (usbCandidate[2] != VERSION || payloadLength > MAX_PAYLOAD_BYTES)
+                {
+                    resynchroniseUsbCandidate();
+                    return;
+                }
+                usbCandidateExpectedLength = HEADER_BYTES + payloadLength + CRC_BYTES;
+            }
+            if (usbCandidateExpectedLength == 0U || usbCandidateLength < usbCandidateExpectedLength) return;
+            if (usbCandidateLength != usbCandidateExpectedLength ||
+                crc32(usbCandidate.data(), usbCandidateExpectedLength - CRC_BYTES) != readLe32(usbCandidate.data() + usbCandidateExpectedLength - CRC_BYTES))
+            {
+                resynchroniseUsbCandidate();
+                return;
+            }
+            enqueueUsbCandidateFromIsr();
+            resetUsbCandidate();
+        }
+
+        size_t encodeFrame(uint8_t type, uint8_t sequence, const uint8_t *payload, uint16_t payloadLength)
         {
             if (payloadLength > MAX_PAYLOAD_BYTES || (payloadLength != 0U && payload == nullptr))
             {
-                return false;
+                return 0U;
             }
 
             txBuffer[0] = MAGIC_0;
@@ -304,8 +443,15 @@ namespace BmsUart
 
             const size_t bodyLength = HEADER_BYTES + payloadLength;
             writeLe32(txBuffer.data() + bodyLength, crc32(txBuffer.data(), bodyLength));
+            return bodyLength + CRC_BYTES;
+        }
+
+        bool sendFrameToUart(uint8_t type, uint8_t sequence, const uint8_t *payload, uint16_t payloadLength)
+        {
+            const size_t frameLength = encodeFrame(type, sequence, payload, payloadLength);
+            if (frameLength == 0U) return false;
             txComplete = false;
-            if (HAL_UART_Transmit_DMA(&huart1, txBuffer.data(), bodyLength + CRC_BYTES) != HAL_OK)
+            if (HAL_UART_Transmit_DMA(&huart1, txBuffer.data(), frameLength) != HAL_OK)
             {
                 return false;
             }
@@ -321,6 +467,29 @@ namespace BmsUart
                 osDelay(1U);
             }
             return true;
+        }
+
+        bool usbCompanionAlive()
+        {
+            const uint32_t lastHeartbeat = lastValidUsbHeartbeatMs;
+            return lastHeartbeat != 0U && HAL_GetTick() - lastHeartbeat < USB_COMPANION_LOSS_MS;
+        }
+
+        bool sendFrameToUsb(uint8_t type, uint8_t sequence, const uint8_t *payload, uint16_t payloadLength)
+        {
+            const size_t frameLength = encodeFrame(type, sequence, payload, payloadLength);
+            return frameLength != 0U && USBCOM::write(txBuffer.data(), frameLength);
+        }
+
+        bool sendFrameTo(Link link, uint8_t type, uint8_t sequence, const uint8_t *payload, uint16_t payloadLength)
+        {
+            return link == Link::Uart ? sendFrameToUart(type, sequence, payload, payloadLength) : sendFrameToUsb(type, sequence, payload, payloadLength);
+        }
+
+        void broadcastFrame(uint8_t type, uint8_t sequence, const uint8_t *payload, uint16_t payloadLength)
+        {
+            (void)sendFrameToUart(type, sequence, payload, payloadLength);
+            if (usbCompanionAlive()) (void)sendFrameToUsb(type, sequence, payload, payloadLength);
         }
 
         uint16_t makeStatusPayload(uint8_t *payload)
@@ -348,7 +517,7 @@ namespace BmsUart
         void sendStatus()
         {
             std::array<uint8_t, 17U> payload = {};
-            (void)sendFrame(STATUS, 0U, payload.data(), makeStatusPayload(payload.data()));
+            broadcastFrame(STATUS, 0U, payload.data(), makeStatusPayload(payload.data()));
         }
 
         void sendPack()
@@ -363,7 +532,7 @@ namespace BmsUart
             writeLe16(payload.data() + 18U, SlaveController::getMaxNTCtemp());
             writeLe16(payload.data() + 20U, SlaveController::getMinICtemp());
             writeLe16(payload.data() + 22U, SlaveController::getMaxICtemp());
-            (void)sendFrame(PACK, 0U, payload.data(), payload.size());
+            broadcastFrame(PACK, 0U, payload.data(), payload.size());
         }
 
         void sendCellsAndTemperatures()
@@ -389,7 +558,7 @@ namespace BmsUart
                 {
                     writeLe32(cellPayload.data() + 3U + cellIndex * 4U, allCells[slaveIndex][cellIndex]);
                 }
-                (void)sendFrame(CELL, 0U, cellPayload.data(), cellPayload.size());
+                broadcastFrame(CELL, 0U, cellPayload.data(), cellPayload.size());
 
                 std::array<uint8_t, 11U> temperaturePayload = {};
                 temperaturePayload[0] = static_cast<uint8_t>(slaveIndex);
@@ -398,7 +567,7 @@ namespace BmsUart
                     writeLe16(temperaturePayload.data() + 1U + ntcIndex * 2U, allNtc[slaveIndex][ntcIndex]);
                 }
                 writeLe16(temperaturePayload.data() + 9U, allIc[slaveIndex]);
-                (void)sendFrame(TEMPERATURE, 0U, temperaturePayload.data(), temperaturePayload.size());
+                broadcastFrame(TEMPERATURE, 0U, temperaturePayload.data(), temperaturePayload.size());
             }
         }
 
@@ -406,7 +575,7 @@ namespace BmsUart
         {
             std::array<uint8_t, 3U> payload = {eventId, 0U, 0U};
             writeLe16(payload.data() + 1U, value);
-            (void)sendFrame(EVENT, 0U, payload.data(), payload.size());
+            broadcastFrame(EVENT, 0U, payload.data(), payload.size());
         }
 
         void publishChangedEvents()
@@ -435,7 +604,7 @@ namespace BmsUart
             eventCache = {true, bmsState, hvState, bmsActive, bmsLatched, hvActive, hvLatched, measurementsFresh};
         }
 
-        bool sendServiceResponse(uint8_t sequence, uint8_t serviceId, ServiceResult result,
+        bool sendServiceResponse(Link link, uint8_t sequence, uint8_t serviceId, ServiceResult result,
                                  const uint8_t *data = nullptr, uint16_t dataLength = 0U)
         {
             std::array<uint8_t, 19U> payload = {};
@@ -445,7 +614,13 @@ namespace BmsUart
             {
                 std::memcpy(payload.data() + 2U, data, dataLength);
             }
-            return sendFrame(SERVICE_RESPONSE, sequence, payload.data(), static_cast<uint16_t>(2U + dataLength));
+            return sendFrameTo(link, SERVICE_RESPONSE, sequence, payload.data(), static_cast<uint16_t>(2U + dataLength));
+        }
+
+        bool sendServiceResponse(uint8_t sequence, uint8_t serviceId, ServiceResult result,
+                                 const uint8_t *data = nullptr, uint16_t dataLength = 0U)
+        {
+            return sendServiceResponse(currentResponseLink, sequence, serviceId, result, data, dataLength);
         }
 
         [[noreturn]] void enterSystemBootloader()
@@ -490,11 +665,11 @@ namespace BmsUart
                         0U,
                     };
                     writeLe16(payload.data() + 2U, pendingRegisterRead.response.regValue);
-                    sendServiceResponse(pendingRegisterRead.sequence, READ_REGISTER, OK, payload.data(), payload.size());
+                    sendServiceResponse(pendingRegisterRead.link, pendingRegisterRead.sequence, READ_REGISTER, OK, payload.data(), payload.size());
                 }
                 else
                 {
-                    sendServiceResponse(pendingRegisterRead.sequence, READ_REGISTER, DENIED);
+                    sendServiceResponse(pendingRegisterRead.link, pendingRegisterRead.sequence, READ_REGISTER, DENIED);
                 }
                 pendingRegisterRead.active = false;
                 return;
@@ -502,7 +677,7 @@ namespace BmsUart
 
             if (static_cast<int32_t>(HAL_GetTick() - pendingRegisterRead.deadlineMs) >= 0)
             {
-                sendServiceResponse(pendingRegisterRead.sequence, READ_REGISTER, DENIED);
+                sendServiceResponse(pendingRegisterRead.link, pendingRegisterRead.sequence, READ_REGISTER, DENIED);
                 pendingRegisterRead.active = false;
             }
         }
@@ -515,9 +690,19 @@ namespace BmsUart
             }
 
             const uint8_t serviceId = frame.payload[0];
+            currentResponseLink = frame.link;
+            if (frame.link == Link::Usb && !usbCompanionAlive())
+            {
+                return;
+            }
             if (PCC::isFirmwareUpdateLocked())
             {
                 sendServiceResponse(frame.sequence, serviceId, DENIED);
+                return;
+            }
+            if (pendingRegisterRead.active)
+            {
+                sendServiceResponse(frame.sequence, serviceId, BUSY);
                 return;
             }
 
@@ -531,7 +716,7 @@ namespace BmsUart
                     return;
                 }
                 std::array<uint8_t, 17U> status = {};
-                sendServiceResponse(frame.sequence, serviceId, OK, status.data(), makeStatusPayload(status.data()));
+                sendServiceResponse(frame.link, frame.sequence, serviceId, OK, status.data(), makeStatusPayload(status.data()));
                 return;
             }
 
@@ -566,12 +751,8 @@ namespace BmsUart
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
                     return;
                 }
-                if (pendingRegisterRead.active)
-                {
-                    sendServiceResponse(frame.sequence, serviceId, DENIED);
-                    return;
-                }
                 pendingRegisterRead = {};
+                pendingRegisterRead.link = frame.link;
                 pendingRegisterRead.sequence = frame.sequence;
                 pendingRegisterRead.slaveIndex = frame.payload[1];
                 pendingRegisterRead.regAddr = frame.payload[2];
@@ -595,6 +776,25 @@ namespace BmsUart
                 setRTCtime(readLe32(frame.payload.data() + 1U));
                 sendServiceResponse(frame.sequence, serviceId, OK);
                 return;
+
+            case GET_RTC:
+            {
+                if (frame.length != 1U)
+                {
+                    sendServiceResponse(frame.sequence, serviceId, INVALID);
+                    return;
+                }
+                time_t unixTime = 0;
+                if (!getRTCtimeUNIX(unixTime) || unixTime < 0 || static_cast<uint64_t>(unixTime) > UINT32_MAX)
+                {
+                    sendServiceResponse(frame.sequence, serviceId, DENIED);
+                    return;
+                }
+                std::array<uint8_t, 4U> response = {};
+                writeLe32(response.data(), static_cast<uint32_t>(unixTime));
+                sendServiceResponse(frame.sequence, serviceId, OK, response.data(), response.size());
+                return;
+            }
 
             case GET_DEVICE_INFO:
             {
@@ -639,6 +839,10 @@ namespace BmsUart
         {
             if (frame.type == HEARTBEAT)
             {
+                if (frame.link == Link::Usb && frame.sequence == 0U && frame.length == 0U)
+                {
+                    lastValidUsbHeartbeatMs = HAL_GetTick();
+                }
                 return;
             }
             if (frame.type == SERVICE_REQUEST)
@@ -668,7 +872,7 @@ namespace BmsUart
                 const uint32_t now = HAL_GetTick();
                 if (now - lastHeartbeatMs >= HEARTBEAT_PERIOD_MS)
                 {
-                    (void)sendFrame(HEARTBEAT, 0U, nullptr, 0U);
+                    broadcastFrame(HEARTBEAT, 0U, nullptr, 0U);
                     lastHeartbeatMs = now;
                 }
                 if (now - lastStatusMs >= HEARTBEAT_PERIOD_MS)
@@ -694,6 +898,8 @@ namespace BmsUart
         hasValidGatewayFrame = false;
         lastValidGatewayFrameMs = HAL_GetTick();
         uartStartedMs = lastValidGatewayFrameMs;
+        lastValidUsbHeartbeatMs = 0U;
+        resetUsbCandidate();
         rxQueue = xQueueCreateStatic(RX_QUEUE_DEPTH, sizeof(ReceivedFrame), rxQueueStorage.data(), &rxQueueControl);
         uartTaskHandle = osThreadNew(task, nullptr, &uartTaskAttributes);
     }
@@ -710,6 +916,15 @@ namespace BmsUart
         for (size_t index = 0U; index < length; ++index)
         {
             parseByteFromIsr(data[index]);
+        }
+    }
+
+    void onUsbRxData(const uint8_t *data, size_t length)
+    {
+        if (data == nullptr) return;
+        for (size_t index = 0U; index < length; ++index)
+        {
+            consumeUsbByteFromIsr(data[index]);
         }
     }
 

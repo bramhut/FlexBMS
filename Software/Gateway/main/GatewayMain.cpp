@@ -1,5 +1,6 @@
 #include "flexbms/Protocol.h"
 #include "flexbms/GatewayApi.h"
+#include "flexbms/FirmwareUpdate.h"
 #include "flexbms/StatusLed.h"
 #include "flexbms/WifiManager.h"
 
@@ -80,6 +81,7 @@ namespace
         if (frame.payload[1] == 0U) result = FlexBms::GatewayApi::ServiceResult::Ok;
         else if (frame.payload[1] == 1U) result = FlexBms::GatewayApi::ServiceResult::Denied;
         else if (frame.payload[1] == 2U) result = FlexBms::GatewayApi::ServiceResult::Invalid;
+        else if (frame.payload[1] == 3U) result = FlexBms::GatewayApi::ServiceResult::Busy;
         FlexBms::GatewayApi::completeService(frame.sequence, result, frame.payload.data() + 2U, static_cast<uint8_t>(frame.length - 2U));
     }
 
@@ -170,6 +172,7 @@ extern "C" void app_main(void)
     configureUart();
     FlexBms::StatusLed statusLed;
     statusLed.setup();
+    FlexBms::FirmwareUpdate::markGatewayBootHealthy();
     ESP_LOGI(kLogTag, "UART v1 ready: UART1, GPIO2 TX -> STM32 PA10, GPIO3 RX <- STM32 PA9");
     if (!FlexBms::Wifi::start())
     {
@@ -189,33 +192,37 @@ extern "C" void app_main(void)
 
     while (true)
     {
-        const int received = uart_read_bytes(kBmsUart, receiveBuffer.data(), receiveBuffer.size(), pdMS_TO_TICKS(50));
-        for (int index = 0; index < received; ++index)
+        if (!FlexBms::FirmwareUpdate::ownsUart())
         {
-            if (decoder.consume(receiveBuffer[static_cast<size_t>(index)], frame))
+            const int received = uart_read_bytes(kBmsUart, receiveBuffer.data(), receiveBuffer.size(), pdMS_TO_TICKS(50));
+            for (int index = 0; index < received; ++index)
             {
-                lastValidFrameUs = esp_timer_get_time();
-                if (!linkWasHealthy)
+                if (decoder.consume(receiveBuffer[static_cast<size_t>(index)], frame))
                 {
-                    linkWasHealthy = true;
-                    ESP_LOGI(kLogTag, "STM32 UART link healthy");
-                }
-                logTelemetry(frame);
-                FlexBms::GatewayApi::publishFrame(frame, static_cast<uint32_t>(esp_timer_get_time() / 1000));
-                if (frame.type == FlexBms::UartV1::MessageType::ServiceResponse)
-                {
-                    handleServiceResponse(frame);
+                    lastValidFrameUs = esp_timer_get_time();
+                    if (!linkWasHealthy)
+                    {
+                        linkWasHealthy = true;
+                        ESP_LOGI(kLogTag, "STM32 UART link healthy");
+                    }
+                    FlexBms::FirmwareUpdate::onFrame(frame);
+                    logTelemetry(frame);
+                    FlexBms::GatewayApi::publishFrame(frame, static_cast<uint32_t>(esp_timer_get_time() / 1000));
+                    if (frame.type == FlexBms::UartV1::MessageType::ServiceResponse)
+                    {
+                        handleServiceResponse(frame);
+                    }
                 }
             }
         }
 
         const int64_t nowUs = esp_timer_get_time();
-        if (nowUs >= nextHeartbeatUs)
+        if (!FlexBms::FirmwareUpdate::ownsUart() && nowUs >= nextHeartbeatUs)
         {
             sendHeartbeat();
             nextHeartbeatUs = nowUs + kHeartbeatPeriodUs;
         }
-        const bool linkTimedOut = nowUs - lastValidFrameUs >= kGatewayLossUs;
+        const bool linkTimedOut = !FlexBms::FirmwareUpdate::ownsUart() && nowUs - lastValidFrameUs >= kGatewayLossUs;
         if (linkTimedOut && !uartLinkTimedOut)
         {
             linkWasHealthy = false;
@@ -229,6 +236,18 @@ extern "C" void app_main(void)
         {
             FlexBms::GatewayApi::publishGatewayStatus();
         }
+        FlexBms::FirmwareUpdate::poll();
+        if (FlexBms::FirmwareUpdate::consumeFramedUartReset())
+        {
+            decoder.reset();
+            linkWasHealthy = false;
+            uartLinkTimedOut = true;
+            lastValidFrameUs = esp_timer_get_time();
+        }
+        if (FlexBms::FirmwareUpdate::consumeStatusChanged())
+        {
+            FlexBms::GatewayApi::publishGatewayStatus();
+        }
         FlexBms::GatewayApi::poll();
 
         statusLed.setUartLinkLost(uartLinkTimedOut);
@@ -236,7 +255,8 @@ extern "C" void app_main(void)
         // MQTT, OTA and fatal-source integration remain explicit hooks; no
         // network service is introduced merely to select an LED pattern.
         statusLed.setMqttUnavailable(false);
-        statusLed.setFirmwareUpdateActive(false);
+        statusLed.setFirmwareUpdateActive(FlexBms::FirmwareUpdate::getStatus().phase == FlexBms::FirmwareUpdate::Phase::Uploading ||
+                                          FlexBms::FirmwareUpdate::getStatus().phase == FlexBms::FirmwareUpdate::Phase::Installing);
         statusLed.setFatalLocalFailure(false);
         statusLed.update();
     }

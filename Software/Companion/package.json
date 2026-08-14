@@ -8,16 +8,47 @@
     "dev": "vite --mode webserial",
     "check": "vue-tsc --noEmit && node --test tests/*.test.ts",
     "build:webserial": "vite build --mode webserial --outDir dist/webserial",
-    "build:gateway": "vite build --mode gateway --outDir dist/gateway && node scripts/write-gateway-manifest.mjs"
+    "build:gateway": "vite build --mode gateway --outDir dist/gateway && node scripts/write-gateway-manifest.mjs",
+    "build:desktop": "vite build --mode webserial --outDir dist/desktop && node scripts/package-desktop.mjs"
   },
-  "dependencies": {
+  "devDependencies": {
+    "@types/node": "^20.12.7",
     "@vitejs/plugin-vue": "^5.0.4",
+    "electron": "^36.4.0",
+    "electron-builder": "^26.0.12",
     "typescript": "^5.2.2",
     "vite": "^5.2.0",
     "vue": "^3.4.21",
     "vue-tsc": "^2.0.6"
   },
-  "devDependencies": {
-    "@types/node": "^20.12.7"
+  "main": "electron/main.mjs",
+  "build": {
+    "appId": "nl.flexbms.companion",
+    "productName": "FlexBMS Companion",
+    "directories": {
+      "output": "electron-dist"
+    },
+    "files": [
+      "dist/desktop/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "FlexBMS-Companion-${version}-portable.${ext}"
+    }
+  },
+  "allowScripts": {
+    "electron@36.4.0": true,
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.20.2": true
   }
 }

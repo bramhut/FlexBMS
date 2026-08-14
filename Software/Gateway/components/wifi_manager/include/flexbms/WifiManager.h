@@ -33,6 +33,7 @@ namespace FlexBms::Wifi
     {
         std::array<ScanNetwork, 20U> networks{};
         size_t count = 0U;
+        bool successful = false;
     };
 
     enum class ScanRequestResult : uint8_t { Started, Busy, RateLimited, Unavailable };

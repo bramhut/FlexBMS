@@ -1,5 +1,5 @@
 import { reconnectDelayMs } from '@/shared/reconnect'
-import type { BmsTransport, Capabilities, ConnectionState, GatewayStatus, ServiceArguments, ServiceName, ServiceResponse, Snapshot, WifiConfigurationResponse, WifiScanResponse } from './Transport'
+import type { BmsTransport, Capabilities, ConnectionState, GatewayStatus, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport'
 import { unavailableCapabilities } from './Transport'
 
 type Listener<T> = (value: T) => void
@@ -12,6 +12,7 @@ export class GatewayTransport implements BmsTransport {
   private socket: WebSocket | null = null
   private state: ConnectionState = 'disconnected'
   private capabilities: Capabilities = unavailableCapabilities()
+  private statusListeners = new Set<Listener<Status>>()
   private snapshotListeners = new Set<Listener<Snapshot>>()
   private eventListeners = new Set<Listener<{ event_id: number; value: number; gateway_uptime_ms?: number }>>()
   private stateListeners = new Set<Listener<[ConnectionState, GatewayStatus | undefined]>>()
@@ -30,6 +31,7 @@ export class GatewayTransport implements BmsTransport {
   disconnect(): void { this.explicitlyDisconnected = true; if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer); this.socket?.close(); this.setState('disconnected') }
   getConnectionState(): ConnectionState { return this.state }
   getCapabilities(): Capabilities { return this.capabilities }
+  onBmsStatus(listener: Listener<Status>): () => void { this.statusListeners.add(listener); return () => this.statusListeners.delete(listener) }
   onSnapshot(listener: Listener<Snapshot>): () => void { this.snapshotListeners.add(listener); return () => this.snapshotListeners.delete(listener) }
   onEvent(listener: Listener<{ event_id: number; value: number; gateway_uptime_ms?: number }>): () => void { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener) }
   onState(listener: (state: ConnectionState, gateway?: GatewayStatus) => void): () => void { const wrapped: Listener<[ConnectionState, GatewayStatus | undefined]> = ([state, gateway]) => listener(state, gateway); this.stateListeners.add(wrapped); return () => this.stateListeners.delete(wrapped) }
@@ -39,7 +41,7 @@ export class GatewayTransport implements BmsTransport {
     return new Promise((resolve, reject) => {
       this.pending.set(request_id, { service, resolve, reject })
       this.socket?.send(JSON.stringify({ v: 1, type: 'service', request_id, service, arguments: args }))
-      window.setTimeout(() => { const pending = this.pending.get(request_id); if (pending) { this.pending.delete(request_id); pending.resolve({ request_id, service, result: 'transport_error' }) } }, 3000)
+      window.setTimeout(() => { const pending = this.pending.get(request_id); if (pending) { this.pending.delete(request_id); pending.resolve({ request_id, service, result: 'transport_error' }) } }, 5000)
     })
   }
   configureWifi(ssid: string, password: string): Promise<WifiConfigurationResponse> {
@@ -75,7 +77,8 @@ export class GatewayTransport implements BmsTransport {
     try { parsed = JSON.parse(message.data) as Record<string, unknown> } catch { return }
     if (parsed.v !== 1 || typeof parsed.type !== 'string') return
     if (parsed.type === 'hello') { this.capabilities = parsed.capabilities as Capabilities; this.emitState(parsed.gateway_status as GatewayStatus); return }
-    if (parsed.type === 'snapshot') this.snapshotListeners.forEach(listener => listener({ status: parsed.status, pack: parsed.pack, cells: parsed.cells, temperatures: parsed.temperatures } as Snapshot))
+    if (parsed.type === 'bms_status') this.statusListeners.forEach(listener => listener(parsed.status as Status))
+    if (parsed.type === 'snapshot') { const snapshot = { status: parsed.status, pack: parsed.pack, cells: parsed.cells, temperatures: parsed.temperatures } as Snapshot; this.statusListeners.forEach(listener => listener(snapshot.status)); this.snapshotListeners.forEach(listener => listener(snapshot)) }
     if (parsed.type === 'event') this.eventListeners.forEach(listener => listener(parsed as never))
     if (parsed.type === 'gateway_status') this.emitState(parsed as unknown as GatewayStatus)
     if (parsed.type === 'service_result' && typeof parsed.request_id === 'string') { const pending = this.pending.get(parsed.request_id); if (pending) { this.pending.delete(parsed.request_id); pending.resolve(parsed as unknown as ServiceResponse) } }

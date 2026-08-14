@@ -1,13 +1,111 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import type { BmsTransport, Capabilities, GatewayStatus, ServiceName } from '@/transports/Transport'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import type { BmsTransport, Capabilities, GatewayStatus, ServiceResponse } from '@/transports/Transport'
+import { registerFields } from '@/shared/registers'
 import { serviceResultLabel } from '@/shared/service'
-const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities; gateway?: GatewayStatus }>()
-const requested = ref(false); const unixTime = ref(Math.floor(Date.now() / 1000)); const slave = ref(0); const register = ref(0); const result = ref('')
-const gatewayLogAvailable = computed(() => props.capabilities.diagnostic_log_download && props.gateway?.diagnostic_log.available)
-const availability = (capability: keyof Capabilities) => props.capabilities[capability] ? '' : 'Unavailable on this target.'
-async function invoke(service: ServiceName): Promise<void> { const argumentsByService = { set_run_request: { requested: requested.value }, clear_faults: {}, set_rtc: { unix_time_s: unixTime.value }, read_register: { slave_index: slave.value, register: register.value } } as const; const response = await props.transport.request(service, argumentsByService[service]); result.value = `${serviceResultLabel(response.result)}${response.data ? `: ${response.data.value}` : ''}` }
+import { advancingUnixTime, browserUnixTime } from '@/shared/time'
+import FirmwareUpdatePanel from './FirmwareUpdatePanel.vue'
+
+const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities; connected: boolean; runRequested: boolean; gateway?: GatewayStatus }>()
+const requested = ref(false)
+const changingRunRequest = ref(false)
+const slave = ref(0)
+const registerText = ref('03')
+const result = ref('')
+const registerValue = ref<number | null>(null)
+const registerError = ref('')
+const deviceUnixTime = ref<number | null>(null)
+const deviceTimeSampledAt = ref(0)
+const deviceTimeError = ref('')
+const clockNow = ref(Date.now())
+let clockTimer: number | undefined
+
+const availability = (capability: keyof Capabilities) => props.capabilities[capability] ? '' : 'Unavailable in the current Gateway state.'
+const registerKey = computed(() => registerText.value.trim().toUpperCase().padStart(2, '0'))
+const fields = computed(() => registerFields[registerKey.value] ?? [])
+const bits = computed(() => registerValue.value === null ? '' : registerValue.value.toString(2).padStart(16, '0'))
+const formattedDeviceTime = computed(() => {
+  if (deviceUnixTime.value === null) {
+    if (!props.connected) return 'Connect to read device time.'
+    return deviceTimeError.value ? `Unavailable (${deviceTimeError.value})` : 'Reading device time…'
+  }
+  const unixTime = advancingUnixTime(deviceUnixTime.value, deviceTimeSampledAt.value, clockNow.value)
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(unixTime * 1000))
+})
+
+function describe(response: ServiceResponse): string {
+  if (response.data?.value !== undefined) return `${serviceResultLabel(response.result)}: 0x${response.data.value.toString(16).padStart(4, '0').toUpperCase()}`
+  return serviceResultLabel(response.result)
+}
+
+async function setRunRequest(): Promise<void> {
+  const requestedValue = requested.value
+  changingRunRequest.value = true
+  const response = await props.transport.request('set_run_request', { requested: requestedValue })
+  result.value = `Run request: ${describe(response)}`
+  changingRunRequest.value = false
+  if (response.result !== 'ok') requested.value = props.runRequested
+}
+
+async function clearFaults(): Promise<void> {
+  const response = await props.transport.request('clear_faults', {})
+  result.value = `Fault clear: ${describe(response)}`
+}
+
+async function refreshDeviceTime(showFailure = true): Promise<void> {
+  if (!props.connected || !props.capabilities.get_rtc) return
+  const response = await props.transport.request('get_rtc', {})
+  if (response.result === 'ok' && response.data?.unix_time_s !== undefined) {
+    deviceUnixTime.value = response.data.unix_time_s
+    deviceTimeSampledAt.value = Date.now()
+    deviceTimeError.value = ''
+    return
+  }
+  deviceTimeError.value = describe(response)
+  if (showFailure) result.value = `RTC read: ${describe(response)}`
+}
+
+async function setRtc(): Promise<void> {
+  const response = await props.transport.request('set_rtc', { unix_time_s: browserUnixTime() })
+  result.value = `RTC sync: ${serviceResultLabel(response.result)}`
+  if (response.result === 'ok') await refreshDeviceTime(false)
+}
+
+async function readRegister(): Promise<void> {
+  const value = Number.parseInt(registerText.value, 16)
+  if (!Number.isInteger(value) || value < 0 || value > 0xff || !Number.isInteger(slave.value) || slave.value < 0 || slave.value > 255) {
+    registerError.value = 'Enter a zero-based slave index and a hexadecimal register address from 00 to FF.'
+    return
+  }
+  registerError.value = ''
+  const response = await props.transport.request('read_register', { slave_index: slave.value, register: value })
+  result.value = describe(response)
+  registerValue.value = response.data?.value ?? null
+}
+
+watch(() => props.runRequested, value => { if (!changingRunRequest.value) requested.value = value }, { immediate: true })
+watch([() => props.connected, () => props.capabilities.get_rtc], ([connected, supported]) => { if (connected && supported) void refreshDeviceTime(false) }, { immediate: true })
+clockTimer = window.setInterval(() => { clockNow.value = Date.now() }, 1000)
+onBeforeUnmount(() => { if (clockTimer !== undefined) window.clearInterval(clockTimer) })
 </script>
+
 <template>
-  <main class="stack"><section><h2>Named BMS services</h2><label><input v-model="requested" type="checkbox" :disabled="!capabilities.set_run_request" /> Request BMS run</label><button :disabled="!capabilities.set_run_request" @click="invoke('set_run_request')">Set run request</button><small>{{ availability('set_run_request') }}</small><button :disabled="!capabilities.clear_faults" @click="invoke('clear_faults')">Clear faults</button><small>{{ availability('clear_faults') }}</small><label>UTC seconds <input v-model.number="unixTime" type="number" min="0" /></label><button :disabled="!capabilities.set_rtc" @click="invoke('set_rtc')">Set RTC</button></section><section><h2>Read-only register viewer</h2><label>Slave <input v-model.number="slave" type="number" min="0" max="255" /></label><label>Register <input v-model.number="register" type="number" min="0" max="255" /></label><button :disabled="!capabilities.read_register" @click="invoke('read_register')">Read register</button></section><p v-if="result"><b>{{ result }}</b> — a successful action only means the STM32 invoked the request; telemetry remains authoritative.</p><section><h2>Gateway diagnostics</h2><a v-if="gatewayLogAvailable" href="/api/diagnostic-log" download>Download diagnostic log ({{ gateway?.diagnostic_log.bytes }} bytes)</a><span v-else>Unavailable on this target or Gateway log is not available.</span></section><section><h2>Firmware update</h2><p>Unavailable: STM32 firmware updating is manual by USB/ST-Link.</p></section></main>
+  <section class="panel controls-panel">
+    <div class="panel-heading"><div><p class="eyebrow">Maintenance</p><h2>BMS controls</h2></div><p>Named requests only; the STM32 remains the safety authority.</p></div>
+    <div class="control-grid">
+      <div class="control-block"><h3>Run request</h3><label class="ios-switch"><input v-model="requested" type="checkbox" role="switch" :disabled="!capabilities.set_run_request || changingRunRequest" @change="setRunRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Request BMS run</span></label><small>{{ availability('set_run_request') }}</small></div>
+      <div class="control-block"><h3>Fault handling</h3><p>Clearing faults is accepted only when the STM32 considers it safe.</p><button class="danger" :disabled="!capabilities.clear_faults" @click="clearFaults">Clear faults</button><small>{{ availability('clear_faults') }}</small></div>
+      <div class="control-block"><h3>Real-time clock</h3><p>Device time: <b>{{ formattedDeviceTime }}</b></p><div class="button-row"><button :disabled="!capabilities.set_rtc" @click="setRtc">Set RTC from this browser</button><button :disabled="!connected || !capabilities.get_rtc" @click="refreshDeviceTime()">Refresh</button></div><small>{{ availability('get_rtc') }}</small></div>
+    </div>
+    <p v-if="result" class="action-result">{{ result }}</p>
+  </section>
+
+  <section class="panel register-panel">
+    <div class="panel-heading"><div><p class="eyebrow">Inspection</p><h2>Read BCC register</h2></div><p>Read-only. Slave indexes are zero-based.</p></div>
+    <div class="register-form"><label>Slave<input v-model.number="slave" type="number" min="0" max="255"></label><label>Register (hex)<input v-model="registerText" maxlength="2" inputmode="text"></label><button :disabled="!capabilities.read_register" @click="readRegister">Read register</button></div>
+    <p v-if="registerError" class="warning-text">{{ registerError }}</p>
+    <div v-if="registerValue !== null" class="register-result"><p><b>0x{{ registerKey }}</b> = <b>0x{{ registerValue.toString(16).padStart(4, '0').toUpperCase() }}</b></p><p class="mono">{{ bits }}</p><ul v-if="fields.length"><li v-for="field in fields" :key="field.name">{{ field.name }} ({{ field.bits }} bit{{ field.bits === 1 ? '' : 's' }})</li></ul><p v-else class="muted">No compact field description is available for this address.</p></div>
+    <small>{{ availability('read_register') }}</small>
+  </section>
+  <FirmwareUpdatePanel :capabilities="capabilities" :connected="connected" :gateway="gateway" />
 </template>

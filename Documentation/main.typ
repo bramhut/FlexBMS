@@ -102,7 +102,7 @@
     align: (left, left),
     stroke: none,
     inset: (x: 5pt, y: 4pt),
-    [*Document date*], [30 July 2026],
+    [*Document date*], [14 August 2026],
     [*System*], [96s LiFePO4 home BESS],
     [*Nominal capacity*], [314 Ah / approximately 96.5 kWh],
     [*Primary controller*], [STM32G491],
@@ -146,8 +146,8 @@ management. The battery management system remains the final authority for batter
   [Performs real-time measurement, protection, state handling, and contactor control.],
   [#status("CURRENT")],
   [ESP32 gateway],
-  [Publishes telemetry to the local network while remaining listen-only on CAN.],
-  [#status("PLANNED", kind: "planned")],
+  [Provides local BMS maintenance, Wi-Fi provisioning, and telemetry transport while remaining listen-only on CAN.],
+  [#status("CURRENT")],
   [Energy management system],
   [Chooses when and how much to charge or discharge within BMS limits.],
   [#status("PLANNED", kind: "planned")],
@@ -289,7 +289,7 @@ commissioning documentation.
     [TPL], [Master to 8 monitor ICs], [Cell, temperature, diagnostic, and current data.],
     [USB], [Service computer to STM32], [Firmware, logs, and Companion access.],
     [CAN], [STM32 and inverter-side domain], [Battery status and inverter communication.],
-    [Wi-Fi], [ESP32 to local network], [Telemetry, local maintenance page, and MQTT.],
+    [Wi-Fi], [ESP32 to local network], [Local maintenance page, Wi-Fi provisioning, and future telemetry integration.],
     [RS485], [ESP32 to inverter-side equipment], [Fallback or supplementary Modbus connection.],
   )
 ]
@@ -329,8 +329,8 @@ The STM32 also hosts:
 - the dedicated HV supervisor;
 - board-level analog and digital I/O;
 - CAN communication;
-- USB serial communication;
-- and the browser-based Companion service interface.
+- USB serial and the trusted text command/debug console; and
+- the framed BMS v1 service interface over isolated UART and USB CDC.
 
 === Todo:
 High priority:
@@ -347,19 +347,17 @@ High priority:
   implementation remains pending.
 
 Medium priority:
-- Communication to ESP32 over UART. Reporting and named service operations; see
-  `Documentation/architecture/home-bess-firmware-and-maintenance.md`.
-- Aux relay control (potentially useful for a future heating system)
+- Aux relay control (potentially useful for a future heating system).
 
 
 == HV supervisor
 
 #status("CURRENT")
 
-The HV supervisor follows `OFF -> SELF_TEST -> PRECHARGE -> CONTACTOR_CLOSE -> RUN`. The planned
-transport-independent `setRunRequest(bool)` service operation provides intent only; it does not command a
-contactor. The STM32 accepts operation only when its BMS and HV-supervisor conditions are healthy. Until
-this interface is implemented, the supervisor remains `OFF` by default.
+The HV supervisor follows `OFF -> SELF_TEST -> PRECHARGE -> CONTACTOR_CLOSE -> RUN`.
+The transport-independent `setRunRequest(bool)` operation is implemented through
+the framed BMS v1 named service. It provides intent only; it does not command a
+contactor. The STM32 accepts operation only when its BMS and HV-supervisor conditions are healthy.
 
 `SELF_TEST` checks BMS permission, measurement freshness, isolated-voltage diagnostics, agreement between
 the battery-side and cell-monitor voltages, an unenergized load side, and the available power source.
@@ -369,9 +367,9 @@ monitoring the BMS permission and both HV measurements.
 
 A removed request, lost BMS permission, or implausible HV feedback disables both drivers. A blocking fault
 does not erase a true run request: after an explicit user fault-clear request and successful STM32
-revalidation, the BMS may resume the startup sequence. The request defaults off after STM32 reset or loss
-of the requesting service transport. The STM32 reports requested state, actual HV state, and any blocking
-reason separately.
+revalidation, the BMS may resume the startup sequence. The request defaults off after an STM32 reset;
+loss of a Gateway or USB Companion transport does not alter it. The STM32 reports requested state,
+actual HV state, and any blocking reason separately.
 
 USB-only operation supports service access but cannot request or energize the HV path. The fitted
 hardware pull-down defines the inactive USB-sense level; the STM32 does not enable an internal pull.
@@ -386,7 +384,7 @@ hardware pull-down defines the inactive USB-sense level; the STM32 does not enab
 
 == ESP32
 
-#status("PLANNED", kind: "planned")
+#status("CURRENT")
 
 The ESP32 is the network and telemetry controller in the isolated inverter-side domain. Its intended role
 is to observe BMS and inverter information, publish selected data to the local network, and support
@@ -396,14 +394,28 @@ The ESP32 is not part of the battery safety chain. It is not allowed to transmit
 bus and must remain listen-only there. Loss of the ESP32 or Wi-Fi must not prevent the STM32 from
 protecting or isolating the battery.
 
-`Software/Gateway` contains the initial ESP32 firmware: the isolated UART v1
-codec and Wi-Fi provisioning/station connection. Its planned local Companion,
-MQTT, OTA, and CAN-observation work remains separate. The Gateway uses isolated
-UART to the STM32 and remains listen-only on shared BMS/GoodWe CAN. It is not a
-safety authority. The detailed transport, update, local-network, and recovery
-design is in `Documentation/architecture/home-bess-firmware-and-maintenance.md`.
+`Software/Gateway` implements isolated UART v1, Wi-Fi
+provisioning/station/recovery, and the local compiled Companion maintenance
+page. The Companion provides stale-status diagnostics, fresh BMS monitoring,
+CSV logging, register reads, browser-time RTC synchronisation and device-time
+readback, fault clear, immediate run-request actions, and station-LAN firmware
+updates. MQTT and CAN observation remain separate planned increments. The Gateway uses isolated UART to the STM32 and
+remains listen-only on shared BMS/GoodWe CAN. It is not a safety authority. The
+detailed transport, local-network, and recovery design is in
+`Documentation/architecture/home-bess-firmware-and-maintenance.md`.
 
-=== STM32--ESP32 UART v1 contract
+The 4 MiB ESP32-C3 partition table uses two 1.5 MiB OTA application slots,
+a 512 KiB `bms_update` staging partition, and 384 KiB LittleFS reserved for
+future diagnostics/metadata. The committed Companion bundle is currently
+compiled into each application image, not served from LittleFS.
+
+The Gateway application is written at the explicit `ota_0` offset in
+`Software/Gateway/partitions.csv` (currently `0x20000`), not ESP-IDF's generic
+`0x10000` default. Gateway release and normal PlatformIO upload tooling derive
+that address from the partition table; release creation verifies an ESP image
+magic byte at the derived address in the merged factory image.
+
+=== Framed BMS protocol v1 contract
 
 #status("AGREED", kind: "planned")
 
@@ -412,15 +424,16 @@ The canonical byte-level implementation contract is
 system document; resolve any discrepancy in favour of the Markdown contract.
 
 The STM32G491 BMS and ESP32-C3 Gateway communicate over isolated USART1 at 1 Mbit/s,
-8-N-1, full duplex, without hardware flow control. The STM32 is the safety authority. UART
-loss is a communication-health condition only: it must not force the HV path off or change the
-current run request. The legacy `*!` Companion protocol remains on USB and is not carried over
-this UART.
+8-N-1, full duplex, without hardware flow control. Direct USB CDC uses the same framed bytes for
+the Web Serial Companion while retaining the trusted text command/debug console through a byte
+dispatcher. The STM32 is the safety authority. UART loss is a communication-health condition
+only: it must not force the HV path off or change the current run request. The `*!` BMS Companion
+protocol is retired.
 
 Each endpoint sends a zero-payload heartbeat every 500 ms. A peer is declared lost only after
 1.5 s without a complete CRC-valid frame. Invalid bytes or frames with a bad CRC do not refresh
-the timer. The Gateway sends one service request at a time and waits for its response before
-sending the next one.
+the timer. The Gateway and direct USB Companion share one STM32 service slot; a second request
+receives `BUSY` rather than being queued.
 
 All multi-byte values are little-endian. Encoders and decoders write and read individual fields;
 they must not transmit native C or C++ structs. The maximum payload length is 512 bytes.
@@ -444,8 +457,8 @@ but not the CRC field; the transmitted CRC word is little-endian. The standard c
 `CRC32("123456789") = 0xCBF43926`. On an invalid version, length, or CRC, the receiver discards
 the first magic byte and resumes magic scanning. The protocol uses no escaping or byte stuffing.
 
-`SEQUENCE = 0` is reserved for heartbeat, telemetry, and events. A Gateway service request uses
-a value from 1 through 255; the STM32 response echoes that sequence.
+`SEQUENCE = 0` is reserved for heartbeat, telemetry, and events. A Gateway or USB Companion
+service request uses a value from 1 through 255; the STM32 response echoes that sequence.
 
 ==== Types
 
@@ -456,13 +469,13 @@ a value from 1 through 255; the STM32 response echoes that sequence.
   inset: (x: 5pt, y: 3pt),
   table.header([*ID*], [*Type*], [*Direction*]),
   [`0x01`], [HEARTBEAT], [both],
-  [`0x02`], [STATUS], [STM32 to Gateway],
-  [`0x03`], [PACK], [STM32 to Gateway],
-  [`0x04`], [CELL], [STM32 to Gateway],
-  [`0x05`], [TEMPERATURE], [STM32 to Gateway],
-  [`0x10`], [SERVICE_REQUEST], [Gateway to STM32],
-  [`0x11`], [SERVICE_RESPONSE], [STM32 to Gateway],
-  [`0x12`], [EVENT], [STM32 to Gateway],
+  [`0x02`], [STATUS], [STM32 to Gateway or USB Companion],
+  [`0x03`], [PACK], [STM32 to Gateway or USB Companion],
+  [`0x04`], [CELL], [STM32 to Gateway or USB Companion],
+  [`0x05`], [TEMPERATURE], [STM32 to Gateway or USB Companion],
+  [`0x10`], [SERVICE_REQUEST], [Gateway or USB Companion to STM32],
+  [`0x11`], [SERVICE_RESPONSE], [STM32 to Gateway or USB Companion],
+  [`0x12`], [EVENT], [STM32 to Gateway or USB Companion],
 )
 
 ==== Telemetry payloads
@@ -478,7 +491,8 @@ hv_active_faults:u16 | hv_latched_faults:u16 | uptime_ms:u32
 ```
 
 Status flag bits are: 0 BMS HV-ready, 1 charging allowed, 2 run request asserted, 3 complete
-measurements fresh, and 4 Gateway peer alive. Bits 5--15 are zero. `slave_count` comes from the
+measurements fresh, and 4 isolated-UART Gateway peer alive. USB Companion heartbeats do not affect
+bit 4. Bits 5--15 are zero. `slave_count` comes from the
 configured BMS monitor chain and is variable between builds. A production module contains two
 monitor slaves, but a single-slave development chain is supported until its second slave is
 connected. The Gateway must use the reported value and must not reject an odd count.
@@ -494,8 +508,8 @@ min_ntc_raw:u16 | max_ntc_raw:u16 | min_ic_raw:u16 | max_ic_raw:u16
 Voltage values are microvolts. Current is signed amperes times 64; positive current is charging.
 SoC uses the existing BCC raw range (`0 = -100%`, `65535 = 200%`), so percent is
 `100 * (soc_raw / 65535 * 3 - 1)`. NTC raw values convert as
-`raw / 65535 * 120 - 20` degrees C. IC raw values are decikelvin, so degrees C are
-`raw / 10 - 273.15`.
+`raw / 65535 * 120 - 20` degrees C. IC raw values are centikelvin, so degrees C are
+`raw / 100 - 273.15`.
 
 `CELL` is 51 bytes, once per configured slave:
 
@@ -567,11 +581,11 @@ EVENT is a convenience notification; STATUS is authoritative, so loss of an even
 ==== Services
 
 The service-request payload is `service_id:u8 | arguments...`; the service-response payload is
-`service_id:u8 | result:u8 | response_data...`. Result values are intentionally limited to
-`0 OK`, `1 DENIED`, and `2 INVALID`. `INVALID` covers an unknown service, bad request length,
-bad argument, or nonexistent slave index. `DENIED` means a valid request cannot safely be performed
-in the current STM32 state. `OK` means that the STM32 accepted and invoked the requested operation;
-STATUS and EVENT show the resulting operating state.
+`service_id:u8 | result:u8 | response_data...`. Result values are `0 OK`, `1 DENIED`,
+`2 INVALID`, and `3 BUSY`. `INVALID` covers an unknown service, bad request length, bad argument,
+or nonexistent slave index. `DENIED` means a valid request cannot safely be performed in the current
+STM32 state. `BUSY` means another named service is still in progress. `OK` means that the STM32
+accepted and invoked the requested operation; STATUS and EVENT show the resulting operating state.
 
 #table(
   columns: (auto, auto, 1fr, 1fr),
@@ -586,6 +600,7 @@ STATUS and EVENT show the resulting operating state.
   [`0x05`], [SET_RTC], [`unix_time_s:u32` UTC], [none],
   [`0x06`], [GET_DEVICE_INFO], [none], [`firmware_version:u32`],
   [`0x07`], [ENTER_STM32_BOOTLOADER], [`firmware_version:u32, image_length:u32, image_crc32:u32`], [none],
+  [`0x08`], [GET_RTC], [none], [`unix_time_s:u32` UTC],
 )
 
 `SET_RUN_REQUEST(0)` immediately removes the request through the STM32 PCC path. A request of 1
@@ -702,14 +717,27 @@ The entity model, discovery mechanism, command permissions, and dashboard design
 
 == Companion application
 
-#status("PLANNED", kind: "planned")
+#status("CURRENT")
 
 The current in-tree `Software/bms_companion` is a legacy copy and is not the source for Home-BESS work.
-The planned `Software/Companion` is a FlexBMS-owned BMS-only application with two builds: a direct USB
-Web Serial build for independent service/development diagnostics, and an ESP32-hosted WebSocket build for
-local maintenance. Both provide live battery diagnostics and named service requests. Only direct USB has a
-raw development terminal; the network build has no raw terminal, exposes an explicit allowlist, and adds
-Gateway status and firmware-update workflow.
+`Software/Companion` is the FlexBMS-owned BMS-only application with two web targets: a direct USB
+Web Serial target for independent service diagnostics and an ESP32-hosted WebSocket target for local
+maintenance. A portable, unsigned Windows executable packages the direct-USB target in a thin
+Electron/Chromium wrapper. It has no installer, updater, or native serial-protocol implementation.
+
+Both targets provide stale-status explanation, live fresh telemetry, CSV logging, named service requests,
+browser-time RTC synchronisation with device-time readback, and read-only register inspection. The
+Gateway target also shows Wi-Fi and UART state and, only in connected station
+mode, release-manifest firmware updates. The direct-USB target exposes neither
+a raw terminal nor firmware-update UI; Gateway requests use an explicit allowlist.
+
+`scripts/build-release.ps1` interactively confirms the release version, updates the Companion package
+version when a new one is entered, and builds the Companion, Gateway, and STM32 artifacts with checksums
+and per-image OTA manifests containing the target, version, byte length, and CRC-32.
+`-Version` supports unattended use. Each release includes `flash-release.ps1`: ST-Link/SWD flashes the
+STM32 image, while a selected ESP32-C3 COM port flashes a complete Gateway factory image. Both actions
+start immediately after checksum verification. Repeating an existing version requires an explicit choice
+and creates a timestamped output without overwriting the prior release.
 
 = Operating concept
 
@@ -773,15 +801,15 @@ must never be interpreted as a current permission to charge, discharge, or close
   [`Hardware/ModuleBoard`], [Battery module-board schematic, PCB, and production data.],
   [`Software/Master`], [STM32G491 firmware and platform configuration.],
   [`Software/bms_companion`], [Legacy in-tree Companion copy; not a Home-BESS source of truth.],
-  [`Software/Companion`], [Planned FlexBMS-owned BMS maintenance UI with USB and Gateway builds.],
-  [`Software/Gateway`], [ESP32 UART v1 codec and Wi-Fi provisioning; MQTT, maintenance, OTA, and CAN work remain planned.],
-  [`Documentation/protocol/uart-v1.md`], [Canonical STM32--ESP32 framing specification and test vectors.],
+  [`Software/Companion`], [Current FlexBMS BMS maintenance UI with direct USB, Gateway, and portable Windows package outputs.],
+  [`Software/Gateway`], [ESP32 UART v1, Wi-Fi provisioning/recovery, and compiled Companion serving; MQTT, OTA, and CAN work remain planned.],
+  [`Documentation/protocol/uart-v1.md`], [Canonical framed BMS protocol for Gateway UART and direct USB CDC, including test vectors.],
   [`Simulations`], [Electrical simulation files used during hardware development.],
   [`Documentation`], [This system overview and its Typst build setup.],
 )
 
-The repository contains the initial ESP32 Gateway implementation. EMS, Home
-Assistant, and FlexBMS Companion implementations remain planned.
+The repository contains the initial ESP32 Gateway and FlexBMS Companion
+implementations. EMS and Home Assistant remain planned.
 
 = Open topics
 

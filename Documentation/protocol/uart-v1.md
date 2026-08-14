@@ -1,23 +1,31 @@
-# FlexBMS STM32--ESP32 UART v1 contract
+# FlexBMS framed BMS protocol v1
 
-This is the canonical byte-level contract for the isolated UART between the
-STM32G491 BMS and ESP32-C3 Gateway. Implementations, tests, and any new
-network-facing features must follow this document. The STM32 is the battery and
-HV safety authority; the Gateway is never a safety authority.
+This is the canonical byte-level contract for BMS telemetry and named services.
+The STM32G491 uses the identical frames on the isolated UART to the ESP32-C3
+Gateway and on direct USB CDC to the Web Serial Companion. Implementations,
+tests, and any new network-facing features must follow this document. The
+STM32 is the battery and HV safety authority; the Gateway is never a safety
+authority.
 
 ## Link and framing
 
-- USART1, isolated, 1,000,000 bit/s, 8-N-1, full duplex, no flow control.
-- The legacy `*!` Companion protocol remains USB-only and is not carried over
-  this UART.
-- Each endpoint sends an empty `HEARTBEAT` every 500 ms. A peer is lost after
-  1.5 s without a complete CRC-valid frame. Invalid bytes and invalid frames do
-  not refresh that timer.
+- Isolated UART: USART1, 1,000,000 bit/s, 8-N-1, full duplex, no flow control.
+- Direct USB: USB CDC carries the same binary frames. Web Serial opens the CDC
+  port at 115,200 bit/s; this setting does not change USB signalling.
+- Each Companion link sends an empty `HEARTBEAT` every 500 ms. A peer is lost
+  after 1.5 s without a complete CRC-valid frame. USB telemetry starts only
+  after a valid USB heartbeat and stops at that timeout. Invalid bytes and
+  invalid frames do not refresh either timer.
+- USB CDC retains the trusted text command/debug console. The STM32 consumes
+  complete `FB` frames before forwarding ordinary text to that console; text
+  output may be interleaved with frames and framed decoders must resynchronise.
+- The line-oriented `*!` BMS Companion protocol is retired and is not accepted
+  as a supported BMS interface.
 - All multi-byte values are little-endian. Encode/decode fields individually;
   never transmit native C/C++ structs. The maximum payload is 512 bytes.
 - `SEQUENCE = 0` is reserved for heartbeat, telemetry, and events. A Gateway
-  service request uses 1--255 and the STM32 response echoes it. The Gateway
-  has one service request in flight at a time.
+  or direct-USB Companion service request uses 1--255 and the STM32 response
+  echoes it. Each requester keeps at most one service request in flight.
 
 | Offset | Size | Field |
 |---:|---:|---|
@@ -43,13 +51,13 @@ magic byte, and resumes magic scanning. There is no escaping or byte stuffing.
 | ID | Type | Direction |
 |---:|---|---|
 | `0x01` | `HEARTBEAT` | Both |
-| `0x02` | `STATUS` | STM32 to Gateway |
-| `0x03` | `PACK` | STM32 to Gateway |
-| `0x04` | `CELL` | STM32 to Gateway |
-| `0x05` | `TEMPERATURE` | STM32 to Gateway |
-| `0x10` | `SERVICE_REQUEST` | Gateway to STM32 |
-| `0x11` | `SERVICE_RESPONSE` | STM32 to Gateway |
-| `0x12` | `EVENT` | STM32 to Gateway |
+| `0x02` | `STATUS` | STM32 to Gateway or direct USB Companion |
+| `0x03` | `PACK` | STM32 to Gateway or direct USB Companion |
+| `0x04` | `CELL` | STM32 to Gateway or direct USB Companion |
+| `0x05` | `TEMPERATURE` | STM32 to Gateway or direct USB Companion |
+| `0x10` | `SERVICE_REQUEST` | Gateway or direct USB Companion to STM32 |
+| `0x11` | `SERVICE_RESPONSE` | STM32 to Gateway or direct USB Companion |
+| `0x12` | `EVENT` | STM32 to Gateway or direct USB Companion |
 
 ## Telemetry payloads
 
@@ -64,8 +72,8 @@ hv_active_faults:u16 | hv_latched_faults:u16 | uptime_ms:u32
 ```
 
 `flags`: bit 0 BMS HV-ready; bit 1 charging allowed; bit 2 run request
-asserted; bit 3 complete measurements fresh; bit 4 Gateway peer alive; bits
-5--15 are zero.
+asserted; bit 3 complete measurements fresh; bit 4 isolated-UART Gateway peer
+alive; bits 5--15 are zero. USB heartbeats never change bit 4.
 
 `slave_count` is the variable configured BMS monitor-chain count. A production
 module has two monitor slaves, but a single-slave development chain is valid.
@@ -82,7 +90,7 @@ min_ntc_raw:u16 | max_ntc_raw:u16 | min_ic_raw:u16 | max_ic_raw:u16
 Voltages are microvolts. Current is signed amperes ×64; positive is charging.
 `soc_raw` uses the existing BCC range (`0 = -100%`, `65535 = 200%`):
 `percent = 100 * (soc_raw / 65535 * 3 - 1)`. NTC conversion is
-`raw / 65535 * 120 - 20` °C. IC raw is decikelvin: `raw / 10 - 273.15` °C.
+`raw / 65535 * 120 - 20` °C. IC raw is centikelvin: `raw / 100 - 273.15` °C.
 
 ### `CELL` — 51 bytes per configured slave
 
@@ -174,8 +182,12 @@ Service response payload: `service_id:u8 | result:u8 | response_data...`.
 | `OK` | 0 | STM32 accepted and invoked the request. |
 | `DENIED` | 1 | Valid request cannot safely run in the current STM32 state. |
 | `INVALID` | 2 | Unknown service, invalid length/argument, or nonexistent slave. |
+| `BUSY` | 3 | Another named BMS service is still in progress. |
 
 `OK` means accepted and invoked; `STATUS` and `EVENT` show the resulting state.
+Only one named service is active across UART and USB at a time. The STM32
+returns `BUSY` to the other link and routes delayed responses, such as register
+reads, to the link and sequence that originated them.
 
 | ID | Service | Request arguments | `OK` response data |
 |---:|---|---|---|
@@ -186,6 +198,7 @@ Service response payload: `service_id:u8 | result:u8 | response_data...`.
 | `0x05` | `SET_RTC` | `unix_time_s:u32` UTC | None |
 | `0x06` | `GET_DEVICE_INFO` | None | `firmware_version:u32` |
 | `0x07` | `ENTER_STM32_BOOTLOADER` | `firmware_version:u32, image_length:u32, image_crc32:u32` | None |
+| `0x08` | `GET_RTC` | None | `unix_time_s:u32` UTC |
 
 `SET_RUN_REQUEST(0)` immediately removes the request through the STM32 PCC
 path. A request of 1 does not guarantee an HV start. `CLEAR_FAULTS` is denied
@@ -206,9 +219,8 @@ The STM32 returns `DENIED` unless run request is off and it can de-energise the
 HV path and inhibit normal services. After `OK`, it drains that response, stops
 framed UART, and enters the STM32 ROM bootloader. The Gateway then performs ROM
 bootloader sync, transfer, readback verification, and `Go` on USART1; these are
-not FlexBMS UART frames. On return, the Gateway waits for heartbeat and uses
-`GET_DEVICE_INFO` to confirm the expected version. There are no update-data,
-acknowledgement, retry, or status frame types.
+not FlexBMS UART frames. On return, the Gateway waits for heartbeat. There are
+no update-data, acknowledgement, retry, or status frame types in UART v1.
 
 ## Test vectors
 

@@ -1,0 +1,341 @@
+#include "flexbms/FirmwareUpdate.h"
+
+#include "flexbms/WifiManager.h"
+
+#include "esp_ota_ops.h"
+#include "driver/uart.h"
+#include "esp_partition.h"
+#include "esp_timer.h"
+
+#include <algorithm>
+#include <array>
+#include <cstring>
+
+namespace FlexBms::FirmwareUpdate
+{
+    namespace
+    {
+        constexpr uart_port_t kUart = UART_NUM_1;
+        constexpr int kNormalBaud = 1'000'000;
+        constexpr int kRomBaud = 115200;
+        constexpr uint32_t kStm32FlashAddress = 0x08000000UL;
+        constexpr uint16_t kStm32BootloaderId = 0x00D2U;
+        constexpr uint32_t kStm32MaxBytes = 512U * 1024U;
+        constexpr int kShortTimeoutMs = 500;
+        constexpr int kEraseTimeoutMs = 20'000;
+        constexpr uint8_t kAck = 0x79U;
+        constexpr uint8_t kNack = 0x1FU;
+
+        Status status{};
+        uint32_t expectedCrc = 0U;
+        uint32_t runningCrc = 0xFFFFFFFFU;
+        esp_ota_handle_t otaHandle = 0U;
+        const esp_partition_t *stagedPartition = nullptr;
+        bool uploadOpen = false;
+        bool uartOwned = false;
+        bool resetFramedUart = false;
+        bool stm32HandoffSent = false;
+        bool stm32RomStarted = false;
+        bool statusChanged = false;
+        int64_t restartAtUs = 0;
+        char version[48]{};
+        char detail[96]{};
+
+        uint32_t crc32Update(uint32_t crc, const uint8_t *data, size_t length)
+        {
+            for (size_t index = 0U; index < length; ++index)
+            {
+                crc ^= data[index];
+                for (uint8_t bit = 0U; bit < 8U; ++bit)
+                {
+                    crc = (crc >> 1U) ^ ((crc & 1U) != 0U ? 0xEDB88320U : 0U);
+                }
+            }
+            return crc;
+        }
+
+        void setStatus(Phase phase, const char *message)
+        {
+            status.phase = phase;
+            std::strncpy(detail, message, sizeof(detail) - 1U);
+            detail[sizeof(detail) - 1U] = '\0';
+            status.detail = detail;
+            statusChanged = true;
+        }
+
+        void configureNormalUart()
+        {
+            uart_config_t config{};
+            config.baud_rate = kNormalBaud;
+            config.data_bits = UART_DATA_8_BITS;
+            config.parity = UART_PARITY_DISABLE;
+            config.stop_bits = UART_STOP_BITS_1;
+            config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+            config.source_clk = UART_SCLK_DEFAULT;
+            (void)uart_param_config(kUart, &config);
+            (void)uart_flush_input(kUart);
+        }
+
+        void fail(const char *message)
+        {
+            if (otaHandle != 0U)
+            {
+                (void)esp_ota_abort(otaHandle);
+                otaHandle = 0U;
+            }
+            uploadOpen = false;
+            stm32RomStarted = false;
+            stm32HandoffSent = false;
+            if (uartOwned)
+            {
+                configureNormalUart();
+                uartOwned = false;
+                resetFramedUart = true;
+            }
+            setStatus(Phase::Failed, message);
+        }
+
+        bool writeBytes(const uint8_t *data, size_t length)
+        {
+            return uart_write_bytes(kUart, data, length) == static_cast<int>(length) &&
+                   uart_wait_tx_done(kUart, pdMS_TO_TICKS(kShortTimeoutMs)) == ESP_OK;
+        }
+
+        bool readByte(uint8_t &value, int timeoutMs)
+        {
+            return uart_read_bytes(kUart, &value, 1U, pdMS_TO_TICKS(timeoutMs)) == 1;
+        }
+
+        bool expectAck(int timeoutMs = kShortTimeoutMs)
+        {
+            uint8_t response = 0U;
+            return readByte(response, timeoutMs) && response == kAck;
+        }
+
+        bool command(uint8_t commandByte, int timeoutMs = kShortTimeoutMs)
+        {
+            const uint8_t bytes[] = {commandByte, static_cast<uint8_t>(commandByte ^ 0xFFU)};
+            return writeBytes(bytes, sizeof(bytes)) && expectAck(timeoutMs);
+        }
+
+        bool address(uint32_t value)
+        {
+            std::array<uint8_t, 5U> bytes = {
+                static_cast<uint8_t>(value >> 24U), static_cast<uint8_t>(value >> 16U),
+                static_cast<uint8_t>(value >> 8U), static_cast<uint8_t>(value), 0U};
+            bytes[4] = static_cast<uint8_t>(bytes[0] ^ bytes[1] ^ bytes[2] ^ bytes[3]);
+            return writeBytes(bytes.data(), bytes.size()) && expectAck();
+        }
+
+        bool getBootloaderId()
+        {
+            if (!command(0x02U)) return false;
+            uint8_t length = 0U;
+            if (!readByte(length, kShortTimeoutMs) || length != 1U) return false;
+            uint8_t high = 0U;
+            uint8_t low = 0U;
+            return readByte(high, kShortTimeoutMs) && readByte(low, kShortTimeoutMs) && expectAck() &&
+                   static_cast<uint16_t>((static_cast<uint16_t>(high) << 8U) | low) == kStm32BootloaderId;
+        }
+
+        bool eraseStm32()
+        {
+            if (!command(0x44U)) return false;
+            const uint8_t globalErase[] = {0xFFU, 0xFFU, 0x00U};
+            return writeBytes(globalErase, sizeof(globalErase)) && expectAck(kEraseTimeoutMs);
+        }
+
+        bool writeStm32Block(uint32_t addressValue, const uint8_t *data, size_t length)
+        {
+            if (length == 0U || length > 256U || !command(0x31U) || !address(addressValue)) return false;
+            std::array<uint8_t, 258U> packet{};
+            packet[0] = static_cast<uint8_t>(length - 1U);
+            uint8_t checksum = packet[0];
+            for (size_t index = 0U; index < length; ++index)
+            {
+                packet[index + 1U] = data[index];
+                checksum ^= data[index];
+            }
+            packet[length + 1U] = checksum;
+            return writeBytes(packet.data(), length + 2U) && expectAck();
+        }
+
+        bool readStm32Block(uint32_t addressValue, uint8_t *data, size_t length)
+        {
+            if (length == 0U || length > 256U || !command(0x11U) || !address(addressValue)) return false;
+            const uint8_t count[] = {static_cast<uint8_t>(length - 1U), static_cast<uint8_t>((length - 1U) ^ 0xFFU)};
+            return writeBytes(count, sizeof(count)) && expectAck() &&
+                   uart_read_bytes(kUart, data, length, pdMS_TO_TICKS(kShortTimeoutMs)) == static_cast<int>(length);
+        }
+
+        bool goStm32()
+        {
+            return command(0x21U) && address(kStm32FlashAddress);
+        }
+
+        bool transferStm32()
+        {
+            uart_config_t config{};
+            config.baud_rate = kRomBaud;
+            config.data_bits = UART_DATA_8_BITS;
+            config.parity = UART_PARITY_EVEN;
+            config.stop_bits = UART_STOP_BITS_1;
+            config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+            config.source_clk = UART_SCLK_DEFAULT;
+            if (uart_param_config(kUart, &config) != ESP_OK) return false;
+            (void)uart_flush_input(kUart);
+            const uint8_t sync = 0x7FU;
+            if (!writeBytes(&sync, 1U) || !expectAck() || !getBootloaderId() || !eraseStm32()) return false;
+
+            std::array<uint8_t, 256U> block{};
+            uint32_t offset = 0U;
+            const uint32_t paddedBytes = (status.bytesExpected + 7U) & ~7U;
+            while (offset < paddedBytes)
+            {
+                const size_t count = std::min<size_t>(block.size(), paddedBytes - offset);
+                std::fill(block.begin(), block.begin() + count, 0xFFU);
+                const size_t sourceCount = std::min<size_t>(count, status.bytesExpected - std::min<uint32_t>(offset, status.bytesExpected));
+                if (sourceCount != 0U && esp_partition_read(stagedPartition, offset, block.data(), sourceCount) != ESP_OK) return false;
+                if (!writeStm32Block(kStm32FlashAddress + offset, block.data(), count)) return false;
+                offset += static_cast<uint32_t>(count);
+            }
+
+            uint32_t readbackCrc = 0xFFFFFFFFU;
+            offset = 0U;
+            while (offset < status.bytesExpected)
+            {
+                const size_t count = std::min<size_t>(block.size(), status.bytesExpected - offset);
+                if (!readStm32Block(kStm32FlashAddress + offset, block.data(), count)) return false;
+                readbackCrc = crc32Update(readbackCrc, block.data(), count);
+                offset += static_cast<uint32_t>(count);
+            }
+            return (readbackCrc ^ 0xFFFFFFFFU) == expectedCrc && goStm32();
+        }
+
+        bool sendBootloaderRequest()
+        {
+            std::array<uint8_t, UartV1::kMaxFrameBytes> bytes{};
+            UartV1::Frame frame{.type = UartV1::MessageType::ServiceRequest, .sequence = 0xFEU, .length = 13U};
+            frame.payload[0] = 0x07U;
+            // Version is informational only for this personal update path.
+            frame.payload[1] = 0U; frame.payload[2] = 0U; frame.payload[3] = 0U; frame.payload[4] = 0U;
+            for (uint8_t index = 0U; index < 4U; ++index)
+            {
+                frame.payload[5U + index] = static_cast<uint8_t>(status.bytesExpected >> (index * 8U));
+                frame.payload[9U + index] = static_cast<uint8_t>(expectedCrc >> (index * 8U));
+            }
+            const size_t length = UartV1::encode(frame, bytes.data(), bytes.size());
+            return length != 0U && uart_write_bytes(kUart, bytes.data(), length) == static_cast<int>(length);
+        }
+    }
+
+    bool isAvailable() { return Wifi::allowsBmsServices() && !Wifi::isAccessPointActive() && !uploadOpen && status.phase != Phase::Installing; }
+    const Status &getStatus() { return status; }
+    bool consumeStatusChanged() { const bool changed = statusChanged; statusChanged = false; return changed; }
+    bool ownsUart() { return uartOwned; }
+    bool consumeFramedUartReset() { const bool value = resetFramedUart; resetFramedUart = false; return value; }
+
+    bool beginUpload(Target target, const char *requestedVersion, uint32_t bytes, uint32_t crc32)
+    {
+        if (!isAvailable() || requestedVersion == nullptr || bytes == 0U || (target == Target::Stm32 && bytes > kStm32MaxBytes)) return false;
+        std::strncpy(version, requestedVersion, sizeof(version) - 1U);
+        version[sizeof(version) - 1U] = '\0';
+        status = {.phase = Phase::Uploading, .target = target, .bytesReceived = 0U, .bytesExpected = bytes, .version = version, .detail = detail};
+        expectedCrc = crc32;
+        runningCrc = 0xFFFFFFFFU;
+        uploadOpen = true;
+        setStatus(Phase::Uploading, "Uploading image");
+        if (target == Target::Gateway)
+        {
+            const esp_partition_t *partition = esp_ota_get_next_update_partition(nullptr);
+            if (partition == nullptr || bytes > partition->size || esp_ota_begin(partition, bytes, &otaHandle) != ESP_OK) { fail("Gateway OTA start failed"); return false; }
+        }
+        else
+        {
+            stagedPartition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, static_cast<esp_partition_subtype_t>(0x40U), "bms_update");
+            if (stagedPartition == nullptr || bytes > stagedPartition->size || esp_partition_erase_range(stagedPartition, 0U, stagedPartition->size) != ESP_OK)
+            { fail("STM32 staging unavailable"); return false; }
+        }
+        return true;
+    }
+
+    bool writeUpload(const uint8_t *data, size_t bytes)
+    {
+        if (!uploadOpen || data == nullptr || bytes == 0U || bytes > status.bytesExpected - status.bytesReceived) return false;
+        const esp_err_t result = status.target == Target::Gateway ? esp_ota_write(otaHandle, data, bytes) : esp_partition_write(stagedPartition, status.bytesReceived, data, bytes);
+        if (result != ESP_OK) { fail("Image write failed"); return false; }
+        runningCrc = crc32Update(runningCrc, data, bytes);
+        status.bytesReceived += static_cast<uint32_t>(bytes);
+        return true;
+    }
+
+    bool finishUpload()
+    {
+        if (!uploadOpen || status.bytesReceived != status.bytesExpected || (runningCrc ^ 0xFFFFFFFFU) != expectedCrc) { fail("Image CRC or length mismatch"); return false; }
+        uploadOpen = false;
+        if (status.target == Target::Gateway)
+        {
+            const esp_partition_t *partition = esp_ota_get_next_update_partition(nullptr);
+            if (otaHandle == 0U || esp_ota_end(otaHandle) != ESP_OK || esp_ota_set_boot_partition(partition) != ESP_OK) { otaHandle = 0U; fail("Gateway OTA validation failed"); return false; }
+            otaHandle = 0U;
+            setStatus(Phase::Installing, "Gateway reboot pending");
+            restartAtUs = esp_timer_get_time() + 1'000'000;
+        }
+        else
+        {
+            setStatus(Phase::Installing, "Waiting for STM32 safe-off handoff");
+        }
+        return true;
+    }
+
+    void abortUpload(const char *message) { fail(message); }
+
+    void onFrame(const UartV1::Frame &frame)
+    {
+        if (status.target != Target::Stm32 || status.phase != Phase::Installing) return;
+        if (frame.type == UartV1::MessageType::ServiceResponse && frame.sequence == 0xFEU && frame.length >= 2U && frame.payload[0] == 0x07U)
+        {
+            if (frame.payload[1] != 0U) { fail("STM32 denied update handoff"); return; }
+            uartOwned = true;
+            stm32RomStarted = true;
+            setStatus(Phase::Installing, "Programming STM32");
+        }
+        else if (stm32RomStarted && frame.type == UartV1::MessageType::Heartbeat)
+        {
+            uartOwned = false;
+            stm32RomStarted = false;
+            setStatus(Phase::Complete, "STM32 update complete");
+        }
+    }
+
+    void poll()
+    {
+        if (status.target == Target::Gateway && status.phase == Phase::Installing && restartAtUs != 0 && esp_timer_get_time() >= restartAtUs)
+        {
+            esp_restart();
+        }
+        if (status.target != Target::Stm32 || status.phase != Phase::Installing) return;
+        if (!stm32HandoffSent)
+        {
+            stm32HandoffSent = true;
+            if (!sendBootloaderRequest()) fail("STM32 handoff send failed");
+            return;
+        }
+        if (stm32RomStarted)
+        {
+            stm32RomStarted = false;
+            if (!transferStm32()) { fail("STM32 ROM transfer failed"); return; }
+            configureNormalUart();
+            resetFramedUart = true;
+            // The next valid application heartbeat completes the update.
+            stm32RomStarted = true;
+            uartOwned = false;
+            setStatus(Phase::Installing, "Waiting for STM32 heartbeat");
+        }
+    }
+
+    void markGatewayBootHealthy()
+    {
+        (void)esp_ota_mark_app_valid_cancel_rollback();
+    }
+}

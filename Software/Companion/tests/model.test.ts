@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { currentA, isFresh, ntcCelsius, socPercent, valueOrStale } from '../src/shared/model.ts'
+import { bmsStatusSummary, currentA, icCelsius, isFresh, ntcCelsius, socPercent, valueOrStale } from '../src/shared/model.ts'
 import { reconnectDelayMs } from '../src/shared/reconnect.ts'
 import { serviceResultLabel } from '../src/shared/service.ts'
+import { advancingUnixTime, browserUnixTime } from '../src/shared/time.ts'
 import { unavailableCapabilities } from '../src/transports/Transport.ts'
 
 test('raw UART v1 units convert in the presentation layer', () => {
   assert.equal(currentA(-64), -1)
   assert.equal(socPercent(65535), 200)
   assert.equal(ntcCelsius(0), -20)
+  assert.equal(icCelsius(29430).toFixed(2), '21.15')
 })
 test('stale snapshots never render measurements as live zeroes', () => {
   assert.equal(isFresh(null), false)
@@ -26,4 +28,11 @@ test('all named service results have UI labels', () => {
 })
 test('gateway reconnect is bounded exponential backoff', () => {
   assert.deepEqual([0, 1, 2, 3, 4, 5].map(reconnectDelayMs), [1000, 2000, 4000, 8000, 10000, 10000])
+})
+test('browser RTC time is sampled when the action runs', () => {
+  assert.equal(browserUnixTime(1_786_655_390_999), 1_786_655_390)
+  assert.equal(advancingUnixTime(1_786_655_390, 1_000, 4_999), 1_786_655_393)
+})
+test('stale BMS status identifies the state and active fault', () => {
+  assert.equal(bmsStatusSummary({ bms_state: 4, hv_state: 0, flags: 0x10, slave_count: 1, bms_active_faults: 0x0004, bms_latched_faults: 0, hv_active_faults: 0, hv_latched_faults: 0, uptime_ms: 0, measurements_fresh: false, run_request: false }), 'Panic: measurements are not fresh (CID_INITIALIZATION_FAULT).')
 })

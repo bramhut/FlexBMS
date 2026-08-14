@@ -6,7 +6,7 @@
 
 namespace FlexBms::GatewayApi
 {
-    enum class Service : uint8_t { SetRunRequest = 0x02U, ClearFaults = 0x03U, ReadRegister = 0x04U, SetRtc = 0x05U };
+    enum class Service : uint8_t { SetRunRequest = 0x02U, ClearFaults = 0x03U, ReadRegister = 0x04U, SetRtc = 0x05U, GetRtc = 0x08U };
     enum class ServiceResult : uint8_t { Ok = 0U, Denied = 1U, Invalid = 2U, TransportError = 3U, Busy = 4U };
 
     // The callback only serialises a validated request to UART. The API owns no
@@ -19,5 +19,6 @@ namespace FlexBms::GatewayApi
     void publishFrame(const UartV1::Frame &frame, uint32_t gatewayUptimeMs);
     void publishGatewayStatus();
     void completeService(uint8_t sequence, ServiceResult result, const uint8_t *data, uint8_t dataLength);
+    bool serviceBusy();
     bool verifyBrowserApi();
 }

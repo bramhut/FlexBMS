@@ -1,11 +1,12 @@
 # FlexBMS Gateway
 
-ESP32-C3-WROOM-02U-N4 Gateway firmware. It implements the STM32 UART v1
+ESP32-C3-WROOM-02U-N4 Gateway firmware. It implements the STM32 framed BMS v1
 transport/telemetry decoder, serves the BMS Companion on the local network,
 and provides local Wi-Fi configuration/recovery. MQTT, Home Assistant, and OTA
 remain out of scope.
 
-The canonical STM32--ESP32 framing and payload contract is
+The canonical framed-BMS payload contract, shared by Gateway UART and direct
+STM32 USB Companion, is
 [`Documentation/protocol/uart-v1.md`](../../Documentation/protocol/uart-v1.md).
 Use that document for codec changes and protocol tests.
 
@@ -40,7 +41,12 @@ remains independent and provides the development console and native JTAG.
 Install the PlatformIO IDE extension, open this `Software/Gateway` folder, and
 select **PlatformIO: Build**. The project pins `espressif32@6.12.0`, which
 supplies ESP-IDF 5.5.0. The first build downloads the required toolchain and
-framework automatically.
+framework automatically. Before compiling ESP32 firmware, PlatformIO runs the
+in-tree Companion's `npm run build:gateway` command. It regenerates the hashed
+web assets, manifest, and compiled `GatewayAssets.cpp`, so the served UI is
+always part of the same firmware image. Run `npm ci` once in
+`Software/Companion` after a fresh clone; a Gateway build fails rather than
+embedding stale UI assets if npm or its dependencies are unavailable.
 
 From a terminal with PlatformIO installed:
 
@@ -58,23 +64,29 @@ after malformed input or a bad CRC.
 ## Flash layout
 
 The fitted ESP32-C3-WROOM-02U-N4 has 4 MiB flash. `partitions.csv` reserves
-two 1.25 MiB application slots for ESP32 OTA, a 512 KiB raw `bms_update`
-partition for a complete STM32 image, and 896 KiB LittleFS for the Companion
-bundle, diagnostics, and small metadata. The STM32 image must be complete and
-CRC-verified in `bms_update` before a future UART update begins.
+two 1.5 MiB application slots for ESP32 OTA, a 512 KiB raw `bms_update`
+partition for a complete STM32 image, and 384 KiB LittleFS for future
+diagnostics and metadata. The Companion bundle is currently compiled into the
+application image, so it is versioned atomically with Gateway firmware. The
+STM32 image must be complete and CRC-verified in `bms_update` before a future
+UART update begins.
 
 | Partition | Offset | Size |
 |---|---:|---:|
 | `nvs` | `0x9000` | 24 KiB |
 | `otadata` | `0xF000` | 8 KiB |
 | `phy_init` | `0x11000` | 4 KiB |
-| `ota_0` | `0x20000` | 1.25 MiB |
-| `ota_1` | `0x160000` | 1.25 MiB |
-| `bms_update` | `0x2A0000` | 512 KiB |
-| `littlefs` | `0x320000` | 896 KiB |
+| `ota_0` | `0x20000` | 1.5 MiB |
+| `ota_1` | `0x1A0000` | 1.5 MiB |
+| `bms_update` | `0x320000` | 512 KiB |
+| `littlefs` | `0x3A0000` | 384 KiB |
 
-This change reserves the space only. ESP32 OTA, LittleFS asset serving, and
-STM32 update transfer remain separate implementation increments.
+ESP32 OTA, LittleFS asset serving, and STM32 update transfer remain separate
+implementation increments.
+
+The application image belongs at the `ota_0` offset from `partitions.csv`,
+currently `0x20000`. The Gateway build derives its upload offset from that CSV;
+do not use the ESP-IDF default `0x10000` offset with this partition layout.
 
 ## Wi-Fi setup and recovery
 
@@ -105,3 +117,33 @@ present. It is also an open recovery AP: nearby users can view monitoring and
 change Wi-Fi settings while it is active. Gateway-to-STM32 service controls
 are disabled in this state. Credentials are never written to the log. Wi-Fi
 failure or loss does not affect the STM32 UART link or safety decisions.
+## Release build
+
+`../../scripts/build-release.ps1` runs the Companion checks, produces the
+portable direct-USB Companion executable, and builds this Gateway firmware.
+The resulting `FlexBMS-Companion.exe`, `FlexBMS-Gateway.bin`,
+`FlexBMS-Gateway.manifest.json`, `FlexBMS-Gateway-factory.bin`,
+`FlexBMS-STM32.bin`, `FlexBMS-STM32.manifest.json`, `flash-release.ps1`, and
+`SHA256SUMS.txt` are placed in `release/FlexBMS-<version>/`. The interactive
+script prompts for the release version and synchronizes a newly entered version
+to the Companion package files; `-Version 0.1.1` is available for unattended
+use. Repeating an existing version requires an explicit timestamped-repeat
+choice. The normal PlatformIO Gateway build continues to regenerate the
+compiled Gateway web bundle before compiling firmware.
+
+From a release directory, `flash-release.ps1 -Target Gateway -GatewayPort COM6`
+verifies checksums and writes the complete 4 MiB Gateway factory image through
+the ESP32-C3 USB serial bootloader. Close any serial monitor and manually enter
+the bootloader if the board does not reset into it automatically. Factory-image
+creation reads the `ota_0` application offset from `partitions.csv` and checks
+the merged image at that location before it is released.
+
+## Station-LAN OTA
+
+The local Companion page exposes Gateway and STM32 update controls only while
+the Gateway is connected to its station network. Select the matching release
+manifest and raw `.bin`; the Gateway streams the image, validates its declared
+length and CRC-32, and installs it. `FlexBMS-Gateway.bin` is the OTA image;
+`FlexBMS-Gateway-factory.bin` is only for the wired recovery script. Setup and
+recovery APs do not expose update controls. No account, signature, cloud, or
+automatic retry path is used; retain `flash-release.ps1` for recovery.

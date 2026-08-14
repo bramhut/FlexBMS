@@ -1,11 +1,15 @@
 #include "flexbms/GatewayApi.h"
 #include "flexbms/GatewayAssets.h"
+#include "flexbms/FirmwareUpdate.h"
 #include "flexbms/WifiManager.h"
 
 #include "cJSON.h"
 #include "esp_http_server.h"
+#include "esp_timer.h"
 
 #include <array>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <memory>
@@ -25,6 +29,8 @@ namespace FlexBms::GatewayApi
         bool serviceCapabilityKnown = false;
         bool serviceCapability = false;
         uint8_t pendingSequence = 0U;
+        int pendingServiceSocket = -1;
+        int64_t pendingServiceStartedUs = 0;
         char pendingRequestId[kMaxRequestIdBytes + 1U] = {};
         Service pendingService = Service::SetRunRequest;
         int pendingScanSocket = -1;
@@ -57,6 +63,7 @@ namespace FlexBms::GatewayApi
             case Service::SetRunRequest: return "set_run_request";
             case Service::ClearFaults: return "clear_faults";
             case Service::SetRtc: return "set_rtc";
+            case Service::GetRtc: return "get_rtc";
             case Service::ReadRegister: return "read_register";
             }
             return "";
@@ -72,6 +79,23 @@ namespace FlexBms::GatewayApi
             case ServiceResult::Busy: return "busy";
             default: return "transport_error";
             }
+        }
+
+        const char *updatePhaseName(FirmwareUpdate::Phase phase)
+        {
+            switch (phase)
+            {
+            case FirmwareUpdate::Phase::Uploading: return "uploading";
+            case FirmwareUpdate::Phase::Installing: return "installing";
+            case FirmwareUpdate::Phase::Complete: return "complete";
+            case FirmwareUpdate::Phase::Failed: return "failed";
+            default: return "idle";
+            }
+        }
+
+        const char *updateTargetName(FirmwareUpdate::Target target)
+        {
+            return target == FirmwareUpdate::Target::Gateway ? "gateway" : "stm32";
         }
 
         bool sendJsonTo(int socket, cJSON *root)
@@ -136,6 +160,14 @@ namespace FlexBms::GatewayApi
             cJSON *log = cJSON_AddObjectToObject(root, "diagnostic_log");
             cJSON_AddBoolToObject(log, "available", false);
             cJSON_AddNumberToObject(log, "bytes", 0);
+            const FirmwareUpdate::Status &update = FirmwareUpdate::getStatus();
+            cJSON *updateJson = cJSON_AddObjectToObject(root, "firmware_update");
+            cJSON_AddStringToObject(updateJson, "phase", updatePhaseName(update.phase));
+            cJSON_AddStringToObject(updateJson, "target", updateTargetName(update.target));
+            cJSON_AddNumberToObject(updateJson, "received_bytes", update.bytesReceived);
+            cJSON_AddNumberToObject(updateJson, "expected_bytes", update.bytesExpected);
+            cJSON_AddStringToObject(updateJson, "version", update.version);
+            cJSON_AddStringToObject(updateJson, "detail", update.detail);
         }
 
         cJSON *hello()
@@ -149,11 +181,12 @@ namespace FlexBms::GatewayApi
             cJSON_AddBoolToObject(caps, "set_run_request", bmsServices);
             cJSON_AddBoolToObject(caps, "clear_faults", bmsServices);
             cJSON_AddBoolToObject(caps, "set_rtc", bmsServices);
+            cJSON_AddBoolToObject(caps, "get_rtc", bmsServices);
             cJSON_AddBoolToObject(caps, "read_register", bmsServices);
             cJSON_AddBoolToObject(caps, "wifi_configuration", Wifi::getState() != Wifi::State::Unavailable);
             cJSON_AddBoolToObject(caps, "diagnostic_log_download", false);
             cJSON_AddBoolToObject(caps, "raw_terminal", false);
-            cJSON_AddBoolToObject(caps, "firmware_update", false);
+            cJSON_AddBoolToObject(caps, "firmware_update", FirmwareUpdate::isAvailable());
             cJSON *gateway = cJSON_AddObjectToObject(root, "gateway_status");
             addGatewayStatus(gateway);
             return root;
@@ -169,21 +202,34 @@ namespace FlexBms::GatewayApi
             return true;
         }
 
+        void addBmsStatus(cJSON *root)
+        {
+            cJSON_AddNumberToObject(root, "bms_state", status.bmsState);
+            cJSON_AddNumberToObject(root, "hv_state", status.hvState);
+            cJSON_AddNumberToObject(root, "flags", status.flags);
+            cJSON_AddNumberToObject(root, "slave_count", status.slaveCount);
+            cJSON_AddNumberToObject(root, "bms_active_faults", status.bmsActiveFaults);
+            cJSON_AddNumberToObject(root, "bms_latched_faults", status.bmsLatchedFaults);
+            cJSON_AddNumberToObject(root, "hv_active_faults", status.hvActiveFaults);
+            cJSON_AddNumberToObject(root, "hv_latched_faults", status.hvLatchedFaults);
+            cJSON_AddNumberToObject(root, "uptime_ms", status.uptimeMs);
+            cJSON_AddBoolToObject(root, "measurements_fresh", (status.flags & (1U << 3U)) != 0U);
+            cJSON_AddBoolToObject(root, "run_request", (status.flags & (1U << 2U)) != 0U);
+        }
+
+        cJSON *bmsStatusJson()
+        {
+            cJSON *root = base("bms_status");
+            cJSON *stateJson = cJSON_AddObjectToObject(root, "status");
+            addBmsStatus(stateJson);
+            return root;
+        }
+
         cJSON *snapshotJson()
         {
             cJSON *root = base("snapshot");
             cJSON *stateJson = cJSON_AddObjectToObject(root, "status");
-            cJSON_AddNumberToObject(stateJson, "bms_state", status.bmsState);
-            cJSON_AddNumberToObject(stateJson, "hv_state", status.hvState);
-            cJSON_AddNumberToObject(stateJson, "flags", status.flags);
-            cJSON_AddNumberToObject(stateJson, "slave_count", status.slaveCount);
-            cJSON_AddNumberToObject(stateJson, "bms_active_faults", status.bmsActiveFaults);
-            cJSON_AddNumberToObject(stateJson, "bms_latched_faults", status.bmsLatchedFaults);
-            cJSON_AddNumberToObject(stateJson, "hv_active_faults", status.hvActiveFaults);
-            cJSON_AddNumberToObject(stateJson, "hv_latched_faults", status.hvLatchedFaults);
-            cJSON_AddNumberToObject(stateJson, "uptime_ms", status.uptimeMs);
-            cJSON_AddBoolToObject(stateJson, "measurements_fresh", (status.flags & (1U << 3U)) != 0U);
-            cJSON_AddBoolToObject(stateJson, "run_request", (status.flags & (1U << 2U)) != 0U);
+            addBmsStatus(stateJson);
             cJSON *packJson = cJSON_AddObjectToObject(root, "pack");
             cJSON_AddNumberToObject(packJson, "pack_voltage_uV", pack.packVoltageUv);
             cJSON_AddNumberToObject(packJson, "pack_current_raw", pack.packCurrentRaw);
@@ -293,6 +339,13 @@ namespace FlexBms::GatewayApi
                 argumentLength = 4U;
                 return true;
             }
+            if (std::strcmp(name->valuestring, "get_rtc") == 0)
+            {
+                if (!objectHasExactly(args, {})) return false;
+                service = Service::GetRtc;
+                argumentLength = 0U;
+                return true;
+            }
             if (std::strcmp(name->valuestring, "read_register") == 0)
             {
                 uint32_t slave = 0U;
@@ -393,12 +446,93 @@ namespace FlexBms::GatewayApi
             return httpd_resp_send_err(request, HTTPD_404_NOT_FOUND, "Diagnostic log unavailable");
         }
 
+        bool validVersion(const char *value)
+        {
+            if (value == nullptr || value[0] == '\0' || std::strlen(value) >= 48U) return false;
+            for (const char *cursor = value; *cursor != '\0'; ++cursor)
+            {
+                if (!(std::isdigit(static_cast<unsigned char>(*cursor)) || *cursor == '.' || *cursor == '-' || *cursor == '+')) return false;
+            }
+            return true;
+        }
+
+        bool readHeader(httpd_req_t *request, const char *name, char *value, size_t capacity)
+        {
+            const size_t length = httpd_req_get_hdr_value_len(request, name);
+            return length != 0U && length < capacity && httpd_req_get_hdr_value_str(request, name, value, capacity) == ESP_OK;
+        }
+
+        bool parseUint32(const char *text, uint32_t &value, int base)
+        {
+            if (text == nullptr || text[0] == '\0') return false;
+            char *end = nullptr;
+            const unsigned long parsed = std::strtoul(text, &end, base);
+            if (end == nullptr || *end != '\0' || parsed > 0xFFFFFFFFUL) return false;
+            value = static_cast<uint32_t>(parsed);
+            return true;
+        }
+
+        bool validCrc32(const char *text)
+        {
+            if (text == nullptr || std::strlen(text) != 8U) return false;
+            for (const char *cursor = text; *cursor != '\0'; ++cursor)
+            {
+                if (!std::isxdigit(static_cast<unsigned char>(*cursor))) return false;
+            }
+            return true;
+        }
+
+        esp_err_t firmwareHandler(httpd_req_t *request)
+        {
+            const FirmwareUpdate::Target target = std::strcmp(request->uri, "/api/firmware/gateway") == 0 ? FirmwareUpdate::Target::Gateway : FirmwareUpdate::Target::Stm32;
+            if (!Wifi::allowsBmsServices() || Wifi::isAccessPointActive() || !FirmwareUpdate::isAvailable() || serviceInFlight)
+            {
+                return httpd_resp_send_err(request, HTTPD_403_FORBIDDEN, "Firmware update is available only on the station LAN");
+            }
+            char manifestTarget[16]{};
+            char version[48]{};
+            char lengthText[16]{};
+            char crcText[16]{};
+            if (!readHeader(request, "X-FlexBMS-Target", manifestTarget, sizeof(manifestTarget)) ||
+                !readHeader(request, "X-FlexBMS-Version", version, sizeof(version)) ||
+                !readHeader(request, "X-FlexBMS-Length", lengthText, sizeof(lengthText)) ||
+                !readHeader(request, "X-FlexBMS-CRC32", crcText, sizeof(crcText)))
+            {
+                return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Missing firmware manifest headers");
+            }
+            const char *expectedTarget = updateTargetName(target);
+            uint32_t imageBytes = 0U;
+            uint32_t imageCrc = 0U;
+            if (std::strcmp(manifestTarget, expectedTarget) != 0 || !validVersion(version) || !parseUint32(lengthText, imageBytes, 10) ||
+                !validCrc32(crcText) || !parseUint32(crcText, imageCrc, 16) || request->content_len <= 0 || static_cast<uint32_t>(request->content_len) != imageBytes ||
+                !FirmwareUpdate::beginUpload(target, version, imageBytes, imageCrc))
+            {
+                return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid firmware manifest or image size");
+            }
+            std::array<uint8_t, 1024U> chunk{};
+            int remaining = request->content_len;
+            while (remaining > 0)
+            {
+                const int received = httpd_req_recv(request, reinterpret_cast<char *>(chunk.data()), std::min<int>(remaining, static_cast<int>(chunk.size())));
+                if (received <= 0 || !FirmwareUpdate::writeUpload(chunk.data(), static_cast<size_t>(received)))
+                {
+                    FirmwareUpdate::abortUpload("Browser upload failed");
+                    return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Firmware upload failed");
+                }
+                remaining -= received;
+            }
+            if (!FirmwareUpdate::finishUpload()) return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Firmware image validation failed");
+            httpd_resp_set_type(request, "application/json");
+            return httpd_resp_sendstr(request, "{\"result\":\"accepted\"}");
+        }
+
         esp_err_t wsHandler(httpd_req_t *request)
         {
             const int socket = httpd_req_to_sockfd(request);
             if (request->method == HTTP_GET)
             {
                 (void)sendJsonTo(socket, hello());
+                if (hasStatus) (void)sendJsonTo(socket, bmsStatusJson());
                 if (completeSnapshot()) (void)sendJsonTo(socket, snapshotJson());
                 return ESP_OK;
             }
@@ -425,7 +559,7 @@ namespace FlexBms::GatewayApi
                 if (parseService(root, requestedService, arguments, argumentLength))
                 {
                     const char *requestId = cJSON_GetObjectItemCaseSensitive(root, "request_id")->valuestring;
-                    if (!Wifi::allowsBmsServices()) sendServiceResult(socket, requestId, requestedService, ServiceResult::Denied);
+                    if (!Wifi::allowsBmsServices() || FirmwareUpdate::getStatus().phase == FirmwareUpdate::Phase::Uploading || FirmwareUpdate::getStatus().phase == FirmwareUpdate::Phase::Installing) sendServiceResult(socket, requestId, requestedService, ServiceResult::Denied);
                     else if (serviceInFlight) sendServiceResult(socket, requestId, requestedService, ServiceResult::Busy);
                     else if (!uartHealthy || serviceSender == nullptr) sendServiceResult(socket, requestId, requestedService, ServiceResult::TransportError);
                     else
@@ -438,6 +572,8 @@ namespace FlexBms::GatewayApi
                             pendingRequestId[kMaxRequestIdBytes] = '\0';
                             pendingService = requestedService;
                             pendingSequence = sequence;
+                            pendingServiceSocket = socket;
+                            pendingServiceStartedUs = esp_timer_get_time();
                             serviceInFlight = true;
                         }
                     }
@@ -479,16 +615,21 @@ namespace FlexBms::GatewayApi
         serviceSender = sender;
         httpd_config_t config = HTTPD_DEFAULT_CONFIG();
         config.lru_purge_enable = true;
-        config.max_uri_handlers = 4;
+        config.max_uri_handlers = 6;
         config.uri_match_fn = httpd_uri_match_wildcard;
         if (httpd_start(&server, &config) != ESP_OK) return false;
         const httpd_uri_t log = {.uri = "/api/diagnostic-log", .method = HTTP_GET, .handler = logHandler, .user_ctx = nullptr,
                                  .is_websocket = false, .handle_ws_control_frames = false, .supported_subprotocol = nullptr};
         const httpd_uri_t ws = {.uri = "/ws", .method = HTTP_GET, .handler = wsHandler, .user_ctx = nullptr,
-                                .is_websocket = true, .handle_ws_control_frames = false, .supported_subprotocol = nullptr};
+                                 .is_websocket = true, .handle_ws_control_frames = false, .supported_subprotocol = nullptr};
+        const httpd_uri_t gatewayFirmware = {.uri = "/api/firmware/gateway", .method = HTTP_POST, .handler = firmwareHandler, .user_ctx = nullptr,
+                                             .is_websocket = false, .handle_ws_control_frames = false, .supported_subprotocol = nullptr};
+        const httpd_uri_t stm32Firmware = {.uri = "/api/firmware/stm32", .method = HTTP_POST, .handler = firmwareHandler, .user_ctx = nullptr,
+                                           .is_websocket = false, .handle_ws_control_frames = false, .supported_subprotocol = nullptr};
         const httpd_uri_t assets = {.uri = "/*", .method = HTTP_GET, .handler = assetHandler, .user_ctx = nullptr,
                                     .is_websocket = false, .handle_ws_control_frames = false, .supported_subprotocol = nullptr};
         return httpd_register_uri_handler(server, &log) == ESP_OK && httpd_register_uri_handler(server, &ws) == ESP_OK &&
+               httpd_register_uri_handler(server, &gatewayFirmware) == ESP_OK && httpd_register_uri_handler(server, &stm32Firmware) == ESP_OK &&
                httpd_register_uri_handler(server, &assets) == ESP_OK;
     }
 
@@ -497,9 +638,15 @@ namespace FlexBms::GatewayApi
         Wifi::ScanResults results{};
         if (Wifi::consumeScanResults(results) && pendingScanSocket >= 0)
         {
-            sendWifiScanResult(pendingScanSocket, pendingScanRequestId, "ok", &results);
+            sendWifiScanResult(pendingScanSocket, pendingScanRequestId, results.successful ? "ok" : "unavailable", results.successful ? &results : nullptr);
             pendingScanSocket = -1;
             pendingScanRequestId[0] = '\0';
+        }
+        if (serviceInFlight && esp_timer_get_time() - pendingServiceStartedUs >= 3000000LL)
+        {
+            sendServiceResult(pendingServiceSocket, pendingRequestId, pendingService, ServiceResult::TransportError);
+            serviceInFlight = false;
+            pendingServiceSocket = -1;
         }
     }
 
@@ -531,6 +678,7 @@ namespace FlexBms::GatewayApi
         if (frame.type == UartV1::MessageType::Status && UartV1::decodeStatus(frame, status))
         {
             hasStatus = true;
+            broadcast(bmsStatusJson());
             if ((status.flags & (1U << 3U)) == 0U)
             {
                 hasPack = false;
@@ -582,9 +730,20 @@ namespace FlexBms::GatewayApi
             cJSON_AddNumberToObject(value, "register", data[1]);
             cJSON_AddNumberToObject(value, "value", static_cast<uint16_t>(data[2]) | (static_cast<uint16_t>(data[3]) << 8U));
         }
-        broadcast(root);
+        else if (result == ServiceResult::Ok && pendingService == Service::GetRtc && dataLength == 4U)
+        {
+            cJSON *value = cJSON_AddObjectToObject(root, "data");
+            cJSON_AddNumberToObject(value, "unix_time_s", static_cast<uint32_t>(data[0]) |
+                                                            (static_cast<uint32_t>(data[1]) << 8U) |
+                                                            (static_cast<uint32_t>(data[2]) << 16U) |
+                                                            (static_cast<uint32_t>(data[3]) << 24U));
+        }
+        (void)sendJsonTo(pendingServiceSocket, root);
         serviceInFlight = false;
+        pendingServiceSocket = -1;
     }
+
+    bool serviceBusy() { return serviceInFlight; }
 
     bool verifyBrowserApi()
     {
@@ -594,6 +753,9 @@ namespace FlexBms::GatewayApi
         uint8_t length = 0U;
         const bool serviceRejected = !parseService(bad, service, arguments, length);
         cJSON_Delete(bad);
+        cJSON *getRtc = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"get_rtc\",\"arguments\":{}}");
+        const bool getRtcAccepted = parseService(getRtc, service, arguments, length) && service == Service::GetRtc && length == 0U;
+        cJSON_Delete(getRtc);
         cJSON *invalidCredentials = cJSON_Parse("{\"v\":1,\"type\":\"wifi_configure\",\"request_id\":\"x\",\"ssid\":\"\",\"password\":\"x\"}");
         const char *ssid = nullptr;
         const char *password = nullptr;
@@ -602,6 +764,12 @@ namespace FlexBms::GatewayApi
         cJSON *scan = cJSON_Parse("{\"v\":1,\"type\":\"wifi_scan\",\"request_id\":\"x\"}");
         const bool scanAccepted = parseWifiScan(scan);
         cJSON_Delete(scan);
-        return serviceRejected && credentialsRejected && scanAccepted;
+        cJSON *statusMessage = bmsStatusJson();
+        cJSON *messageType = cJSON_GetObjectItemCaseSensitive(statusMessage, "type");
+        cJSON *messageStatus = cJSON_GetObjectItemCaseSensitive(statusMessage, "status");
+        const bool statusMessageValid = cJSON_IsString(messageType) && std::strcmp(messageType->valuestring, "bms_status") == 0 &&
+                                        cJSON_IsObject(messageStatus) && cJSON_HasObjectItem(messageStatus, "measurements_fresh");
+        cJSON_Delete(statusMessage);
+        return serviceRejected && getRtcAccepted && credentialsRejected && scanAccepted && statusMessageValid;
     }
 }

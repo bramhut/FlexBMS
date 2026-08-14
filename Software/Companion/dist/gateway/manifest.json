@@ -3,20 +3,20 @@
   "companion_version": "0.1.0",
   "files": [
     {
-      "path": "assets/index-bsNHk2Ci.css",
-      "bytes": 722,
-      "sha256": "6425004cdfafded52b38788ed0a83cb4b53f569d03baa4635ed223c976eade7f"
+      "path": "assets/index-C8pclAOF.css",
+      "bytes": 6205,
+      "sha256": "e9a22c42b963e9435d4530d924b0e674c3a2e6ebb8386f9fe9c6618ffa40400b"
     },
     {
-      "path": "assets/index-DfCSuabk.js",
-      "bytes": 83408,
-      "sha256": "b9f2f1923704a9782bdd5a99725deb482b6f25f93d2856fd991b9fbb188033ed"
+      "path": "assets/index-DpupuBtJ.js",
+      "bytes": 83229,
+      "sha256": "90ed7859e6bb854d2dd2f61024f2ee53555392f6d84412448b6635bea1e34693"
     },
     {
       "path": "index.html",
       "bytes": 373,
-      "sha256": "5617bea0d9836e30edd148b97eaf375c91598450d17e0db147c6591fe719a8de"
+      "sha256": "e24083771f75a93647a4f13af389266d8de6550c99fefb819b8fba1262510be7"
     }
   ],
-  "total_bytes": 84503
+  "total_bytes": 89807
 }

@@ -39,6 +39,7 @@ namespace FlexBms::Wifi
         constexpr int64_t kRecoveryAccessPointUs = 10LL * 60LL * 1000LL * 1000LL;
         constexpr int64_t kRecoveryStationGapUs = 60LL * 1000LL * 1000LL;
         constexpr int64_t kScanCooldownUs = 10LL * 1000LL * 1000LL;
+        constexpr int64_t kScanCompletionTimeoutUs = 12LL * 1000LL * 1000LL;
         constexpr uint32_t kRestartDelayMs = 1500U;
         constexpr const char *kMdnsHostname = "flexbms";
         constexpr const char *kMdnsInstanceName = "FlexBMS Gateway";
@@ -55,12 +56,13 @@ namespace FlexBms::Wifi
         bool restartScheduled = false;
         bool wifiStarted = false;
         bool mdnsStarted = false;
-        bool scanPending = false;
-        bool scanReady = false;
+        std::atomic<bool> scanPending{false};
+        std::atomic<bool> scanReady{false};
         int64_t stationWindowStartedUs = 0;
         int64_t stationRecoveryDelayUs = kInitialRecoveryDelayUs;
         int64_t accessPointStartedUs = 0;
         int64_t lastScanStartedUs = -kScanCooldownUs;
+        std::atomic<int64_t> scanStartedUs{0};
         Credentials credentials{};
         AccessPoint accessPoint{};
         ScanResults scanResults{};
@@ -321,12 +323,23 @@ namespace FlexBms::Wifi
             return true;
         }
 
+        void finishScan(bool successful)
+        {
+            scanResults.successful = successful;
+            if (!successful) scanResults.count = 0U;
+            scanPending.store(false, std::memory_order_release);
+            scanReady.store(true, std::memory_order_release);
+        }
+
         void storeScanResults()
         {
+            // A delayed SCAN_DONE after a timed-out scan must not satisfy a
+            // later request or leave its browser request unresolved.
+            if (!scanPending.load(std::memory_order_acquire)) return;
             uint16_t available = 0U;
             if (esp_wifi_scan_get_ap_num(&available) != ESP_OK)
             {
-                scanPending = false;
+                finishScan(false);
                 return;
             }
             const uint16_t count = std::min<uint16_t>(available, scanResults.networks.size());
@@ -334,7 +347,7 @@ namespace FlexBms::Wifi
             uint16_t received = count;
             if (received > 0U && esp_wifi_scan_get_ap_records(&received, records.data()) != ESP_OK)
             {
-                scanPending = false;
+                finishScan(false);
                 return;
             }
             scanResults.count = received;
@@ -347,8 +360,7 @@ namespace FlexBms::Wifi
                 target.rssi = records[index].rssi;
                 target.secure = records[index].authmode != WIFI_AUTH_OPEN;
             }
-            scanPending = false;
-            scanReady = true;
+            finishScan(true);
         }
 
         void onWifiEvent(void *, esp_event_base_t eventBase, int32_t eventId, void *eventData)
@@ -475,6 +487,12 @@ namespace FlexBms::Wifi
     void tick()
     {
         const int64_t now = esp_timer_get_time();
+        if (scanPending.load(std::memory_order_acquire) && now - scanStartedUs.load(std::memory_order_acquire) >= kScanCompletionTimeoutUs)
+        {
+            ESP_LOGW(kLogTag, "Wi-Fi scan timed out");
+            (void)esp_wifi_scan_stop();
+            finishScan(false);
+        }
         const State current = state.load();
         if (current == State::Connecting)
         {
@@ -515,7 +533,7 @@ namespace FlexBms::Wifi
     ScanRequestResult requestScan()
     {
         if (state.load() == State::Unavailable) return ScanRequestResult::Unavailable;
-        if (scanPending) return ScanRequestResult::Busy;
+        if (scanPending.load(std::memory_order_acquire) || scanReady.load(std::memory_order_acquire)) return ScanRequestResult::Busy;
         const int64_t now = esp_timer_get_time();
         if (now - lastScanStartedUs < kScanCooldownUs) return ScanRequestResult::RateLimited;
         wifi_scan_config_t config{};
@@ -528,16 +546,16 @@ namespace FlexBms::Wifi
             return ScanRequestResult::Unavailable;
         }
         lastScanStartedUs = now;
-        scanPending = true;
-        scanReady = false;
+        scanStartedUs.store(now, std::memory_order_release);
+        scanPending.store(true, std::memory_order_release);
+        scanReady.store(false, std::memory_order_release);
         return ScanRequestResult::Started;
     }
 
     bool consumeScanResults(ScanResults &results)
     {
-        if (!scanReady) return false;
+        if (!scanReady.exchange(false, std::memory_order_acquire)) return false;
         results = scanResults;
-        scanReady = false;
         return true;
     }
 }

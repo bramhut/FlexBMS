@@ -14,6 +14,11 @@ namespace BmsUart
     // HAL callback entry points. They do bounded ISR work only; framing and
     // services run in the BmsUart task.
     void onRxEvent(const uint8_t *data, size_t length);
+
+    // USB CDC shares the framed BMS protocol with the isolated UART. This
+    // entry point is called by the CDC receive callback and forwards ordinary
+    // text bytes to the existing engineering console.
+    void onUsbRxData(const uint8_t *data, size_t length);
     void onTxComplete();
     void onError();
 }

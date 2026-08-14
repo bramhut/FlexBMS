@@ -6,7 +6,6 @@
 #include "USBCOM.h"
 #include "usb_device.h"
 #include "CAN.h"
-#include "BMSCompanion.h"
 #include "BmsUart.h"
 #include "StatusLed.h"
 #include "pcc.h" 
@@ -48,7 +47,6 @@ void mainTask(void *argument)
 	commands->setup();
 	SlaveController::setup(&can);
 	Charger::setup(&can);
-	BMSCompanion::setup();
 	PCC::setup(&can);
 	BmsUart::setup();
 
