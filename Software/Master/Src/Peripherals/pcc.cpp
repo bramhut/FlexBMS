@@ -3,7 +3,6 @@
 #include "BoardIO.h"
 #include "TimeFunctions.h"
 #include "bcc/SlaveController.h"
-#include "bcc/UserSettings.h"
 
 #include <algorithm>
 #include <cmath>
@@ -28,7 +27,6 @@ namespace PCC
         constexpr uint16_t HV_FAULT_MASK =
             static_cast<uint16_t>(1U << SlaveController::HV_SUPERVISOR_FAULT);
 
-        CAN *mCan = nullptr;
         PCC_STATE state = OFF;
         PCC_ERROR error = NO_ERROR;
 
@@ -315,30 +313,10 @@ namespace PCC
             }
         }
 
-        void handleSendingCANMessage()
-        {
-            static uint32_t lastSendTime = 0U;
-            if (mCan == nullptr ||
-                millis() - lastSendTime < DEFAULT_SETTINGS.CAN_PCC_PERIOD)
-            {
-                return;
-            }
-
-            lastSendTime = millis();
-            CAN::Frame frame{};
-            frame.id = DEFAULT_SETTINGS.CAN_PCC_ID;
-            frame.length = 8U;
-            frame.data[0] = static_cast<uint8_t>(state);
-            frame.data[1] = static_cast<uint8_t>(error);
-            frame.data16[1] = static_cast<uint16_t>(
-                std::min<uint32_t>(lastPrechargeTime, UINT16_MAX));
-            mCan->sendMessage(frame);
-        }
     }
 
-    void setup(CAN *can)
+    void setup()
     {
-        mCan = can;
         runRequest = false;
         requestEdgePending = false;
         requestRequiresRelease = false;
@@ -441,7 +419,6 @@ namespace PCC
         {
             disableOutputs();
             state = OFF;
-            handleSendingCANMessage();
             return;
         }
 
@@ -502,7 +479,6 @@ namespace PCC
             break;
         }
 
-        handleSendingCANMessage();
     }
 
     PCC_STATE getPCCState()

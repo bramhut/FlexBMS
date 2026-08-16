@@ -115,7 +115,6 @@ using std::vector;
  * Static class variable intialization
  ******************************************************************************/
 
-BCC::can_state_t BCC::mCANstateGlobal = OK;
 uint32_t BCC::mLastGlobalConversionStarted = 0;
 
 /*******************************************************************************
@@ -210,7 +209,6 @@ bcc_status_t BCC::setGpioCfg(const uint8_t gpioSel, const bcc_pin_mode_t mode)
 {
     if ((gpioSel >= BCC_GPIO_INPUT_CNT) || (mode > BCC_PIN_DIGITAL_OUT))
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -218,74 +216,6 @@ bcc_status_t BCC::setGpioCfg(const uint8_t gpioSel, const bcc_pin_mode_t mode)
     return regUpdate(MC33771C_GPIO_CFG1_OFFSET,
                      (uint16_t)(MC33771C_GPIO_CFG1_GPIO0_CFG_MASK << (gpioSel * 2U)),
                      (uint16_t)(((uint16_t)mode) << (gpioSel * 2U)));
-}
-
-/*!
- * @brief This function maps the status to a CAN state
- *
- * @param state    Latest status
- */
-BCC::can_state_t BCC::CANstateFromStatus(bcc_status_t status)
-{
-    switch (status)
-    {
-    case BCC_STATUS_SUCCESS:
-        return OK;
-    case BCC_STATUS_PARAM_RANGE:
-        return PARAM_ERR;
-    case BCC_STATUS_SPI_FAIL:
-        return COMM_ERR;
-    case BCC_STATUS_COM_TIMEOUT:
-        return COMM_ERR;
-    case BCC_STATUS_COM_ECHO:
-        return COMM_ERR;
-    case BCC_STATUS_COM_CRC:
-        return COMM_ERR;
-    case BCC_STATUS_COM_MSG_CNT:
-        return COMM_ERR;
-    case BCC_STATUS_COM_NULL:
-        return COMM_ERR;
-    case BCC_STATUS_DIAG_FAIL:
-        return OK;
-    case BCC_STATUS_DATA_RDY:
-        return DATA_RDY_ERR;
-    default:
-        return OK;
-    }
-}
-
-/*!
- * @brief This function updates the CAN state if necessary. The CAN state is a
- * shorted version of the status used to send over CAN in 2 bits
- *
- * @param state    Latest status
- */
-void BCC::setCANstate(bcc_status_t status)
-{
-    auto newCANstate = CANstateFromStatus(status);
-
-    // If the new CAN state has a higher priority that the current state, update it
-    if (newCANstate > mCANstate)
-    {
-        mCANstate = newCANstate;
-    }
-}
-
-/*!
- * @brief This function updates the CAN state if necessary. The CAN state is a
- * shorted version of the status used to send over CAN in 2 bits
- *
- * @param state    Latest status
- */
-void BCC::setCANstateGlobal(bcc_status_t status)
-{
-    auto newCANstateGlobal = CANstateFromStatus(status);
-
-    // If the new CAN state has a higher priority that the current state, update it
-    if (newCANstateGlobal > mCANstateGlobal)
-    {
-        mCANstateGlobal = newCANstateGlobal;
-    }
 }
 
 /*******************************************************************************
@@ -330,7 +260,6 @@ bcc_status_t BCC::regRead(const uint8_t regAddr, const uint8_t regCnt, uint16_t 
     if ((regAddr > BCC_MAX_REG_ADDR) ||
         (regCnt == 0U) || ((regAddr + regCnt - 1U) > BCC_MAX_REG_ADDR))
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -340,7 +269,6 @@ bcc_status_t BCC::regRead(const uint8_t regAddr, const uint8_t regCnt, uint16_t 
     status = BCC_Communication::transfer(txBuf, regCnt + 1);
     if (status != BCC_STATUS_SUCCESS)
     {
-        setCANstate(status);
         return status;
     }
 
@@ -348,7 +276,6 @@ bcc_status_t BCC::regRead(const uint8_t regAddr, const uint8_t regCnt, uint16_t 
     status = BCC_Communication::checkEchoFrame(txBuf);
     if (status != BCC_STATUS_SUCCESS)
     {
-        setCANstate(status);
         return status;
     }
 
@@ -361,14 +288,12 @@ bcc_status_t BCC::regRead(const uint8_t regAddr, const uint8_t regCnt, uint16_t 
         /* Check CRC. */
         if ((status = BCC_Communication::checkCRC(rxBufMsgIdx)) != BCC_STATUS_SUCCESS)
         {
-            setCANstate(status);
             return status;
         }
 
         /* Check the Message counter value. */
         if ((status = checkMsgCnt(rxBufMsgIdx, toUnassigned)) != BCC_STATUS_SUCCESS)
         {
-            setCANstate(status);
             return status;
         }
 
@@ -395,7 +320,6 @@ bcc_status_t BCC::regWrite(const uint8_t regAddr, const uint16_t regVal, const b
 
     if (regAddr > BCC_MAX_REG_ADDR)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -405,8 +329,6 @@ bcc_status_t BCC::regWrite(const uint8_t regAddr, const uint16_t regVal, const b
     status = BCC_Communication::transfer(txBuf, 1);
     if (status != BCC_STATUS_SUCCESS)
     {
-
-        setCANstate(status);
         return status;
     }
 
@@ -414,7 +336,6 @@ bcc_status_t BCC::regWrite(const uint8_t regAddr, const uint16_t regVal, const b
     status = BCC_Communication::checkEchoFrame(txBuf);
     if (status != BCC_STATUS_SUCCESS)
     {
-        setCANstate(status);
     }
     return status;
 }
@@ -437,7 +358,6 @@ bcc_status_t BCC::regWriteGlobal(const uint8_t regAddr, const uint16_t regVal)
     /* Check input parameters. */
     if (regAddr > BCC_MAX_REG_ADDR)
     {
-        setCANstateGlobal(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -447,7 +367,6 @@ bcc_status_t BCC::regWriteGlobal(const uint8_t regAddr, const uint16_t regVal)
     status = BCC_Communication::transfer(txBuf, 1);
     if (status != BCC_STATUS_SUCCESS)
     {
-        setCANstateGlobal(status);
         return status;
     }
 
@@ -455,7 +374,6 @@ bcc_status_t BCC::regWriteGlobal(const uint8_t regAddr, const uint16_t regVal)
     status = BCC_Communication::checkEchoFrame(txBuf);
     if (status != BCC_STATUS_SUCCESS)
     {
-        setCANstateGlobal(status);
     }
     return status;
 }
@@ -507,7 +425,6 @@ bcc_status_t BCC::sendNop()
     status = BCC_Communication::transfer(txBuf, 1);
     if (status != BCC_STATUS_SUCCESS)
     {
-        setCANstate(status);
         return status;
     }
 
@@ -515,7 +432,6 @@ bcc_status_t BCC::sendNop()
     status = BCC_Communication::checkEchoFrame(txBuf);
     if (status != BCC_STATUS_SUCCESS)
     {
-        setCANstate(status);
     }
     return status;
 }
@@ -544,7 +460,6 @@ bcc_status_t BCC::checkMsgCnt(const uint8_t *const resp, bool toUnassigned)
      * Note: Do not perform a check for CID=0. */
     if (!toUnassigned && (msgCntRcv != BCC_INC_MSG_CNTR(msgCntPrev)))
     {
-        setCANstate(BCC_STATUS_COM_MSG_CNT);
         return BCC_STATUS_COM_MSG_CNT;
     }
 
@@ -627,7 +542,6 @@ bcc_status_t BCC::assignCid(uint8_t devicesCnt)
         {
             status = BCC_STATUS_SPI_FAIL;
             PRINTF_WARN("[BCC] AssignCID Failed: readVal != writeVal\n");
-            setCANstate(status);
         }
     }
     else
@@ -651,7 +565,6 @@ bcc_status_t BCC::assignCid(uint8_t devicesCnt)
             {
                 PRINTF_WARN("[BCC] AssignCID Failed: writeVal != readVal\n");
                 status = BCC_STATUS_SPI_FAIL;
-                setCANstate(status);
             }
             else if (status != BCC_STATUS_SUCCESS)
             {
@@ -713,7 +626,6 @@ bcc_status_t BCC::meas_StartConversion(const bcc_avg_t avg)
 {
     if (avg > BCC_AVG_256)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -829,7 +741,6 @@ bcc_status_t BCC::meas_StartAndWait(const bcc_avg_t avg)
 
     if (avg > BCC_AVG_256)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -922,7 +833,6 @@ bcc_status_t BCC::meas_GetAmpHourAndIAvg(const double rShunt, const bool invertC
     BCC_MCU_Assert(Iavg != NULL);
     if (!mCurrentSenseEnabled)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -958,7 +868,6 @@ bcc_status_t BCC::meas_GetAmpHourAndIAvg(const double rShunt, const bool invertC
     // If for some reason the deltaT is zero, return an error (prevent divide by zero)
     if (deltaMicros == 0)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
     double ccFreq = (double)deltaSamples / deltaT;
@@ -1020,7 +929,6 @@ bcc_status_t BCC::meas_GetIsense(const double rShunt, double *const isense, bool
     BCC_MCU_Assert(isense != NULL);
     if (!mCurrentSenseEnabled)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -1035,7 +943,6 @@ bcc_status_t BCC::meas_GetIsense(const double rShunt, double *const isense, bool
 
     if ((mRawMeasurements[MSR_ISENSE1] & mRawMeasurements[MSR_ISENSE2] & MC33771C_MEAS_ISENSE1_DATA_RDY_MASK) == 0U)
     {
-        setCANstate(BCC_STATUS_DATA_RDY);
         return BCC_STATUS_DATA_RDY;
     }
 
@@ -1069,7 +976,6 @@ bcc_status_t BCC::meas_GetStackVoltage(uint32_t *const stackVolt, bool forceRead
 
     if ((mRawMeasurements[MSR_STACK_VOLT] & MC33771C_MEAS_STACK_DATA_RDY_MASK) == 0U)
     {
-        setCANstate(BCC_STATUS_DATA_RDY);
         return BCC_STATUS_DATA_RDY;
     }
 
@@ -1161,7 +1067,6 @@ bcc_status_t BCC::meas_GetCellVoltages(vector<uint32_t> &cellVolt, bool forceRea
     // Compare dataReady with mask
     if ((dataReady & MC33771C_MEAS_CELL1_DATA_RDY_MASK) == 0U)
     {
-        setCANstate(BCC_STATUS_DATA_RDY);
         return BCC_STATUS_DATA_RDY;
     }
 
@@ -1190,7 +1095,6 @@ bcc_status_t BCC::meas_GetCellVoltage(uint8_t cellIndex, uint32_t *const cellVol
 
     if (cellIndex >= BCC_MAX_CELLS_DEV(mDevice))
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -1205,7 +1109,6 @@ bcc_status_t BCC::meas_GetCellVoltage(uint8_t cellIndex, uint32_t *const cellVol
 
     if ((*cellVoltage & MC33771C_MEAS_CELL1_DATA_RDY_MASK) == 0U)
     {
-        setCANstate(BCC_STATUS_DATA_RDY);
         return BCC_STATUS_DATA_RDY;
     }
 
@@ -1263,7 +1166,6 @@ bcc_status_t BCC::meas_GetAnVoltages(uint32_t *const anVolt, bool absVoltage, bo
 
     if (dataReady == 0U)
     {
-        setCANstate(BCC_STATUS_DATA_RDY);
         return BCC_STATUS_DATA_RDY;
     }
 
@@ -1292,7 +1194,6 @@ bcc_status_t BCC::meas_GetAnVoltage(uint8_t anIndex, uint32_t *const anVolt, boo
 
     if (anIndex >= BCC_GPIO_INPUT_CNT)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -1307,7 +1208,6 @@ bcc_status_t BCC::meas_GetAnVoltage(uint8_t anIndex, uint32_t *const anVolt, boo
 
     if ((*anVoltage & MC33771C_MEAS_AN0_DATA_RDY_MASK) == 0U)
     {
-        setCANstate(BCC_STATUS_DATA_RDY);
         return BCC_STATUS_DATA_RDY;
     }
 
@@ -1346,7 +1246,6 @@ bcc_status_t BCC::meas_GetIcTemperature(uint16_t *const icTemp, bool forceRead)
 
     if ((mRawMeasurements[MSR_ICTEMP] & MC33771C_MEAS_IC_TEMP_DATA_RDY_MASK) == 0U)
     {
-        setCANstate(BCC_STATUS_DATA_RDY);
         return BCC_STATUS_DATA_RDY;
     }
 
@@ -1520,7 +1419,6 @@ bcc_status_t BCC::fault_ClearStatus(const bcc_fault_status_t statSel)
 
     if ((uint32_t)statSel >= BCC_STAT_CNT)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -1541,7 +1439,6 @@ bcc_status_t BCC::GPIO_SetMode(const uint8_t gpioSel, const bcc_pin_mode_t mode)
 
     if (gpioSel >= BCC_GPIO_INPUT_CNT)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -1615,7 +1512,6 @@ bcc_status_t BCC::GPIO_ReadPin(const uint8_t gpioSel, bool *const val)
 
     if (gpioSel >= BCC_GPIO_INPUT_CNT)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -1642,7 +1538,6 @@ bcc_status_t BCC::GPIO_SetOutput(const uint8_t gpioSel, const bool val)
 {
     if (gpioSel >= BCC_GPIO_INPUT_CNT)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -1696,13 +1591,11 @@ bcc_status_t BCC::CB_SetIndividualChannel(const uint8_t channelIndex, const bool
     // Parameter checks
     if (channelIndex >= BCC_MAX_CELLS_DEV(mDevice))
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
     if (timer > MC33771C_CB1_CFG_CB_TIMER_MASK)
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -1785,7 +1678,6 @@ bcc_status_t BCC::fuseMirror_Read(const uint8_t fuseAddr, uint16_t *const value)
 
     if (fuseAddr > ((mDevice == BCC_DEVICE_MC33771C) ? MC33771C_MAX_FUSE_READ_ADDR : MC33772C_MAX_FUSE_READ_ADDR))
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -1815,7 +1707,6 @@ bcc_status_t BCC::fuseMirror_Write(const uint8_t fuseAddr, const uint16_t value)
 
     if (fuseAddr > ((mDevice == BCC_DEVICE_MC33771C) ? MC33771C_MAX_FUSE_WRITE_ADDR : MC33772C_MAX_FUSE_WRITE_ADDR))
     {
-        setCANstate(BCC_STATUS_PARAM_RANGE);
         return BCC_STATUS_PARAM_RANGE;
     }
 
@@ -1902,26 +1793,6 @@ bcc_status_t BCC::GUID_Read(uint64_t *const guid)
             ((uint64_t)(readData[2] & BCC_FUSE_TR_2_MASK));
 
     return BCC_STATUS_SUCCESS;
-}
-
-/**
- * Get the CAN state of the BCC. Also resets the state to OK.
- */
-BCC::can_state_t BCC::getCANstate()
-{
-    auto currentCANstate = mCANstate;
-    mCANstate = OK;
-    return currentCANstate;
-}
-
-/**
- * Get the CAN state of global-level BCC functions. Also resets the state to OK.
- */
-BCC::can_state_t BCC::getCANstateGlobal()
-{
-    auto currentCANstateGlobal = mCANstateGlobal;
-    mCANstateGlobal = OK;
-    return currentCANstateGlobal;
 }
 
 /**

@@ -603,16 +603,10 @@ namespace SlaveController
         {
             BCC_Diagnostics::diags_t result;
             bool succes = true;
-            CAN::Frame frame;
-            frame.id = settings.CAN_BCC_DIAG_ID;
-            frame.length = 3;
-
             // Start measuring the time it takes to perform the diagnostics
             uint32_t startMicros = micros();
             for (auto &slave : mSlaves)
             {
-                frame.data[0] = slave.getCID();
-
                 // If a generic issue arrises during a diagnostic, set succes to false
                 if (BCC_Diagnostics::runStartupChecks(&slave, settings.SAFETY_LIMITS, &result) != BCC_STATUS_SUCCESS)
                 {
@@ -638,8 +632,6 @@ namespace SlaveController
                     PRINTF_INFO("  CBXOPEN: %s\n", result.CBXOPEN ? "FAIL" : "OK");
                 }
 
-                memcpy(frame.data + 1, &result, 2);
-                mCAN->sendMessage(frame);
             }
             double diagTimeMS = (micros() - startMicros) / 1000.0;
             PRINTF_INFO("[SC] Diagnostics took %.2f ms, on average %.2f ms per slave\n", diagTimeMS, diagTimeMS / getNumOfSlaves());
@@ -803,60 +795,6 @@ namespace SlaveController
             return BCC::regWriteGlobal(MC33771C_SYS_CFG_GLOBAL_OFFSET, MC33771C_SYS_CFG_GLOBAL_GO2SLEEP(MC33771C_SYS_CFG_GLOBAL_GO2SLEEP_ENABLED_ENUM_VAL));
         }
 
-        void handleCANMessages()
-        {
-            static uint32_t loopCount = 0;
-            CAN::Frame frame;
-
-            // Check if it is time to send the measurements
-            // Only send measurements if the device is in the RUNNING state, otherwise data will be bad
-            if ((loopCount % settings.CAN_MEASUREMENT_MSG_PERIOD_FACTOR) == 0 && currentState == RUNNING)
-            {
-                // Send Measurements_1 message
-                frame.id = settings.CAN_MEAS1_ID;
-                frame.length = 8;
-                frame.data16[0] = getMinCellVoltage() / 100U;  // Min cell voltage [0.1mV]
-                frame.data16[1] = getMaxCellVoltage() / 100U;  // Max cell voltage [0.1mV]
-                frame.data16[2] = getPackVoltage() / 100'000U; // Pack voltage [100mV]
-                frame.data16[3] = getSoC();                    // State of Charge [raw]
-                mCAN->sendMessage(frame);
-
-                // Send Measurements_2 message
-                frame.id = settings.CAN_MEAS2_ID;
-                frame.length = 8;
-                frame.data_s16[0] = BCC_CURRENT_TO_RAW(getCurrent());  // Current [1/64 A]
-                frame.data16[1] = getMinNTCtemp(); // Min NTC temperature [raw]
-                frame.data16[2] = getMaxNTCtemp(); // Max NTC temperature [raw]
-                frame.data16[3] = getMaxICtemp();  // Max IC temperature [raw]
-                mCAN->sendMessage(frame);
-            }
-
-            // Check if it is time to send the BMS State message
-            if ((loopCount % settings.CAN_BMS_STATE_MSG_PERIOD_FACTOR) == 0)
-            {
-                // Send BMS State message
-                frame.id = settings.CAN_BMS_STATE_ID;
-                frame.length = 8;
-                frame.data64 = 0;                         // Clear the data
-                frame.data[0] = getState();               // Byte 0
-                const uint16_t blockingFaults = getBlockingFaults();
-                memcpy(frame.data + 1, &blockingFaults, 2); // Byte 1-2
-                frame.data[3] = BCC::getCANstateGlobal(); // (Part of) Byte 3
-                for (size_t i = 1; i < 20; i++)           // Bytes 3-7
-                {
-                    if (i > mSlaves.size())
-                    {
-                        break;
-                    }
-                    frame.data[3 + i / 4] <<= 2;
-                    frame.data[3 + i / 4] |= mSlaves[i - 1].getCANstate();
-                }
-                mCAN->sendMessage(frame);
-            }
-
-            loopCount++;
-        }
-
         void processFaultClearCommand()
         {
             if (!faultClearCommandPending)
@@ -995,8 +933,6 @@ namespace SlaveController
                 {
                     // Don't do anything I guess
                 }
-
-                handleCANMessages();
 
                 // Schedule the next loop iteration BMS_MAIN_LOOP_PERIOD ms after this one to achieve constant frequency
                 osDelayUntil(startTick += settings.BMS_MAIN_LOOP_PERIOD / portTICK_PERIOD_MS);

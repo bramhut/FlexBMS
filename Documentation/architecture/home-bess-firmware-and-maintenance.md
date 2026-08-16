@@ -81,10 +81,9 @@ Documentation/
   operations/            commissioning, update, and recovery procedures
 ~~~
 
-The obsolete Software/bms_companion directory is legacy code and is not the
-source for future Home-BESS Companion work. A Gateway release consumes a
-versioned committed Companion bundle so a local Gateway build remains offline
-and reproducible.
+The obsolete in-tree Companion copy has been removed. A Gateway release
+consumes a versioned committed Companion bundle so a local Gateway build
+remains offline and reproducible.
 
 ## Companion: one UI, two web targets
 
@@ -165,7 +164,7 @@ Named Gateway service actions in the first release are:
 - configure or scan local Wi-Fi through the Gateway when its Wi-Fi capability
   is available.
 
-Charger/configuration writes are out of scope. A single deliberate button press
+Configuration writes are out of scope. A single deliberate button press
 is sufficient for a permitted local action; the STM32 remains responsible for
 validating every requested state change. Wi-Fi, browser, MQTT, and Home
 Assistant loss have no BMS safety effect in this stage.

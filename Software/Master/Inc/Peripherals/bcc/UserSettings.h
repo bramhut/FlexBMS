@@ -44,24 +44,12 @@ struct UserSettings_t
     double MIN_BALANCING_DIFF_VOLTAGE; // [V] The minimum voltage difference between two cells for balancing to be considered
     bool IMPROVED_BALANCING_ACCURACY;  // If true, the balancing trigger time is shorter, decreasing undershoots but possbily increasing TPL bus bandwidth
 
-    // CAN IDs
-    uint32_t CAN_MEAS1_ID;
-    uint32_t CAN_MEAS2_ID;
-    uint32_t CAN_BCC_DIAG_ID;
-    uint32_t CAN_BMS_STATE_ID;
-    uint32_t CAN_PCC_ID;
-    uint32_t CAN_CHARGING_ID;
-
     // Timing
     uint32_t BMS_MAIN_LOOP_PERIOD;          // [ms] The minimum time that the main SlaveController loop takes.
     uint32_t BMS_MEASUREMENT_PERIOD_FACTOR; // Determines how many x loops the measurements are fetched.
     uint32_t TPL_TX_TIMEOUT_MS;
     uint32_t TPL_RX_TIMEOUT_MS;
-    uint32_t CAN_MEASUREMENT_MSG_PERIOD_FACTOR;
-    uint32_t CAN_BMS_STATE_MSG_PERIOD_FACTOR;
     uint32_t MINIMUM_FAULT_ACTIVE_TIME; // [ms] The minimum time that a fault is active in milliseconds
-    uint32_t CAN_CHARGING_MSG_PERIOD;   // [ms] The period at which the BMS sends CAN messages to the charger
-    uint32_t CAN_PCC_PERIOD; // [ms] The period at which the BMS sends CAN messages about the PCC
 };
 
 const UserSettings_t DEFAULT_SETTINGS = {
@@ -91,25 +79,12 @@ const UserSettings_t DEFAULT_SETTINGS = {
     .MIN_BALANCING_DIFF_VOLTAGE = 0.02,
     .IMPROVED_BALANCING_ACCURACY = true,    
 
-    // CAN ID's
-    .CAN_MEAS1_ID = 0x610,
-    .CAN_MEAS2_ID = 0x611,
-    .CAN_BCC_DIAG_ID = 0x612,
-    .CAN_BMS_STATE_ID = 0x613,
-    .CAN_PCC_ID = 0x614,
-    .CAN_CHARGING_ID = 0x1806E5F4,
-
     // Timing
     .BMS_MAIN_LOOP_PERIOD = 50,
     .BMS_MEASUREMENT_PERIOD_FACTOR = 5,
     .TPL_TX_TIMEOUT_MS = 1,
     .TPL_RX_TIMEOUT_MS = 10,
-    .CAN_MEASUREMENT_MSG_PERIOD_FACTOR = 5,
-    .CAN_BMS_STATE_MSG_PERIOD_FACTOR = 5,
     .MINIMUM_FAULT_ACTIVE_TIME = 2000,
-    .CAN_CHARGING_MSG_PERIOD = 400,
-    .CAN_PCC_PERIOD = 250, // [ms] The period at which the BMS sends CAN messages about the PCC
-
 };
 
 /*******************************************************************************

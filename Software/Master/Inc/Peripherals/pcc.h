@@ -1,6 +1,5 @@
 #pragma once
 
-#include "CAN.h"
 #include <cstdint>
 
 #ifndef HV_CONTACTOR_HOLD_DUTY_PERCENT
@@ -46,7 +45,7 @@ namespace PCC
         HV_ERROR_CONTACTOR_VOLTAGE_LOST = 1U << 6
     };
 
-    void setup(CAN *can);
+    void setup();
     void loop();
 
     void setRunRequest(bool requested);

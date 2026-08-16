@@ -75,14 +75,6 @@ public:
         uint8_t AMPHOUR_BACKUP_REG = 0;
     };
 
-    enum can_state_t
-    {
-        OK = 0U,
-        COMM_ERR = 1U,
-        DATA_RDY_ERR = 2U,
-        PARAM_ERR = 3U,
-    };
-
 private:
     /*******************************************************************************
      * DEVICE_TYPE SPECIFIC SETTINGS
@@ -109,10 +101,6 @@ private:
     /*******************************************************************************
      * PRIVATE VARIABLES
      ******************************************************************************/
-
-    // Short hand state of the device used in CAN messages
-    can_state_t mCANstate = OK;
-    static can_state_t mCANstateGlobal;
 
     // Raw measurements array, index it using bcc_measurements_t
     uint16_t mRawMeasurements[BCC_MEAS_CNT];
@@ -178,29 +166,6 @@ private:
      * @return bcc_status_t Error code.
      */
     bcc_status_t setGpioCfg(const uint8_t gpioSel, const bcc_pin_mode_t mode);
-
-    /*!
-     * @brief This function maps the status to a CAN state
-     *
-     * @param state    Latest status
-     */
-    static can_state_t CANstateFromStatus(bcc_status_t status);
-
-    /*!
-     * @brief This function updates the CAN state if necessary. The CAN state is a
-     * shorted version of the status used to send over CAN in 2 bits
-     *
-     * @param state    Latest status
-     */
-    void setCANstate(bcc_status_t status);
-
-    /*!
-     * @brief This function updates the CAN state if necessary. The CAN state is a
-     * shorted version of the status used to send over CAN in 2 bits
-     *
-     * @param state    Latest status
-     */
-    static void setCANstateGlobal(bcc_status_t status);
 
     /*!
      * @brief Not all faults from FAULT1, FAULT2, FAULT3_STATUS are useful. This mask will remove useless faults
@@ -681,16 +646,6 @@ public:
      * Returns true if current sensing is enabled. False if disabled
      */
     inline bool currentSenseEnabled() { return mCurrentSenseEnabled; }
-
-    /**
-     * Get the CAN state of the BCC. Also resets the state to OK.
-     */
-    can_state_t getCANstate();
-
-    /**
-     * Get the CAN state of global-level BCC functions. Also resets the state to OK.
-     */
-    static can_state_t getCANstateGlobal();
 
     /**
      * Check if the BCC has a valid configuration

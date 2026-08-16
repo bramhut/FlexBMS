@@ -79,9 +79,9 @@ replacement follows the normal recovery-AP path.
 ## Repository migration and layout
 
 The source import is the maintained
-`C:\Users\Bram\Documents\Git\companion\webapp` BMS application, not the
-obsolete `Software/bms_companion` tree. Import only the BMS-relevant Vue
-application, its required generic UI primitives, and the package/tooling files.
+`C:\Users\Bram\Documents\Git\companion\webapp` BMS application. Import only
+the BMS-relevant Vue application, its required generic UI primitives, and the
+package/tooling files.
 Remove the FCCU, ECU, PDB, multi-device selector, HyDriven branding, Electron
 main process, Electron updater, downloads view, emulator coupling, and their
 dependencies.
@@ -94,9 +94,8 @@ source:
 - `bms/components/PrechargeCard.vue` displays the FlexBMS HV supervisor states
   and errors.
 
-After the imported application passes the validation in this document, remove
-the obsolete `Software/bms_companion` directory in the same change. The
-separate HyDriven repository remains historical reference only.
+The obsolete in-tree Companion copy has been removed. The separate HyDriven
+repository remains historical reference only.
 
 The resulting layout is:
 

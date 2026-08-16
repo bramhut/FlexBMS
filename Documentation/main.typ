@@ -722,7 +722,6 @@ The entity model, discovery mechanism, command permissions, and dashboard design
 
 #status("CURRENT")
 
-The current in-tree `Software/bms_companion` is a legacy copy and is not the source for Home-BESS work.
 `Software/Companion` is the FlexBMS-owned BMS-only application with two web targets: a direct USB
 Web Serial target for independent service diagnostics and an ESP32-hosted WebSocket target for local
 maintenance. A portable, unsigned Windows executable packages the direct-USB target in a thin
@@ -804,7 +803,6 @@ must never be interpreted as a current permission to charge, discharge, or close
   [`Hardware/Master`], [Master schematic, PCB, harnesses, and production data.],
   [`Hardware/ModuleBoard`], [Battery module-board schematic, PCB, and production data.],
   [`Software/Master`], [STM32G491 firmware and platform configuration.],
-  [`Software/bms_companion`], [Legacy in-tree Companion copy; not a Home-BESS source of truth.],
   [`Software/Companion`], [Current FlexBMS BMS maintenance UI with direct USB, Gateway, and portable Windows package outputs.],
   [`Software/Gateway`], [ESP32 UART v1, Wi-Fi provisioning/recovery, and compiled Companion serving; MQTT, OTA, and CAN work remain planned.],
   [`Documentation/protocol/uart-v1.md`], [Canonical framed BMS protocol for Gateway UART and direct USB CDC, including test vectors.],

@@ -9,7 +9,6 @@
 #include "BmsUart.h"
 #include "StatusLed.h"
 #include "pcc.h" 
-#include "Charger.h"
 // #include "WSEN_TIDS.h"
 
 #define DEBUG_LVL 2
@@ -46,13 +45,11 @@ void mainTask(void *argument)
 	can.setup();
 	commands->setup();
 	SlaveController::setup(&can);
-	Charger::setup(&can);
-	PCC::setup(&can);
+	PCC::setup();
 	BmsUart::setup();
 
 	while (1)
 	{
-		Charger::loop();
 		PCC::loop();
 
 		StatusLed::update();
