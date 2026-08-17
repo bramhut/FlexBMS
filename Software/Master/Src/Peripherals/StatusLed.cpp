@@ -2,6 +2,7 @@
 
 #include "BoardIO.h"
 #include "BmsUart.h"
+#include "FaultManager.h"
 #include "TimeFunctions.h"
 #include "bcc/SlaveController.h"
 #include "pcc.h"
@@ -54,8 +55,7 @@ namespace StatusLed
 
         bool hasBlockingFault()
         {
-            return SlaveController::getActiveFaults() != 0U ||
-                   PCC::getActiveErrors() != PCC::HV_ERROR_NONE;
+            return FaultManager::hasBlockingErrors();
         }
 
         void show(bool on, bool red)

@@ -1,6 +1,8 @@
 #include "pcc.h"
 
 #include "BoardIO.h"
+#include "FaultManager.h"
+#include "Watchdog.h"
 #include "TimeFunctions.h"
 #include "bcc/SlaveController.h"
 
@@ -24,21 +26,11 @@ namespace PCC
         constexpr double MIN_BATTERY_SOURCE_V = 30.0;
         constexpr double MIN_BATTERY_AGREEMENT_V = 10.0;
         constexpr double BATTERY_AGREEMENT_PERCENT = 0.05;
-        constexpr uint16_t HV_FAULT_MASK =
-            static_cast<uint16_t>(1U << SlaveController::HV_SUPERVISOR_FAULT);
-
         PCC_STATE state = OFF;
         PCC_ERROR error = NO_ERROR;
 
         bool runRequest = false;
-        bool requestEdgePending = false;
-        bool requestRequiresRelease = false;
-        bool faultClearPending = false;
         bool firmwareUpdateLocked = false;
-
-        uint16_t activeErrors = HV_ERROR_NONE;
-        uint16_t latchedErrors = HV_ERROR_NONE;
-        uint16_t historicalErrors = HV_ERROR_NONE;
 
         double batteryVoltage = 0.0;
         double loadVoltage = 0.0;
@@ -68,12 +60,6 @@ namespace PCC
                    std::abs(batteryVoltage - bccVoltage) <= allowedDelta;
         }
 
-        bool isUsbOnly()
-        {
-            return IO::isUsbPresent() &&
-                   batteryVoltage < MIN_BATTERY_SOURCE_V;
-        }
-
         bool prechargeVoltageReached()
         {
             if (batteryVoltage < MIN_BATTERY_SOURCE_V)
@@ -86,67 +72,35 @@ namespace PCC
                    delta <= MAX_PRECHARGE_DELTA_V;
         }
 
-        void publishAggregateActiveFault()
-        {
-            SlaveController::setHVSupervisorFaultActive(activeErrors != HV_ERROR_NONE);
-        }
-
         void refreshActiveErrors()
         {
-            uint16_t liveErrors = HV_ERROR_NONE;
-
-            if ((latchedErrors & HV_ERROR_SENSOR_DIAGNOSTIC) != 0U &&
-                !IO::areHVSensorDiagnosticsHealthy())
+            const uint32_t latched = FaultManager::getSnapshot().hvLatched;
+            if ((latched & (1UL << static_cast<uint8_t>(FaultManager::HvFault::SensorDiagnostic))) != 0U)
             {
-                liveErrors |= HV_ERROR_SENSOR_DIAGNOSTIC;
+                FaultManager::setHvFault(FaultManager::HvFault::SensorDiagnostic, !IO::areHVSensorDiagnosticsHealthy());
             }
-            if ((latchedErrors & HV_ERROR_USB_ONLY) != 0U && isUsbOnly())
+            if ((latched & (1UL << static_cast<uint8_t>(FaultManager::HvFault::BatteryVoltageMismatch))) != 0U)
             {
-                liveErrors |= HV_ERROR_USB_ONLY;
+                FaultManager::setHvFault(FaultManager::HvFault::BatteryVoltageMismatch, !batteryVoltageAgreesWithBms());
             }
-            if ((latchedErrors & HV_ERROR_BATTERY_VOLTAGE_MISMATCH) != 0U &&
-                !batteryVoltageAgreesWithBms())
+            if ((latched & (1UL << static_cast<uint8_t>(FaultManager::HvFault::LoadSideEnergized))) != 0U)
             {
-                liveErrors |= HV_ERROR_BATTERY_VOLTAGE_MISMATCH;
+                FaultManager::setHvFault(FaultManager::HvFault::LoadSideEnergized, loadVoltage >= MAX_SELF_TEST_LOAD_V);
             }
-            if ((latchedErrors & HV_ERROR_LOAD_SIDE_ENERGIZED) != 0U &&
-                loadVoltage >= MAX_SELF_TEST_LOAD_V)
-            {
-                liveErrors |= HV_ERROR_LOAD_SIDE_ENERGIZED;
-            }
-
-            activeErrors = liveErrors;
-            publishAggregateActiveFault();
         }
 
-        void latchFault(PCC_ERROR fault, uint16_t mask, bool conditionIsActive)
+        void latchFault(PCC_ERROR fault, FaultManager::HvFault faultId, bool conditionIsActive)
         {
-            disableOutputs();
-            state = OFF;
-            requestEdgePending = false;
-            requestRequiresRelease = true;
             error = fault;
-            latchedErrors |= mask;
-            historicalErrors |= mask;
+            FaultManager::setHvFault(faultId, true);
+            if (!conditionIsActive)
+            {
+                FaultManager::setHvFault(faultId, false);
+            }
 
-            // Pulse the aggregate fault active so it is latched and recorded by
-            // the BMS even for event faults such as a precharge timeout.
-            SlaveController::setHVSupervisorFaultActive(true);
-            activeErrors = conditionIsActive ? mask : HV_ERROR_NONE;
-            publishAggregateActiveFault();
-
-            PRINTF_ERR("[PCC] HV supervisor fault: error=%u active=%04X latched=%04X\n",
+            PRINTF_ERR("[PCC] HV fault: error=%u active=%u\n",
                        static_cast<unsigned>(fault),
-                       activeErrors,
-                       latchedErrors);
-        }
-
-        bool liveHVConditionsHealthy()
-        {
-            return IO::areHVSensorDiagnosticsHealthy() &&
-                   !isUsbOnly() &&
-                   batteryVoltageAgreesWithBms() &&
-                   loadVoltage < MAX_SELF_TEST_LOAD_V;
+                       conditionIsActive ? 1U : 0U);
         }
 
         bool validateSequencePlausibility()
@@ -154,14 +108,14 @@ namespace PCC
             if (!IO::areHVSensorDiagnosticsHealthy())
             {
                 latchFault(SENSOR_DIAGNOSTIC_ERROR,
-                           HV_ERROR_SENSOR_DIAGNOSTIC,
+                           FaultManager::HvFault::SensorDiagnostic,
                            true);
                 return false;
             }
             if (!batteryVoltageAgreesWithBms())
             {
                 latchFault(BATTERY_VOLTAGE_MISMATCH,
-                           HV_ERROR_BATTERY_VOLTAGE_MISMATCH,
+                           FaultManager::HvFault::BatteryVoltageMismatch,
                            true);
                 return false;
             }
@@ -185,32 +139,26 @@ namespace PCC
             if (!SlaveController::isHVReady())
             {
                 state = OFF;
-                requestRequiresRelease = true;
                 return;
             }
             if (!IO::areHVSensorDiagnosticsHealthy())
             {
                 latchFault(SENSOR_DIAGNOSTIC_ERROR,
-                           HV_ERROR_SENSOR_DIAGNOSTIC,
+                           FaultManager::HvFault::SensorDiagnostic,
                            true);
-                return;
-            }
-            if (isUsbOnly())
-            {
-                latchFault(USB_ONLY_ERROR, HV_ERROR_USB_ONLY, true);
                 return;
             }
             if (!batteryVoltageAgreesWithBms())
             {
                 latchFault(BATTERY_VOLTAGE_MISMATCH,
-                           HV_ERROR_BATTERY_VOLTAGE_MISMATCH,
+                           FaultManager::HvFault::BatteryVoltageMismatch,
                            true);
                 return;
             }
             if (loadVoltage >= MAX_SELF_TEST_LOAD_V)
             {
                 latchFault(LOAD_SIDE_ENERGIZED,
-                           HV_ERROR_LOAD_SIDE_ENERGIZED,
+                           FaultManager::HvFault::LoadSideEnergized,
                            true);
                 return;
             }
@@ -232,7 +180,7 @@ namespace PCC
             if (now - stateStartTime >= PRECHARGE_TIMEOUT_MS)
             {
                 latchFault(PRECHARGE_TIMEOUT,
-                           HV_ERROR_PRECHARGE_TIMEOUT,
+                           FaultManager::HvFault::PrechargeTimeout,
                            false);
                 return;
             }
@@ -268,7 +216,7 @@ namespace PCC
                 if (state != OFF)
                 {
                     latchFault(PRECHARGE_VOLTAGE_LOST,
-                               HV_ERROR_PRECHARGE_VOLTAGE_LOST,
+                               FaultManager::HvFault::PrechargeVoltageLost,
                                false);
                 }
                 return;
@@ -307,7 +255,7 @@ namespace PCC
                 if (state != OFF)
                 {
                     latchFault(CONTACTOR_VOLTAGE_LOST,
-                               HV_ERROR_CONTACTOR_VOLTAGE_LOST,
+                               FaultManager::HvFault::ContactorVoltageLost,
                                false);
                 }
             }
@@ -318,15 +266,9 @@ namespace PCC
     void setup()
     {
         runRequest = false;
-        requestEdgePending = false;
-        requestRequiresRelease = false;
-        faultClearPending = false;
         firmwareUpdateLocked = false;
         state = OFF;
         error = NO_ERROR;
-        activeErrors = HV_ERROR_NONE;
-        latchedErrors = HV_ERROR_NONE;
-        historicalErrors = HV_ERROR_NONE;
         disableOutputs();
     }
 
@@ -341,43 +283,19 @@ namespace PCC
         if (!requested)
         {
             runRequest = false;
-            requestEdgePending = false;
-            requestRequiresRelease = false;
             disableOutputs();
             state = OFF;
             return;
         }
 
-        if (!runRequest && !requestRequiresRelease &&
-            latchedErrors == HV_ERROR_NONE)
-        {
-            requestEdgePending = true;
-        }
         runRequest = true;
     }
 
-    bool requestFaultClear()
+    void forceSafeOffFromFaultManager()
     {
-        if (firmwareUpdateLocked)
-        {
-            return false;
-        }
-
-        if (latchedErrors == HV_ERROR_NONE)
-        {
-            return true;
-        }
-
-        refreshActiveErrors();
-        if (runRequest || activeErrors != HV_ERROR_NONE ||
-            !liveHVConditionsHealthy())
-        {
-            PRINTF_ERR("[PCC] HV fault clear rejected\n");
-            return false;
-        }
-
-        faultClearPending = true;
-        return true;
+        disableOutputs();
+        state = OFF;
+        FaultManager::setHvRunning(false);
     }
 
     bool isSafeForFirmwareUpdate()
@@ -393,8 +311,6 @@ namespace PCC
         }
 
         firmwareUpdateLocked = true;
-        requestEdgePending = false;
-        faultClearPending = false;
         disableOutputs();
         state = OFF;
         return true;
@@ -412,6 +328,7 @@ namespace PCC
 
     void loop()
     {
+		Watchdog::reportPccProgress();
         batteryVoltage = IO::getBatterySideVoltage();
         loadVoltage = IO::getLoadSideVoltage();
 
@@ -422,40 +339,20 @@ namespace PCC
             return;
         }
 
-        if (faultClearPending &&
-            (SlaveController::getLatchedFaults() & HV_FAULT_MASK) == 0U)
-        {
-            latchedErrors = HV_ERROR_NONE;
-            activeErrors = HV_ERROR_NONE;
-            error = NO_ERROR;
-            faultClearPending = false;
-            requestRequiresRelease = false;
-            PRINTF_INFO("[PCC] HV fault clear completed\n");
-        }
+        refreshActiveErrors();
 
-        if (latchedErrors != HV_ERROR_NONE)
-        {
-            refreshActiveErrors();
-        }
-
-        if (!runRequest ||
-            (state != OFF && !SlaveController::isHVReady()))
+        if (!runRequest)
         {
             disableOutputs();
             state = OFF;
-            if (!runRequest)
-            {
-                requestRequiresRelease = false;
-            }
         }
 
         switch (state)
         {
         case OFF:
             disableOutputs();
-            if (requestEdgePending && latchedErrors == HV_ERROR_NONE)
+            if (runRequest && FaultManager::canEnableHv())
             {
-                requestEdgePending = false;
                 state = SELF_TEST;
                 PRINTF_INFO("[PCC] New state: SELF_TEST\n");
             }
@@ -475,10 +372,10 @@ namespace PCC
         default:
             disableOutputs();
             state = OFF;
-            requestRequiresRelease = true;
             break;
         }
 
+        FaultManager::setHvRunning(state == RUN);
     }
 
     PCC_STATE getPCCState()
@@ -494,21 +391,6 @@ namespace PCC
     uint32_t getLastPrechargeTime()
     {
         return lastPrechargeTime;
-    }
-
-    uint16_t getActiveErrors()
-    {
-        return activeErrors;
-    }
-
-    uint16_t getLatchedErrors()
-    {
-        return latchedErrors;
-    }
-
-    uint16_t getHistoricalErrors()
-    {
-        return historicalErrors;
     }
 
     double getBatteryVoltage()

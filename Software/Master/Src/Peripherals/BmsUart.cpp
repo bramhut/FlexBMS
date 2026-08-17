@@ -1,6 +1,7 @@
 #include "BmsUart.h"
 
 #include "FirmwareVersion.h"
+#include "FaultManager.h"
 #include "FreeRTOS.h"
 #include "RtcTime.h"
 #include "cmsis_os.h"
@@ -57,12 +58,13 @@ namespace BmsUart
         {
             GET_STATUS = 0x01U,
             SET_RUN_REQUEST = 0x02U,
-            CLEAR_FAULTS = 0x03U,
+            ACKNOWLEDGE_FAULTS = 0x03U,
             READ_REGISTER = 0x04U,
             SET_RTC = 0x05U,
             GET_DEVICE_INFO = 0x06U,
             ENTER_STM32_BOOTLOADER = 0x07U,
             GET_RTC = 0x08U,
+            SET_BALANCING_REQUEST = 0x09U,
         };
 
         enum ServiceResult : uint8_t
@@ -106,10 +108,11 @@ namespace BmsUart
             bool initialized = false;
             uint8_t bmsState = 0U;
             uint8_t hvState = 0U;
-            uint16_t bmsActive = 0U;
-            uint16_t bmsLatched = 0U;
-            uint16_t hvActive = 0U;
-            uint16_t hvLatched = 0U;
+            uint32_t bmsActive = 0U;
+            uint32_t bmsLatched = 0U;
+            uint32_t hvActive = 0U;
+            uint32_t hvLatched = 0U;
+            uint32_t warnings = 0U;
             bool measurementsFresh = false;
         };
 
@@ -501,6 +504,7 @@ namespace BmsUart
 
         uint16_t makeStatusPayload(uint8_t *payload)
         {
+            const FaultManager::Snapshot faultSnapshot = FaultManager::getSnapshot();
             const bool measurementsFresh = SlaveController::areMeasurementsFresh();
             uint16_t flags = 0U;
             if (SlaveController::isHVReady()) flags |= 1U << 0U;
@@ -508,22 +512,24 @@ namespace BmsUart
             if (PCC::isRunRequested()) flags |= 1U << 2U;
             if (measurementsFresh) flags |= 1U << 3U;
             if (hasValidGatewayFrame && HAL_GetTick() - lastValidGatewayFrameMs < GATEWAY_LOSS_MS) flags |= 1U << 4U;
+            if (SlaveController::isBalancingRequested()) flags |= 1U << 5U;
 
-            payload[0] = static_cast<uint8_t>(SlaveController::getState());
+            payload[0] = static_cast<uint8_t>(faultSnapshot.bmsState);
             payload[1] = static_cast<uint8_t>(PCC::getPCCState());
             writeLe16(payload + 2U, flags);
             payload[4] = static_cast<uint8_t>(SlaveController::getNumOfSlaves());
-            writeLe16(payload + 5U, SlaveController::getActiveFaults());
-            writeLe16(payload + 7U, SlaveController::getLatchedFaults());
-            writeLe16(payload + 9U, PCC::getActiveErrors());
-            writeLe16(payload + 11U, PCC::getLatchedErrors());
-            writeLe32(payload + 13U, HAL_GetTick());
-            return 17U;
+            writeLe32(payload + 5U, faultSnapshot.bmsActive);
+            writeLe32(payload + 9U, faultSnapshot.bmsLatched);
+            writeLe32(payload + 13U, faultSnapshot.hvActive);
+            writeLe32(payload + 17U, faultSnapshot.hvLatched);
+            writeLe32(payload + 21U, faultSnapshot.warnings);
+            writeLe32(payload + 25U, HAL_GetTick());
+            return 29U;
         }
 
         void sendStatus()
         {
-            std::array<uint8_t, 17U> payload = {};
+            std::array<uint8_t, 29U> payload = {};
             broadcastFrame(STATUS, 0U, payload.data(), makeStatusPayload(payload.data()));
         }
 
@@ -578,26 +584,28 @@ namespace BmsUart
             }
         }
 
-        void sendEvent(uint8_t eventId, uint16_t value)
+        void sendEvent(uint8_t eventId, uint32_t value)
         {
-            std::array<uint8_t, 3U> payload = {eventId, 0U, 0U};
-            writeLe16(payload.data() + 1U, value);
+            std::array<uint8_t, 5U> payload = {eventId, 0U, 0U, 0U, 0U};
+            writeLe32(payload.data() + 1U, value);
             broadcastFrame(EVENT, 0U, payload.data(), payload.size());
         }
 
         void publishChangedEvents()
         {
-            const uint8_t bmsState = static_cast<uint8_t>(SlaveController::getState());
+            const FaultManager::Snapshot faultSnapshot = FaultManager::getSnapshot();
+            const uint8_t bmsState = static_cast<uint8_t>(faultSnapshot.bmsState);
             const uint8_t hvState = static_cast<uint8_t>(PCC::getPCCState());
-            const uint16_t bmsActive = SlaveController::getActiveFaults();
-            const uint16_t bmsLatched = SlaveController::getLatchedFaults();
-            const uint16_t hvActive = PCC::getActiveErrors();
-            const uint16_t hvLatched = PCC::getLatchedErrors();
+            const uint32_t bmsActive = faultSnapshot.bmsActive;
+            const uint32_t bmsLatched = faultSnapshot.bmsLatched;
+            const uint32_t hvActive = faultSnapshot.hvActive;
+            const uint32_t hvLatched = faultSnapshot.hvLatched;
+            const uint32_t warnings = faultSnapshot.warnings;
             const bool measurementsFresh = SlaveController::areMeasurementsFresh();
 
             if (!eventCache.initialized)
             {
-                eventCache = {true, bmsState, hvState, bmsActive, bmsLatched, hvActive, hvLatched, measurementsFresh};
+                eventCache = {true, bmsState, hvState, bmsActive, bmsLatched, hvActive, hvLatched, warnings, measurementsFresh};
                 return;
             }
 
@@ -607,8 +615,9 @@ namespace BmsUart
             if (eventCache.bmsLatched != bmsLatched) sendEvent(0x04U, bmsLatched);
             if (eventCache.hvActive != hvActive) sendEvent(0x05U, hvActive);
             if (eventCache.hvLatched != hvLatched) sendEvent(0x06U, hvLatched);
-            if (eventCache.measurementsFresh != measurementsFresh) sendEvent(0x07U, measurementsFresh ? 1U : 0U);
-            eventCache = {true, bmsState, hvState, bmsActive, bmsLatched, hvActive, hvLatched, measurementsFresh};
+            if (eventCache.warnings != warnings) sendEvent(0x07U, warnings);
+            if (eventCache.measurementsFresh != measurementsFresh) sendEvent(0x08U, measurementsFresh ? 1U : 0U);
+            eventCache = {true, bmsState, hvState, bmsActive, bmsLatched, hvActive, hvLatched, warnings, measurementsFresh};
         }
 
         bool sendServiceResponse(Link link, uint8_t sequence, uint8_t serviceId, ServiceResult result,
@@ -765,7 +774,7 @@ namespace BmsUart
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
                     return;
                 }
-                std::array<uint8_t, 17U> status = {};
+                std::array<uint8_t, 29U> status = {};
                 sendServiceResponse(frame.link, frame.sequence, serviceId, OK, status.data(), makeStatusPayload(status.data()));
                 return;
             }
@@ -780,18 +789,17 @@ namespace BmsUart
                 sendServiceResponse(frame.sequence, serviceId, OK);
                 return;
 
-            case CLEAR_FAULTS:
+            case ACKNOWLEDGE_FAULTS:
                 if (frame.length != 1U)
                 {
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
                     return;
                 }
-                if (!PCC::requestFaultClear())
+                if (!FaultManager::acknowledge())
                 {
                     sendServiceResponse(frame.sequence, serviceId, DENIED);
                     return;
                 }
-                SlaveController::clearFaults();
                 sendServiceResponse(frame.sequence, serviceId, OK);
                 return;
 
@@ -833,6 +841,16 @@ namespace BmsUart
                     sendServiceResponse(frame.sequence, serviceId, DENIED);
                     return;
                 }
+                sendServiceResponse(frame.sequence, serviceId, OK);
+                return;
+
+            case SET_BALANCING_REQUEST:
+                if (frame.length != 2U || frame.payload[1] > 1U)
+                {
+                    sendServiceResponse(frame.sequence, serviceId, INVALID);
+                    return;
+                }
+                SlaveController::setBalancingRequest(frame.payload[1] != 0U);
                 sendServiceResponse(frame.sequence, serviceId, OK);
                 return;
 

@@ -6,7 +6,7 @@
 
 namespace FlexBms::GatewayApi
 {
-    enum class Service : uint8_t { SetRunRequest = 0x02U, ClearFaults = 0x03U, ReadRegister = 0x04U, SetRtc = 0x05U, GetDeviceInfo = 0x06U, GetRtc = 0x08U };
+    enum class Service : uint8_t { SetRunRequest = 0x02U, AcknowledgeFaults = 0x03U, ReadRegister = 0x04U, SetRtc = 0x05U, GetDeviceInfo = 0x06U, GetRtc = 0x08U, SetBalancingRequest = 0x09U };
     enum class ServiceResult : uint8_t { Ok = 0U, Denied = 1U, Invalid = 2U, TransportError = 3U, Busy = 4U, UsbHostActive = 5U };
 
     // The callback only serialises a validated request to UART. The API owns no

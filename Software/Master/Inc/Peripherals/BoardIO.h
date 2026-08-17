@@ -13,8 +13,14 @@ namespace IO
 
     void setPrechargeRelay(bool enabled);
     void setContactorDutyPercent(uint8_t dutyPercent);
+    // Does not depend on the scheduler and is safe to call from a fatal handler.
+    void emergencySafeOff();
 
     bool areHVSensorDiagnosticsHealthy();
+
+    // Performs the non-intrusive STM32 ADC health check and reports ADC_FAULT
+    // after its debounce period.
+    void updateAdcHealth();
     bool isUsbPresent();
 
     double getLoadSideVoltage();

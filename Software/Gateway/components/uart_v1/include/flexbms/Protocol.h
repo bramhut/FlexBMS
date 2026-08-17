@@ -40,10 +40,11 @@ namespace FlexBms::UartV1
         uint8_t hvState{};
         uint16_t flags{};
         uint8_t slaveCount{};
-        uint16_t bmsActiveFaults{};
-        uint16_t bmsLatchedFaults{};
-        uint16_t hvActiveFaults{};
-        uint16_t hvLatchedFaults{};
+        uint32_t bmsActiveErrors{};
+        uint32_t bmsLatchedErrors{};
+        uint32_t hvActiveErrors{};
+        uint32_t hvLatchedErrors{};
+        uint32_t warnings{};
         uint32_t uptimeMs{};
     };
 
@@ -107,4 +108,3 @@ namespace FlexBms::UartV1
     // Fast boot-time regression check for CRC, framing, fragmentation, and resynchronisation.
     bool verifyCodec();
 }
-

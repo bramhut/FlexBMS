@@ -3,9 +3,9 @@
   "companion_version": "0.1.6",
   "files": [
     {
-      "path": "assets/index-D4Qe9t9m.js",
-      "bytes": 89787,
-      "sha256": "247ee70df09ea51d498d1edd5b50cd8847fd9b5500a7cc0268ac87d83b692cfe"
+      "path": "assets/index-BK9HGYfQ.js",
+      "bytes": 91178,
+      "sha256": "f705dfd78a2d530910c6515b2f822827a65d8c13be553ade797f155960ba622a"
     },
     {
       "path": "assets/index-z2hbMaqh.css",
@@ -15,8 +15,8 @@
     {
       "path": "index.html",
       "bytes": 373,
-      "sha256": "4a6c09fbe25daa6874128785a3482a5c812345ced4ea2523740dbdd889129337"
+      "sha256": "186e4be4f2067e4347c8f69bf78bbea35b9aea56e98f4ece060251a28580f292"
     }
   ],
-  "total_bytes": 98541
+  "total_bytes": 99932
 }

@@ -79,7 +79,8 @@ export class WebSerialTransport implements BmsTransport {
 
   private servicePayload<S extends ServiceName>(service: S, args: ServiceArguments[S]): Uint8Array {
     if (service === 'set_run_request') return Uint8Array.of(serviceId.setRunRequest, (args as ServiceArguments['set_run_request']).requested ? 1 : 0)
-    if (service === 'clear_faults') return Uint8Array.of(serviceId.clearFaults)
+    if (service === 'set_balancing_request') return Uint8Array.of(serviceId.setBalancingRequest, (args as ServiceArguments['set_balancing_request']).requested ? 1 : 0)
+    if (service === 'acknowledge_faults') return Uint8Array.of(serviceId.acknowledgeFaults)
     if (service === 'get_rtc') return Uint8Array.of(serviceId.getRtc)
     if (service === 'get_device_info') return Uint8Array.of(serviceId.getDeviceInfo)
     const register = args as ServiceArguments['read_register']
@@ -135,7 +136,7 @@ export class WebSerialTransport implements BmsTransport {
     if (type === messageType.pack) { const pack = decodePack(payload); if (pack) { this.pack = pack; this.emitSnapshotIfComplete() }; return }
     if (type === messageType.cell) { const cell = decodeCell(payload); if (cell) { this.cells.set(cell.slave_index, cell); this.emitSnapshotIfComplete() }; return }
     if (type === messageType.temperature) { const temperature = decodeTemperature(payload); if (temperature) { this.temperatures.set(temperature.slave_index, temperature); this.emitSnapshotIfComplete() }; return }
-    if (type === messageType.event && payload.length === 3) { this.applyEvent(payload[0], readLe16(payload, 1)); return }
+    if (type === messageType.event && payload.length === 5) { this.applyEvent(payload[0], readLe32(payload, 1)); return }
     if (type === messageType.serviceResponse) this.completeService(sequence, payload)
   }
 
@@ -156,11 +157,12 @@ export class WebSerialTransport implements BmsTransport {
     if (this.status) {
       if (event_id === 1) this.status.bms_state = value
       else if (event_id === 2) this.status.hv_state = value
-      else if (event_id === 3) this.status.bms_active_faults = value
-      else if (event_id === 4) this.status.bms_latched_faults = value
-      else if (event_id === 5) this.status.hv_active_faults = value
-      else if (event_id === 6) this.status.hv_latched_faults = value
-      else if (event_id === 7) { this.status.measurements_fresh = value !== 0; if (value === 0) { this.pack = null; this.cells.clear(); this.temperatures.clear() } }
+      else if (event_id === 3) this.status.bms_active_errors = value
+      else if (event_id === 4) this.status.bms_latched_errors = value
+      else if (event_id === 5) this.status.hv_active_errors = value
+      else if (event_id === 6) this.status.hv_latched_errors = value
+      else if (event_id === 7) this.status.warnings = value
+      else if (event_id === 8) { this.status.measurements_fresh = value !== 0; if (value === 0) { this.pack = null; this.cells.clear(); this.temperatures.clear() } }
       this.emitStatus()
     }
     this.eventListeners.forEach(listener => listener({ event_id, value }))

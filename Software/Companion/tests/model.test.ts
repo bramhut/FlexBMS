@@ -33,5 +33,5 @@ test('displayed RTC time advances from its device sample', () => {
   assert.equal(advancingUnixTime(1_786_655_390, 1_000, 4_999), 1_786_655_393)
 })
 test('stale BMS status identifies the state and active fault', () => {
-  assert.equal(bmsStatusSummary({ bms_state: 4, hv_state: 0, flags: 0x10, slave_count: 1, bms_active_faults: 0x0004, bms_latched_faults: 0, hv_active_faults: 0, hv_latched_faults: 0, uptime_ms: 0, measurements_fresh: false, run_request: false }), 'Panic: measurements are not fresh (CID_INITIALIZATION_FAULT).')
+  assert.equal(bmsStatusSummary({ bms_state: 3, hv_state: 0, flags: 0x10, slave_count: 1, bms_active_errors: 0x0002, bms_latched_errors: 0, hv_active_errors: 0, hv_latched_errors: 0, warnings: 0, uptime_ms: 0, measurements_fresh: false, run_request: false, balancing_request: false }), 'Error: measurements are not fresh (SLAVE_UNAVAILABLE).')
 })

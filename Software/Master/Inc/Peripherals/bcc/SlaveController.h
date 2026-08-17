@@ -34,11 +34,9 @@ namespace SlaveController
         TEMPERATURE_LIMIT,
         OVERCURRENT_LIMIT,
         IC_TEMPERATURE,
-        SOC_LIMIT,
         OPEN_SHORT_FAULT, // A pin (can be CB or GPIO) is detected short or open
         SYSTEM_FAULT,
         COMMUNICATION_TIMEOUT,
-        HV_SUPERVISOR_FAULT,
     };
 
     enum BMSState
@@ -47,7 +45,7 @@ namespace SlaveController
         REGISTER_INITIALIZATION,
         PERFORMING_DIAGNOSTICS,
         RUNNING,
-        PANIC
+        CRITICAL
     };
 
     /*******************************************************************************
@@ -70,33 +68,6 @@ namespace SlaveController
 
     /*! @brief True when the most recent complete measurement set is still valid. */
     bool areMeasurementsFresh();
-
-    /*!
-     * @brief Get the current faults
-     *
-     * @return Current faults
-     */
-    uint16_t getFaults();
-
-    /*!
-     * @brief Get faults whose condition is currently present
-     */
-    uint16_t getActiveFaults();
-
-    /*!
-     * @brief Get faults latched since the last successful clear
-     */
-    uint16_t getLatchedFaults();
-
-    /*!
-     * @brief Get all faults observed since boot
-     */
-    uint16_t getHistoricalFaults();
-
-    /*!
-     * @brief Clear the current faults if allowed
-     */
-    void clearFaults();
 
     /*!
      * @brief Get the current state of the BMS
@@ -146,15 +117,17 @@ namespace SlaveController
     /*! @brief True when the BMS permits the HV supervisor to operate. */
     bool isHVReady();
 
-    /*! @brief Update the aggregate HV supervisor fault condition. */
-    void setHVSupervisorFaultActive(bool active);
-
     /*!
     * @brief Check whether charging is currently allowed
     *
     * @return true if charging is allowed
     */    
     bool isChargingAllowed();
+
+    // Development-build default is false. This request is an additional gate;
+    // it never overrides normal balancing safety conditions.
+    void setBalancingRequest(bool requested);
+    bool isBalancingRequested();
 
     /*!
      * @brief Get the cell voltages per slave [uV]

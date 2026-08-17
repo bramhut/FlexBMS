@@ -10,11 +10,14 @@
  ******************************************************************************/
 
 #include "TimeFunctions.h"
+#include "FaultManager.h"
+#include "Watchdog.h"
 #include "bcc/SlaveController.h"
 #include "bcc/bcc_diagnostics.h"
 #include "bcc/UserSettings.h"
 #include "USBCOM.h"
 #include "FreeRTOS.h"
+#include <array>
 #include <atomic>
 
 #define DEBUG_LVL 2
@@ -38,20 +41,6 @@ namespace SlaveController
 {
     namespace
     {
-        constexpr uint16_t faultMask(BMSFault fault)
-        {
-            return static_cast<uint16_t>(1U << static_cast<uint16_t>(fault));
-        }
-
-        constexpr uint16_t BOOT_ONLY_FAULT_MASK =
-            faultMask(INVALID_CONFIG) |
-            faultMask(TPL_FAULT);
-
-        constexpr uint16_t RETRYABLE_INITIALIZATION_FAULT_MASK =
-            faultMask(CID_INITIALIZATION_FAULT) |
-            faultMask(REGISTER_INITIALIZATION_FAULT) |
-            faultMask(DIAGNOSTICS_FAULT);
-
         /*******************************************************************************
             FreeRTOS Task stuff
         ******************************************************************************/
@@ -68,11 +57,11 @@ namespace SlaveController
 
         CAN *mCAN = nullptr; /* Pointer to the CAN instance */
 
-        uint16_t activeFaults = 0;
-        uint16_t latchedFaults = 0;
-        uint16_t historicalFaults = 0;
-        volatile bool faultClearCommandPending = false;
-        bool faultClearValidationInProgress = false;
+        uint8_t registerInitializationFailureCount = 0U;
+        uint8_t diagnosticsFailureCount = 0U;
+        uint8_t tplInitializationFailureCount = 0U;
+		uint32_t initializationRetryNotBeforeMs = 0U;
+        std::array<bool, static_cast<size_t>(COMMUNICATION_TIMEOUT) + 1U> bmsFaultInputs{};
 
         BMSState currentState = DEVICE_INITIALIZATION; // Current state of the BMS
 
@@ -82,6 +71,10 @@ namespace SlaveController
         UserSettings_t settings;
 
         uint16_t cBalancingTime = 0; // Time in [min] for a single cell balancing operation
+
+        // Deliberately false in this development build. Change only with the
+        // production balancing enablement decision documented in uart-v1.md.
+        std::atomic<bool> balancingRequested{false};
 
         uint8_t currentMeasurementSlaveIdx = 0; // Index of the slave responsible for current measurement
 
@@ -109,11 +102,6 @@ namespace SlaveController
         /*******************************************************************************
          * Private functions
          ******************************************************************************/
-
-        uint16_t getBlockingFaults()
-        {
-            return activeFaults | latchedFaults;
-        }
 
         bool measurementsAreFresh()
         {
@@ -153,46 +141,59 @@ namespace SlaveController
             case RUNNING:
                 PRINTF_INFO("[SC] New state: RUNNING\n");
                 break;
-            case PANIC:
-                PRINTF_INFO("[SC] New state: PANIC\n");
+            case CRITICAL:
+                PRINTF_INFO("[SC] New state: CRITICAL\n");
                 break;
             }
         }
 
+        FaultManager::BmsFault mapFault(BMSFault fault)
+        {
+            switch (fault)
+            {
+            case INVALID_CONFIG:
+                return FaultManager::BmsFault::ConfigurationInvalid;
+            case TPL_FAULT:
+            case CID_INITIALIZATION_FAULT:
+            case REGISTER_INITIALIZATION_FAULT:
+                return FaultManager::BmsFault::SlaveUnavailable;
+            case CELL_BALANCING_FAULT:
+                return FaultManager::BmsFault::BalancingHardwareFault;
+            case DIAGNOSTICS_FAULT:
+                return FaultManager::BmsFault::BccDiagnostics;
+            case OVERVOLTAGE_LIMIT:
+            case UNDERVOLTAGE_LIMIT:
+                return FaultManager::BmsFault::CellVoltageLimit;
+            case TEMPERATURE_LIMIT:
+            case IC_TEMPERATURE:
+                return FaultManager::BmsFault::ThermalLimit;
+            case OVERCURRENT_LIMIT:
+                return FaultManager::BmsFault::CurrentLimit;
+            case OPEN_SHORT_FAULT:
+            case SYSTEM_FAULT:
+                return FaultManager::BmsFault::BccIntegrity;
+            case COMMUNICATION_TIMEOUT:
+                return FaultManager::BmsFault::BccCommunication;
+            }
+            return FaultManager::BmsFault::BccIntegrity;
+        }
+
         void updateFault(BMSFault fault, bool active)
         {
-            const uint16_t mask = faultMask(fault);
-            uint16_t previousActiveFaults;
-            uint16_t activeSnapshot;
-            uint16_t latchedSnapshot;
-            uint16_t historicalSnapshot;
+            bmsFaultInputs[static_cast<size_t>(fault)] = active;
+            const FaultManager::BmsFault mappedFault = mapFault(fault);
 
-            taskENTER_CRITICAL();
-            previousActiveFaults = activeFaults;
-            if (active)
+            bool mappedActive = false;
+            for (size_t index = 0U; index < bmsFaultInputs.size(); ++index)
             {
-                activeFaults |= mask;
-                latchedFaults |= mask;
-                historicalFaults |= mask;
+                if (bmsFaultInputs[index] &&
+                    mapFault(static_cast<BMSFault>(index)) == mappedFault)
+                {
+                    mappedActive = true;
+                    break;
+                }
             }
-            else
-            {
-                activeFaults &= static_cast<uint16_t>(~mask);
-            }
-            activeSnapshot = activeFaults;
-            latchedSnapshot = latchedFaults;
-            historicalSnapshot = historicalFaults;
-            taskEXIT_CRITICAL();
-
-            if (previousActiveFaults != activeSnapshot)
-            {
-                PRINTF_INFO("[SC] Fault condition %s for fault %u: active=%04X latched=%04X history=%04X\n",
-                            active ? "active" : "inactive",
-                            fault,
-                            activeSnapshot,
-                            latchedSnapshot,
-                            historicalSnapshot);
-            }
+            FaultManager::setBmsFault(mappedFault, mappedActive);
         }
 
         // Checks if all CIDs are present
@@ -531,14 +532,14 @@ namespace SlaveController
             updateFault(COMMUNICATION_TIMEOUT, communicationFault);
         }
 
-        // Checks based on the current active faults if cell balancing is allowed
+        // Balancing is allowed only with a healthy, fully running BMS.
         bool isBalancingAllowed()
         {
-            const uint16_t balancingAllowedFaults =
-                getBlockingFaults() &
-                static_cast<uint16_t>(~faultMask(OVERVOLTAGE_LIMIT)) &
-                static_cast<uint16_t>(~faultMask(SOC_LIMIT));
-            return balancingAllowedFaults == 0;
+            const FaultManager::Snapshot snapshot = FaultManager::getSnapshot();
+            return balancingRequested.load(std::memory_order_relaxed) &&
+                   currentState == RUNNING &&
+                   (snapshot.bmsActive | snapshot.bmsLatched |
+                    snapshot.hvActive | snapshot.hvLatched) == 0U;
         }
 
         void performCellBalancing()
@@ -547,36 +548,46 @@ namespace SlaveController
             const uint32_t minBalancingVoltage = settings.MIN_BALANCING_VOLTAGE * 1000000U;
             const uint32_t minDiffVoltage = settings.MIN_BALANCING_DIFF_VOLTAGE * 1000000U;
 
-            static bool prevBalancingAllowed = false;
-            bool balancingAllowed = isBalancingAllowed();
+            static bool outputsEnabled = false;
+            static bool outputsKnown = false;
+            const bool balancingAllowed = isBalancingAllowed();
 
-            // If cell balancing is not allowed anymore, disable CB_DRVEN bit (stops balancing for all cells)
-            if (prevBalancingAllowed && !balancingAllowed)
-            {
-                for (auto &slave : mSlaves)
-                {
-                    slave.CB_Enable(false);
-                }
-                prevBalancingAllowed = false;
-            }
-
-            // If cell balancing was not allowed, but is now allowed, enable CB_DRVEN bit (allows balancing for all cells)
-            if (!prevBalancingAllowed && balancingAllowed)
-            {
-                for (auto &slave : mSlaves)
-                {
-                    slave.CB_Enable(true);
-                }
-                prevBalancingAllowed = true;
-            }
-
-            // No reason to continue if balancing is not allowed
+            // Explicitly disable the drivers once before balancing can start,
+            // and whenever any gate becomes false.
             if (!balancingAllowed)
             {
+                if (outputsKnown && !outputsEnabled)
+                {
+                    return;
+                }
+
+                bool disabled = true;
+                for (auto &slave : mSlaves)
+                {
+                    disabled = slave.CB_Enable(false) == BCC_STATUS_SUCCESS && disabled;
+                }
+                outputsEnabled = false;
+                outputsKnown = disabled;
+                updateFault(CELL_BALANCING_FAULT, !disabled);
                 return;
             }
 
+            // Enable the drivers only after every safety gate is true.
+            if (!outputsKnown || !outputsEnabled)
+            {
+                bool enabled = true;
+                for (auto &slave : mSlaves)
+                {
+                    enabled = slave.CB_Enable(true) == BCC_STATUS_SUCCESS && enabled;
+                }
+                outputsEnabled = enabled;
+                outputsKnown = enabled;
+                updateFault(CELL_BALANCING_FAULT, !enabled);
+                if (!enabled) return;
+            }
+
             // Perform cell balancing if necessary
+            bool commandSuccessful = true;
             for (size_t i = 0; i < getNumOfSlaves(); i++)
             {
                 for (size_t j = 0; j < mSlaves[i].getCellCount(); j++)
@@ -593,10 +604,13 @@ namespace SlaveController
                     // If the cell is above the minimum difference voltage (w.r.t the lowest cell voltage), start balancing
                     if (isAboveMinDiffVoltage)
                     {
-                        mSlaves[i].CB_SetIndividualCell(j, true, cBalancingTime);
+                        commandSuccessful =
+                            mSlaves[i].CB_SetIndividualCell(j, true, cBalancingTime) == BCC_STATUS_SUCCESS &&
+                            commandSuccessful;
                     }
                 }
             }
+            updateFault(CELL_BALANCING_FAULT, !commandSuccessful);
         }
 
         bool diagnostics()
@@ -681,8 +695,7 @@ namespace SlaveController
             {
                 measurementSequence.fetch_add(1U);
             }
-            // Cell balancing
-            // performCellBalancing();
+            performCellBalancing();
 
             // Handle register requests from Companion
             handleRegisterRequests();
@@ -738,8 +751,6 @@ namespace SlaveController
                 if (failureCount >= CID_INITIALIZATION_MAX_FAILURES)
                 {
                     updateFault(CID_INITIALIZATION_FAULT, true);
-                    faultClearValidationInProgress = false;
-                    setState(PANIC);
                 }
                 return false;
             }
@@ -770,8 +781,6 @@ namespace SlaveController
                     if (failureCount >= CID_INITIALIZATION_MAX_FAILURES)
                     {
                         updateFault(CID_INITIALIZATION_FAULT, true);
-                        faultClearValidationInProgress = false;
-                        setState(PANIC);
                     }
                     return false;
                 }
@@ -795,42 +804,6 @@ namespace SlaveController
             return BCC::regWriteGlobal(MC33771C_SYS_CFG_GLOBAL_OFFSET, MC33771C_SYS_CFG_GLOBAL_GO2SLEEP(MC33771C_SYS_CFG_GLOBAL_GO2SLEEP_ENABLED_ENUM_VAL));
         }
 
-        void processFaultClearCommand()
-        {
-            if (!faultClearCommandPending)
-            {
-                return;
-            }
-
-            faultClearCommandPending = false;
-            const uint16_t blockingFaults = getBlockingFaults();
-
-            if (blockingFaults == 0U)
-            {
-                PRINTF_INFO("[SC] Fault clear ignored: no faults are latched\n");
-                return;
-            }
-
-            if ((blockingFaults & BOOT_ONLY_FAULT_MASK) != 0U)
-            {
-                PRINTF_ERR("[SC] Fault clear rejected: configuration and initial TPL faults require a reboot\n");
-                return;
-            }
-
-            const uint16_t activeRuntimeFaults =
-                activeFaults & static_cast<uint16_t>(~RETRYABLE_INITIALIZATION_FAULT_MASK);
-            if (activeRuntimeFaults != 0U)
-            {
-                PRINTF_ERR("[SC] Fault clear rejected: active fault conditions remain: %04X\n", activeRuntimeFaults);
-                return;
-            }
-
-            faultClearValidationInProgress = true;
-            cidInitializationFailureCounts.assign(mSlaves.size(), 0U);
-            PRINTF_INFO("[SC] Fault clear accepted: restarting BMS validation\n");
-            setState(DEVICE_INITIALIZATION);
-        }
-
         /**
          * @brief freeRTOS task for SlaveController
          */
@@ -839,43 +812,71 @@ namespace SlaveController
             uint32_t startTick = osKernelGetTickCount(); // Keep track of the time since the task started
             while (true)
             {
-                processFaultClearCommand();
+				Watchdog::reportBccProgress();
 
-                if (currentState == DEVICE_INITIALIZATION)
+				if (currentState == CRITICAL)
+				{
+					// Keep platform supervision alive while exposing the critical state.
+					osDelay(20U);
+					continue;
+				}
+
+				const bool initializationRetryDue =
+					static_cast<int32_t>(millis() - initializationRetryNotBeforeMs) >= 0;
+
+                if (currentState == DEVICE_INITIALIZATION && initializationRetryDue)
                 {
-                    // 1. Daisy chain / CID initialization
-                    if (!InitDevices())
+                    // 1. TPL plus daisy chain / CID initialization.
+                    const bool tplReady = BCC_Communication::TPL_Enable() == BCC_STATUS_SUCCESS;
+                    if (!tplReady)
                     {
-                        if (currentState != PANIC)
+                        ++tplInitializationFailureCount;
+                        if (tplInitializationFailureCount >= CID_INITIALIZATION_MAX_FAILURES)
                         {
-                            // Retry the complete chain after a short delay.
-                            delay(2000);
+                            updateFault(TPL_FAULT, true);
                         }
+						initializationRetryNotBeforeMs = millis() + 2000U;
                     }
                     else
                     {
-                        setState(REGISTER_INITIALIZATION);
+                        tplInitializationFailureCount = 0U;
+                        updateFault(TPL_FAULT, false);
+                        if (!InitDevices())
+                        {
+                            // Retry the complete chain after a short delay. A
+                            // source only becomes an ERROR once its own retry
+                            // budget is exhausted in InitDevices().
+							initializationRetryNotBeforeMs = millis() + 2000U;
+                        }
+                        else
+                        {
+                            setState(REGISTER_INITIALIZATION);
+                        }
                     }
                 }
 
-                if (currentState == REGISTER_INITIALIZATION)
+                if (currentState == REGISTER_INITIALIZATION && initializationRetryDue)
                 {
 
                     // 2. Register initialization
                     if (!initializeRegisters())
                     {
-                        updateFault(REGISTER_INITIALIZATION_FAULT, true);
-                        faultClearValidationInProgress = false;
-                        setState(PANIC);
+                        ++registerInitializationFailureCount;
+                        if (registerInitializationFailureCount >= CID_INITIALIZATION_MAX_FAILURES)
+                        {
+                            updateFault(REGISTER_INITIALIZATION_FAULT, true);
+                        }
+						initializationRetryNotBeforeMs = millis() + 2000U;
                     }
                     else
                     {
+                        registerInitializationFailureCount = 0U;
                         updateFault(REGISTER_INITIALIZATION_FAULT, false);
                         setState(PERFORMING_DIAGNOSTICS);
                     }
                 }
 
-                if (currentState == PERFORMING_DIAGNOSTICS)
+                if (currentState == PERFORMING_DIAGNOSTICS && initializationRetryDue)
                 {
                     // 5. Diagnostics
                     bool diagnosticsSuccessful = true;
@@ -887,14 +888,24 @@ namespace SlaveController
                     {
                         PRINTF_ERR("[SC] WARNING: startup diagnostics are disabled for bench testing\n");
                     }
-                    updateFault(DIAGNOSTICS_FAULT, !diagnosticsSuccessful);
                     if (!diagnosticsSuccessful)
                     {
-                        faultClearValidationInProgress = false;
-                        setState(PANIC);
+                        ++diagnosticsFailureCount;
+                        if (diagnosticsFailureCount >= CID_INITIALIZATION_MAX_FAILURES)
+                        {
+                            updateFault(DIAGNOSTICS_FAULT, true);
+                        }
+                        else
+                        {
+                            updateFault(DIAGNOSTICS_FAULT, false);
+                        }
+                        setState(PERFORMING_DIAGNOSTICS);
+						initializationRetryNotBeforeMs = millis() + 2000U;
                     }
                     else
                     {
+                        diagnosticsFailureCount = 0U;
+                        updateFault(DIAGNOSTICS_FAULT, false);
                         const bool conversionSuccessful = startMeasurements();
                         const bool measurementsSuccessful = conversionSuccessful && getMeasurements(true);
                         completeMeasurementSetValid = conversionSuccessful && measurementsSuccessful;
@@ -906,21 +917,8 @@ namespace SlaveController
                         }
                         doCommunicationCheck(faultStatusSuccessful);
 
-                        if (faultClearValidationInProgress)
-                        {
-                            if (activeFaults == 0U)
-                            {
-                                latchedFaults = 0U;
-                                PRINTF_INFO("[SC] Fault clear completed successfully\n");
-                            }
-                            else
-                            {
-                                PRINTF_ERR("[SC] Fault clear validation failed: active=%04X\n", activeFaults);
-                            }
-                            faultClearValidationInProgress = false;
-                        }
-
                         setState(RUNNING);
+                        FaultManager::setStartupComplete(true);
                     }
                 }
 
@@ -929,9 +927,9 @@ namespace SlaveController
                     runningLoop();
                 }
 
-                if (currentState == PANIC)
+                if (currentState == CRITICAL)
                 {
-                    // Don't do anything I guess
+                    // Configuration is unrecoverable by current software.
                 }
 
                 // Schedule the next loop iteration BMS_MAIN_LOOP_PERIOD ms after this one to achieve constant frequency
@@ -1020,6 +1018,7 @@ namespace SlaveController
     {
         // Make sure to start at correct state. This also faults the relay driver to be off during startup
         setState(DEVICE_INITIALIZATION);
+        FaultManager::setStartupComplete(false);
 
         BCC_MCU_Assert(can != nullptr);
         mCAN = can;
@@ -1027,17 +1026,16 @@ namespace SlaveController
         if (!loadConfig())
         {
             updateFault(INVALID_CONFIG, true);
-            setState(PANIC);
+            FaultManager::enterCritical();
+            setState(CRITICAL);
+			bmsTaskHandle = osThreadNew(task, NULL, &bmsTask_attributes);
+            return;
         }
+
+        FaultManager::setWarning(FaultManager::Warning::StartupDiagnosticsBypassed,
+                                 BMS_RUN_STARTUP_DIAGNOSTICS == 0U);
 
         BCC_Communication::setup(settings.TPL_TX_TIMEOUT_MS, settings.TPL_RX_TIMEOUT_MS);
-
-        if (BCC_Communication::TPL_Enable() != BCC_STATUS_SUCCESS)
-        {
-            // TODO this: reportBCCError(status, 0);
-            updateFault(TPL_FAULT, true);
-            setState(PANIC);
-        }
 
         // Enable backup domain register access
         HAL_PWR_EnableBkUpAccess();
@@ -1071,31 +1069,6 @@ namespace SlaveController
     bool areMeasurementsFresh()
     {
         return measurementsAreFresh();
-    }
-
-    void clearFaults()
-    {
-        faultClearCommandPending = true;
-    }
-
-    uint16_t getFaults()
-    {
-        return getBlockingFaults();
-    }
-
-    uint16_t getActiveFaults()
-    {
-        return activeFaults;
-    }
-
-    uint16_t getLatchedFaults()
-    {
-        return latchedFaults;
-    }
-
-    uint16_t getHistoricalFaults()
-    {
-        return historicalFaults;
     }
 
     BMSState getState()
@@ -1197,21 +1170,26 @@ namespace SlaveController
     bool isHVReady()
     {
         return currentState == RUNNING &&
-               getBlockingFaults() == 0U &&
+               FaultManager::canEnableHv() &&
                measurementsAreFresh();
-    }
-
-    void setHVSupervisorFaultActive(bool active)
-    {
-        updateFault(HV_SUPERVISOR_FAULT, active);
     }
 
     bool isChargingAllowed()
     {
         // Charging is always allowed if there are no faults and we are in the running state (RELAY closed)
         return currentState == RUNNING &&
-               getBlockingFaults() == 0 &&
+               FaultManager::canEnableHv() &&
                measurementsAreFresh();
+    }
+
+    void setBalancingRequest(bool requested)
+    {
+        balancingRequested.store(requested, std::memory_order_relaxed);
+    }
+
+    bool isBalancingRequested()
+    {
+        return balancingRequested.load(std::memory_order_relaxed);
     }
 
     const vector<vector<uint16_t>> &getNTCtemps()

@@ -65,7 +65,8 @@ namespace FlexBms::GatewayApi
             switch (service)
             {
             case Service::SetRunRequest: return "set_run_request";
-            case Service::ClearFaults: return "clear_faults";
+            case Service::SetBalancingRequest: return "set_balancing_request";
+            case Service::AcknowledgeFaults: return "acknowledge_faults";
             case Service::SetRtc: return "set_rtc";
             case Service::GetRtc: return "get_rtc";
             case Service::GetDeviceInfo: return "get_device_info";
@@ -208,7 +209,8 @@ namespace FlexBms::GatewayApi
             cJSON_AddBoolToObject(caps, "monitor", true);
             cJSON_AddBoolToObject(caps, "csv_logging", true);
             cJSON_AddBoolToObject(caps, "set_run_request", bmsServices);
-            cJSON_AddBoolToObject(caps, "clear_faults", bmsServices);
+            cJSON_AddBoolToObject(caps, "set_balancing_request", bmsServices);
+            cJSON_AddBoolToObject(caps, "acknowledge_faults", bmsServices);
             cJSON_AddBoolToObject(caps, "get_rtc", bmsServices);
             cJSON_AddBoolToObject(caps, "get_device_info", bmsServices);
             cJSON_AddBoolToObject(caps, "read_register", bmsServices);
@@ -237,13 +239,15 @@ namespace FlexBms::GatewayApi
             cJSON_AddNumberToObject(root, "hv_state", status.hvState);
             cJSON_AddNumberToObject(root, "flags", status.flags);
             cJSON_AddNumberToObject(root, "slave_count", status.slaveCount);
-            cJSON_AddNumberToObject(root, "bms_active_faults", status.bmsActiveFaults);
-            cJSON_AddNumberToObject(root, "bms_latched_faults", status.bmsLatchedFaults);
-            cJSON_AddNumberToObject(root, "hv_active_faults", status.hvActiveFaults);
-            cJSON_AddNumberToObject(root, "hv_latched_faults", status.hvLatchedFaults);
+            cJSON_AddNumberToObject(root, "bms_active_errors", status.bmsActiveErrors);
+            cJSON_AddNumberToObject(root, "bms_latched_errors", status.bmsLatchedErrors);
+            cJSON_AddNumberToObject(root, "hv_active_errors", status.hvActiveErrors);
+            cJSON_AddNumberToObject(root, "hv_latched_errors", status.hvLatchedErrors);
+            cJSON_AddNumberToObject(root, "warnings", status.warnings);
             cJSON_AddNumberToObject(root, "uptime_ms", status.uptimeMs);
             cJSON_AddBoolToObject(root, "measurements_fresh", (status.flags & (1U << 3U)) != 0U);
             cJSON_AddBoolToObject(root, "run_request", (status.flags & (1U << 2U)) != 0U);
+            cJSON_AddBoolToObject(root, "balancing_request", (status.flags & (1U << 5U)) != 0U);
         }
 
         cJSON *bmsStatusJson()
@@ -349,10 +353,19 @@ namespace FlexBms::GatewayApi
                 argumentLength = 1U;
                 return true;
             }
-            if (std::strcmp(name->valuestring, "clear_faults") == 0)
+            if (std::strcmp(name->valuestring, "set_balancing_request") == 0)
+            {
+                cJSON *requested = cJSON_GetObjectItemCaseSensitive(args, "requested");
+                if (!objectHasExactly(args, {"requested"}) || !cJSON_IsBool(requested)) return false;
+                service = Service::SetBalancingRequest;
+                arguments[0] = cJSON_IsTrue(requested) ? 1U : 0U;
+                argumentLength = 1U;
+                return true;
+            }
+            if (std::strcmp(name->valuestring, "acknowledge_faults") == 0)
             {
                 if (!objectHasExactly(args, {})) return false;
-                service = Service::ClearFaults;
+                service = Service::AcknowledgeFaults;
                 argumentLength = 0U;
                 return true;
             }

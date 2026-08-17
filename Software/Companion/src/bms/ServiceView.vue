@@ -5,9 +5,11 @@ import { registerFields } from '@/shared/registers'
 import { serviceResultLabel } from '@/shared/service'
 import { advancingUnixTime } from '@/shared/time'
 
-const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities; connected: boolean; runRequested: boolean; gateway?: GatewayStatus }>()
+const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities; connected: boolean; runRequested: boolean; balancingRequested: boolean; gateway?: GatewayStatus }>()
 const requested = ref(false)
 const changingRunRequest = ref(false)
+const balancingRequested = ref(false)
+const changingBalancingRequest = ref(false)
 const slave = ref(0)
 const registerText = ref('03')
 const result = ref('')
@@ -54,9 +56,18 @@ async function setRunRequest(): Promise<void> {
   if (response.result !== 'ok') requested.value = props.runRequested
 }
 
-async function clearFaults(): Promise<void> {
-  const response = await props.transport.request('clear_faults', {})
-  result.value = `Fault clear: ${describe(response)}`
+async function setBalancingRequest(): Promise<void> {
+  const requestedValue = balancingRequested.value
+  changingBalancingRequest.value = true
+  const response = await props.transport.request('set_balancing_request', { requested: requestedValue })
+  result.value = `Balancing request: ${describe(response)}`
+  changingBalancingRequest.value = false
+  if (response.result !== 'ok') balancingRequested.value = props.balancingRequested
+}
+
+async function acknowledgeFaults(): Promise<void> {
+  const response = await props.transport.request('acknowledge_faults', {})
+  result.value = `Fault acknowledgement: ${describe(response)}`
 }
 
 async function refreshDeviceTime(showFailure = true): Promise<void> {
@@ -85,6 +96,7 @@ async function readRegister(): Promise<void> {
 }
 
 watch(() => props.runRequested, value => { if (!changingRunRequest.value) requested.value = value }, { immediate: true })
+watch(() => props.balancingRequested, value => { if (!changingBalancingRequest.value) balancingRequested.value = value }, { immediate: true })
 watch([() => props.connected, () => props.capabilities.get_rtc], ([connected, supported]) => { if (connected && supported) void refreshDeviceTime(false) }, { immediate: true })
 clockTimer = window.setInterval(() => { clockNow.value = Date.now() }, 1000)
 onBeforeUnmount(() => { if (clockTimer !== undefined) window.clearInterval(clockTimer) })
@@ -95,7 +107,8 @@ onBeforeUnmount(() => { if (clockTimer !== undefined) window.clearInterval(clock
     <div class="panel-heading"><div><h2>BMS controls</h2></div><p>Named requests only; the STM32 remains the safety authority.</p></div>
     <div class="control-grid">
       <div class="control-block"><h3>Run request</h3><label class="ios-switch"><input v-model="requested" type="checkbox" role="switch" :disabled="!capabilities.set_run_request || changingRunRequest" @change="setRunRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Request BMS run</span></label><small>{{ availability('set_run_request') }}</small></div>
-      <div class="control-block"><h3>Fault handling</h3><p>Clearing faults is accepted only when the STM32 considers it safe.</p><button class="danger" :disabled="!capabilities.clear_faults" @click="clearFaults">Clear faults</button><small>{{ availability('clear_faults') }}</small></div>
+      <div class="control-block"><h3>Cell balancing</h3><label class="ios-switch"><input v-model="balancingRequested" type="checkbox" role="switch" :disabled="!capabilities.set_balancing_request || changingBalancingRequest" @change="setBalancingRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Request balancing</span></label><small>Development default: off. The STM32 still requires all balancing safety conditions.</small><small>{{ availability('set_balancing_request') }}</small></div>
+      <div class="control-block"><h3>Fault handling</h3><p>Acknowledgement clears inactive error latches; the STM32 remains the safety authority.</p><button class="danger" :disabled="!capabilities.acknowledge_faults" @click="acknowledgeFaults">Acknowledge errors</button><small>{{ availability('acknowledge_faults') }}</small></div>
       <div class="control-block"><h3>Real-time clock</h3><p>Device time: <b>{{ formattedDeviceTime }}</b></p><p>Last NTP sync: <b>{{ formattedNtpSync }}</b></p><div class="button-row"><button :disabled="!connected || !capabilities.get_rtc" @click="refreshDeviceTime()">Refresh</button></div><small>{{ availability('get_rtc') }}</small></div>
     </div>
     <p v-if="result" class="action-result">{{ result }}</p>

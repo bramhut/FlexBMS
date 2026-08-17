@@ -7,6 +7,8 @@
 #include "usb_device.h"
 #include "CAN.h"
 #include "BmsUart.h"
+#include "FaultManager.h"
+#include "Watchdog.h"
 #include "StatusLed.h"
 #include "pcc.h" 
 // #include "WSEN_TIDS.h"
@@ -38,19 +40,23 @@ Commands* commands = Commands::getInstance();
 
 void mainTask(void *argument)
 {
+	FaultManager::setup();
 	IO::setup();
 	StatusLed::setup();
 	USBCOM::setup();
 	MX_USB_Device_Init();
 	can.setup();
 	commands->setup();
-	SlaveController::setup(&can);
 	PCC::setup();
+	SlaveController::setup(&can);
 	BmsUart::setup();
+	Watchdog::setup();
 
 	while (1)
 	{
 		PCC::loop();
+		IO::updateAdcHealth();
+		Watchdog::loop();
 
 		StatusLed::update();
 

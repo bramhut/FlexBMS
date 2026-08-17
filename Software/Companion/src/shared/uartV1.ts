@@ -13,7 +13,7 @@ export const messageType = {
   event: 0x12,
 } as const
 
-export const serviceId = { getStatus: 0x01, setRunRequest: 0x02, clearFaults: 0x03, readRegister: 0x04, setRtc: 0x05, getDeviceInfo: 0x06, enterStm32Bootloader: 0x07, getRtc: 0x08 } as const
+export const serviceId = { getStatus: 0x01, setRunRequest: 0x02, acknowledgeFaults: 0x03, readRegister: 0x04, setRtc: 0x05, getDeviceInfo: 0x06, enterStm32Bootloader: 0x07, getRtc: 0x08, setBalancingRequest: 0x09 } as const
 
 export type UartV1Frame = { type: number; sequence: number; payload: Uint8Array }
 
@@ -67,9 +67,9 @@ export class FrameDecoder {
 }
 
 export function decodeStatus(payload: Uint8Array): Status | undefined {
-  if (payload.length !== 17) return undefined
+  if (payload.length !== 29) return undefined
   const flags = readLe16(payload, 2)
-  return { bms_state: payload[0], hv_state: payload[1], flags, slave_count: payload[4], bms_active_faults: readLe16(payload, 5), bms_latched_faults: readLe16(payload, 7), hv_active_faults: readLe16(payload, 9), hv_latched_faults: readLe16(payload, 11), uptime_ms: readLe32(payload, 13), measurements_fresh: (flags & (1 << 3)) !== 0, run_request: (flags & (1 << 2)) !== 0 }
+  return { bms_state: payload[0], hv_state: payload[1], flags, slave_count: payload[4], bms_active_errors: readLe32(payload, 5), bms_latched_errors: readLe32(payload, 9), hv_active_errors: readLe32(payload, 13), hv_latched_errors: readLe32(payload, 17), warnings: readLe32(payload, 21), uptime_ms: readLe32(payload, 25), measurements_fresh: (flags & (1 << 3)) !== 0, run_request: (flags & (1 << 2)) !== 0, balancing_request: (flags & (1 << 5)) !== 0 }
 }
 
 export function decodePack(payload: Uint8Array): Snapshot['pack'] | undefined {

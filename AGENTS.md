@@ -19,3 +19,8 @@ normal 60-second interaction window, start it in the background and monitor it
 without blocking the agent. Do not use a short foreground command timeout for
 such work. Report its actual completion, failure, or timeout before claiming
 validation.
+
+Gateway builds invoke Vite, whose success marker contains Unicode. On Windows,
+always set `PYTHONIOENCODING=utf-8` for the PlatformIO Gateway build process;
+otherwise PlatformIO's output thread can fail under CP1252 and leave the build
+hung after Vite completes.

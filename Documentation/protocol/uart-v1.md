@@ -63,17 +63,18 @@ magic byte, and resumes magic scanning. There is no escaping or byte stuffing.
 
 `HEARTBEAT` has an empty payload.
 
-### `STATUS` — 17 bytes
+### `STATUS` — 29 bytes
 
 ```text
 bms_state:u8 | hv_state:u8 | flags:u16 | slave_count:u8 |
-bms_active_faults:u16 | bms_latched_faults:u16 |
-hv_active_faults:u16 | hv_latched_faults:u16 | uptime_ms:u32
+bms_active_errors:u32 | bms_latched_errors:u32 |
+hv_active_errors:u32 | hv_latched_errors:u32 |
+warnings:u32 | uptime_ms:u32
 ```
 
-`flags`: bit 0 BMS HV-ready; bit 1 charging allowed; bit 2 run request
-asserted; bit 3 complete measurements fresh; bit 4 isolated-UART Gateway peer
-alive; bits 5--15 are zero. USB heartbeats never change bit 4.
+`flags`: bit 0 BMS HV-ready; bit 1 charging allowed; bit 2 run request;
+bit 3 complete measurements fresh; bit 4 isolated-UART Gateway peer alive;
+bit 5 balancing request. Bits 6--15 are zero. USB heartbeats never change bit 4.
 
 `slave_count` is the variable configured BMS monitor-chain count. A production
 module has two monitor slaves, but a single-slave development chain is valid.
@@ -123,11 +124,11 @@ while `STATUS` says measurements are not fresh.
 
 | BMS state | Value |
 |---|---:|
-| `DEVICE_INITIALIZATION` | 0 |
-| `REGISTER_INITIALIZATION` | 1 |
-| `PERFORMING_DIAGNOSTICS` | 2 |
-| `RUNNING` | 3 |
-| `PANIC` | 4 |
+| `STARTING` | 0 |
+| `READY` | 1 |
+| `RUNNING` | 2 |
+| `ERROR` | 3 |
+| `CRITICAL` | 4 |
 
 | HV state | Value |
 |---|---:|
@@ -137,36 +138,68 @@ while `STATUS` says measurements are not fresh.
 | `CONTACTOR_CLOSE` | 3 |
 | `RUN` | 4 |
 
-BMS fault bitmap bits 0--15, in order: `INVALID_CONFIG`, `TPL_FAULT`,
-`CID_INITIALIZATION_FAULT`, `REGISTER_INITIALIZATION_FAULT`,
-`CELL_BALANCING_FAULT`, `DIAGNOSTICS_FAULT`, `OVERVOLTAGE_LIMIT`,
-`UNDERVOLTAGE_LIMIT`, `TEMPERATURE_LIMIT`, `OVERCURRENT_LIMIT`,
-`IC_TEMPERATURE`, `SOC_LIMIT`, `OPEN_SHORT_FAULT`, `SYSTEM_FAULT`,
-`COMMUNICATION_TIMEOUT`, `HV_SUPERVISOR_FAULT`.
+`CRITICAL` has no bitmap. It represents an unrecoverable condition in the
+current software and forces HV safe-off for the remainder of that boot.
 
-HV reason bits 0--6, in order: `SENSOR_DIAGNOSTIC`, `USB_ONLY`,
-`BATTERY_VOLTAGE_MISMATCH`, `LOAD_SIDE_ENERGIZED`, `PRECHARGE_TIMEOUT`,
-`PRECHARGE_VOLTAGE_LOST`, `CONTACTOR_VOLTAGE_LOST`.
+BMS ERROR bitmap bits are: 0 `CONFIGURATION_INVALID`, 1
+`SLAVE_UNAVAILABLE`, 2 `BCC_DIAGNOSTICS`, 3 `CELL_VOLTAGE_LIMIT`, 4
+`THERMAL_LIMIT`, 5 `CURRENT_LIMIT`, 6 `BCC_INTEGRITY`, 7 `ADC_FAULT`, 8
+`BALANCING_HARDWARE_FAULT`, and 9 `BCC_COMMUNICATION`. Bits 10--31 are
+reserved and zero.
 
-An active reason is present now. A latched reason remains blocking after its
-live condition clears until the STM32 accepts a supported clear procedure and
-revalidates the system.
+HV ERROR bitmap bits are: 0 `HV_SENSOR_DIAGNOSTIC`, 1
+`BATTERY_VOLTAGE_MISMATCH`, 2 `LOAD_SIDE_ENERGISED`, 3 `PRECHARGE_TIMEOUT`, 4
+`PRECHARGE_VOLTAGE_LOST`, and 5 `CONTACTOR_VOLTAGE_LOST`. Bits 6--31 are
+reserved and zero.
 
-`EVENT` is three bytes:
+`warnings` is non-latched. Bits are: 0 `WATCHDOG_RESET` and 1
+`STARTUP_DIAGNOSTICS_BYPASSED`. Bits 2--31 are reserved and zero.
+`WATCHDOG_RESET` is set when this STM32 boot followed an independent or window
+watchdog reset. Gateway liveness, CAN condition, near-limit indication, and an
+inactive balancing request are not BMS warnings in this release.
+
+An active ERROR is present now. A latched ERROR remains blocking after its
+live condition clears until the STM32 accepts acknowledgement. The STM32 Fault
+Manager is the sole owner of active/latched aggregation, acknowledgement, and
+immediate HV safe-off. Detection modules may only assert or deassert their
+assigned condition.
+
+Startup monitor-chain, register-initialisation, and diagnostics attempts use
+their source retry budget before asserting their ERROR input. Once exhausted,
+they report and clear through these ordinary ERROR semantics; HV remains `OFF`
+until acknowledgement permits another start.
+
+The STM32 independent watchdog starts after the required clock and DMA setup,
+before every fallible peripheral initialisation, and has a nominal 500 ms
+timeout. It is refreshed every 100 ms only when both the PCC loop and BCC task
+have progressed; BCC startup retry waits are non-blocking. A subsequent
+platform-initialisation failure directly drives the precharge output and
+contactor PWM safe before the watchdog reset, with the contactor-driver
+pull-down as the hardware fallback. A clock-initialisation failure may occur
+before the watchdog is available; the hardware pull-down still holds the
+contactor control line safe.
+
+The STM32 ADC is calibrated at startup. Its continuous DMA acquisition is
+checked every 100 ms for DMA progress, ADC/DMA errors, and a 2.7--3.6 V VDDA
+reference. Three consecutive failed checks assert `ADC_FAULT` and immediately
+safe-off HV. Calibration is not repeated during normal operation.
+
+`EVENT` is five bytes:
 
 ```text
-event_id:u8 | value:u16
+event_id:u8 | value:u32
 ```
 
 | ID | Event | `value` |
 |---:|---|---|
 | `0x01` | BMS state changed | New BMS state |
 | `0x02` | HV state changed | New HV state |
-| `0x03` | BMS active faults changed | New active mask |
-| `0x04` | BMS latched faults changed | New latched mask |
-| `0x05` | HV active reasons changed | New active mask |
-| `0x06` | HV latched reasons changed | New latched mask |
-| `0x07` | Measurement freshness changed | `0` or `1` |
+| `0x03` | BMS active errors changed | New active mask |
+| `0x04` | BMS latched errors changed | New latched mask |
+| `0x05` | HV active errors changed | New active mask |
+| `0x06` | HV latched errors changed | New latched mask |
+| `0x07` | Warnings changed | New warning mask |
+| `0x08` | Measurement freshness changed | `0` or `1` |
 
 `EVENT` is a convenience notification. `STATUS` is authoritative, so a lost
 event does not change correctness.
@@ -192,14 +225,15 @@ reads, to the link and sequence that originated them.
 
 | ID | Service | Request arguments | `OK` response data |
 |---:|---|---|---|
-| `0x01` | `GET_STATUS` | None | 17-byte `STATUS` |
+| `0x01` | `GET_STATUS` | None | 29-byte `STATUS` |
 | `0x02` | `SET_RUN_REQUEST` | `requested:u8` (`0` or `1`) | None |
-| `0x03` | `CLEAR_FAULTS` | None | None |
+| `0x03` | `ACKNOWLEDGE_FAULTS` | None | None |
 | `0x04` | `READ_REGISTER` | `slave_index:u8, register:u8` | `slave_index:u8, register:u8, value:u16` |
 | `0x05` | `SET_RTC` | `unix_time_s:u32` UTC, 2000--2099 | None |
 | `0x06` | `GET_DEVICE_INFO` | None | `firmware_version:u32` |
 | `0x07` | `ENTER_STM32_BOOTLOADER` | `firmware_version:u32, image_length:u32, image_crc32:u32` | None |
 | `0x08` | `GET_RTC` | None | `unix_time_s:u32` UTC |
+| `0x09` | `SET_BALANCING_REQUEST` | `requested:u8` (`0` or `1`) | None |
 
 The STM32 calendar stores UTC only. It accepts `SET_RTC` only for 2000--2099
 and returns `INVALID` for another timestamp or `DENIED` if the hardware write
@@ -208,10 +242,20 @@ domain valid. The Gateway is the normal setter: it obtains NTP after station
 connection and forwards the result through this same service slot.
 
 `SET_RUN_REQUEST(0)` immediately removes the request through the STM32 PCC
-path. A request of 1 does not guarantee an HV start. `CLEAR_FAULTS` is denied
-while run is requested or live HV conditions are unhealthy. The Gateway and
-Home Assistant cannot bypass a fault, write BCC registers, or override the HV
+path. A request of 1 does not guarantee an HV start. `ACKNOWLEDGE_FAULTS` is
+denied while any ERROR condition remains active or the BMS is `CRITICAL`.
+Accepted acknowledgement clears inactive BMS/HV ERROR latches and warnings,
+but deliberately preserves the run request; PCC can therefore restart from
+`OFF` immediately once the Fault Manager permits it. The Gateway and Home
+Assistant cannot bypass a fault, write BCC registers, or override the HV
 supervisor.
+
+`SET_BALANCING_REQUEST` is an additional AND gate: a request of 1 does not
+guarantee balancing. The STM32 requires a running, fault-free BMS plus its
+configured cell-voltage thresholds. A request of 0 disables the BCC balancing
+drivers on the next BCC loop. This development build defaults the volatile
+request to 0 after every reset; change and document that default explicitly for
+the production balancing enablement.
 
 `firmware_version` packs `major | (minor << 8) | (patch << 16) |
 (build << 24)`.

@@ -96,8 +96,8 @@ namespace
             Status status{};
             if (decodeStatus(frame, status))
             {
-                ESP_LOGI(kLogTag, "STATUS bms=%u hv=%u slaves=%u flags=0x%04X active=0x%04X",
-                         status.bmsState, status.hvState, status.slaveCount, status.flags, status.bmsActiveFaults);
+                ESP_LOGI(kLogTag, "STATUS bms=%u hv=%u slaves=%u flags=0x%04X active=0x%08" PRIX32,
+                         status.bmsState, status.hvState, status.slaveCount, status.flags, status.bmsActiveErrors);
             }
             break;
         }

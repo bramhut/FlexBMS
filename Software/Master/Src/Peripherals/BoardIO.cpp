@@ -1,6 +1,7 @@
 #include "BoardIO.h"
 
 #include "adc.h"
+#include "FaultManager.h"
 #include "main.h"
 #include "tim.h"
 
@@ -20,8 +21,17 @@ namespace IO
         constexpr double ADC_OVERSAMPLING_GAIN = 16.0;
         constexpr double ADC_DIFFERENTIAL_SCALE = 2048.0 * ADC_OVERSAMPLING_GAIN;
         constexpr double HV_DIVIDER_AND_GAIN = 801.0 / 2.0;
+        constexpr uint32_t ADC_HEALTH_CHECK_PERIOD_MS = 100U;
+        constexpr uint8_t ADC_HEALTH_FAILURE_LIMIT = 3U;
+        constexpr double MIN_VALID_VDDA = 2.7;
+        constexpr double MAX_VALID_VDDA = 3.6;
 
         alignas(4) volatile uint32_t adcValues[ADC_CHANNEL_COUNT] = {};
+        volatile uint32_t adcDmaCompletionCount = 0U;
+        bool adcStarted = false;
+        uint32_t lastAdcDmaCompletionCount = 0U;
+        uint32_t lastAdcHealthCheckAt = 0U;
+        uint8_t adcHealthFailureCount = 0U;
         RGB_t ledColor{1.0, 1.0, 1.0};
         bool ledState = false;
 
@@ -49,6 +59,29 @@ namespace IO
                 ADC_DIFFERENTIAL_SCALE;
             return std::max(0.0, adcDifferentialVoltage * HV_DIVIDER_AND_GAIN);
         }
+
+        bool isAdcHealthy()
+        {
+            const uint32_t currentDmaCompletionCount = adcDmaCompletionCount;
+            const bool dmaProgressed =
+                currentDmaCompletionCount != lastAdcDmaCompletionCount;
+            lastAdcDmaCompletionCount = currentDmaCompletionCount;
+
+            const double vdda = getVdda();
+            return adcStarted && dmaProgressed &&
+                   HAL_ADC_GetError(&hadc1) == HAL_ADC_ERROR_NONE &&
+                   hadc1.DMA_Handle != nullptr &&
+                   HAL_DMA_GetError(hadc1.DMA_Handle) == HAL_DMA_ERROR_NONE &&
+                   vdda >= MIN_VALID_VDDA && vdda <= MAX_VALID_VDDA;
+        }
+    }
+
+    void reportAdcDmaCompletion(ADC_HandleTypeDef *hadc)
+    {
+        if (hadc->Instance == ADC1)
+        {
+            ++adcDmaCompletionCount;
+        }
     }
 
     void setup()
@@ -57,14 +90,16 @@ namespace IO
         setContactorDutyPercent(0U);
         setLED(false);
 
-        if (HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED) != HAL_OK ||
-            HAL_ADCEx_Calibration_Start(&hadc1, ADC_DIFFERENTIAL_ENDED) != HAL_OK ||
-            HAL_ADC_Start_DMA(
-                &hadc1,
-                const_cast<uint32_t *>(adcValues),
-                ADC_CHANNEL_COUNT) != HAL_OK)
+        adcStarted = HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED) == HAL_OK &&
+                     HAL_ADCEx_Calibration_Start(&hadc1, ADC_DIFFERENTIAL_ENDED) == HAL_OK &&
+                     HAL_ADC_Start_DMA(
+                         &hadc1,
+                         const_cast<uint32_t *>(adcValues),
+                         ADC_CHANNEL_COUNT) == HAL_OK;
+        if (!adcStarted)
         {
             PRINTF_ERR("[IO] ADC1 calibration or DMA startup failed\n");
+            FaultManager::setBmsFault(FaultManager::BmsFault::AdcFault, true);
         }
     }
 
@@ -130,6 +165,16 @@ namespace IO
         }
     }
 
+    void emergencySafeOff()
+    {
+        HAL_GPIO_WritePin(PCC_EN_GPIO_Port, PCC_EN_Pin, GPIO_PIN_RESET);
+        if (htim3.Instance != nullptr)
+        {
+            __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 0U);
+            htim3.Instance->CCER &= ~TIM_CCER_CC1E;
+        }
+    }
+
     bool areHVSensorDiagnosticsHealthy()
     {
         return HAL_GPIO_ReadPin(
@@ -138,6 +183,36 @@ namespace IO
                HAL_GPIO_ReadPin(
                    V_SENSE_BAT_DIAG_GPIO_Port,
                    V_SENSE_BAT_DIAG_Pin) == GPIO_PIN_SET;
+    }
+
+    void updateAdcHealth()
+    {
+        if (!adcStarted)
+        {
+            FaultManager::setBmsFault(FaultManager::BmsFault::AdcFault, true);
+            return;
+        }
+
+        const uint32_t now = HAL_GetTick();
+        if (now - lastAdcHealthCheckAt < ADC_HEALTH_CHECK_PERIOD_MS)
+        {
+            return;
+        }
+        lastAdcHealthCheckAt = now;
+
+        if (isAdcHealthy())
+        {
+            adcHealthFailureCount = 0U;
+            FaultManager::setBmsFault(FaultManager::BmsFault::AdcFault, false);
+            return;
+        }
+
+        if (adcHealthFailureCount < ADC_HEALTH_FAILURE_LIMIT)
+        {
+            ++adcHealthFailureCount;
+        }
+        FaultManager::setBmsFault(FaultManager::BmsFault::AdcFault,
+                                  adcHealthFailureCount >= ADC_HEALTH_FAILURE_LIMIT);
     }
 
     bool isUsbPresent()
@@ -156,4 +231,9 @@ namespace IO
     {
         return getHVVoltage(BATTERY_VOLTAGE_INDEX);
     }
+}
+
+extern "C" void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+    IO::reportAdcDmaCompletion(hadc);
 }

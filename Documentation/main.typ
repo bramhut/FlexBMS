@@ -316,13 +316,12 @@ The current battery profile is:
 - 314 Ah nominal capacity; and
 - amp-hour retention in RTC backup registers while backup power is present.
 
-The firmware separates active fault conditions, acknowledgement-required latches, and in-memory fault
-history. The HV supervisor receives permission only while the BMS is running without blocking faults and
-holds one fresh, complete measurement set from the monitor chain.
+The firmware separates active fault conditions and acknowledgement-required latches. The HV supervisor
+receives permission only while the BMS is running without blocking faults and holds one fresh, complete
+measurement set from the monitor chain.
 
-Runtime faults keep measurement and monitoring active while preventing relay closure. A clear request is
-accepted only after the underlying runtime condition has disappeared. The BMS then repeats its device,
-register, diagnostic, and measurement validation before allowing the latch to clear.
+Runtime faults keep measurement and monitoring active while preventing relay closure. An acknowledgement
+is accepted only after the underlying runtime condition has disappeared.
 
 The STM32 also hosts:
 
@@ -335,7 +334,6 @@ The STM32 also hosts:
 === Todo:
 High priority:
 - Go through CubeMX configuration. Pinout is OK.
-- Watchdog implementation. Contactor should open in case of timeout.
 - Analog measurement of HV side. Including diagnostic pin checking. ADC configuraion, high accuracy low Fs.
 - Precharge handling. Including: 
 - Contactor handling. Including: economizing, failure checking using voltages (to be discussed)
@@ -366,13 +364,14 @@ pull-in. `CONTACTOR_CLOSE` transfers from the precharge path to contactor hold d
 monitoring the BMS permission and both HV measurements.
 
 A removed request, lost BMS permission, or implausible HV feedback disables both drivers. A blocking fault
-does not erase a true run request: after an explicit user fault-clear request and successful STM32
+does not erase a true run request: after an explicit user acknowledgement and successful STM32
 revalidation, the BMS may resume the startup sequence. The request defaults off after an STM32 reset;
 loss of a Gateway or USB Companion transport does not alter it. The STM32 reports requested state,
 actual HV state, and any blocking reason separately.
 
-USB-only operation supports service access but cannot request or energize the HV path. The fitted
-hardware pull-down defines the inactive USB-sense level; the STM32 does not enable an internal pull.
+USB-only operation supports service access but cannot energize the HV path. A recorded run request
+still requires healthy BCC and HV validation before the STM32 can start. The fitted hardware pull-down
+defines the inactive USB-sense level; the STM32 does not enable an internal pull.
 
 #callout(
   [Source of truth],
@@ -482,17 +481,18 @@ service request uses a value from 1 through 255; the STM32 response echoes that 
 
 `HEARTBEAT` has an empty payload.
 
-`STATUS` is 17 bytes:
+`STATUS` is 29 bytes:
 
 ```text
 bms_state:u8 | hv_state:u8 | flags:u16 | slave_count:u8 |
-bms_active_faults:u16 | bms_latched_faults:u16 |
-hv_active_faults:u16 | hv_latched_faults:u16 | uptime_ms:u32
+bms_active_errors:u32 | bms_latched_errors:u32 |
+hv_active_errors:u32 | hv_latched_errors:u32 |
+warnings:u32 | uptime_ms:u32
 ```
 
 Status flag bits are: 0 BMS HV-ready, 1 charging allowed, 2 run request asserted, 3 complete
-measurements fresh, and 4 isolated-UART Gateway peer alive. USB Companion heartbeats do not affect
-bit 4. Bits 5--15 are zero. `slave_count` comes from the
+measurements fresh, 4 isolated-UART Gateway peer alive, and 5 balancing request. USB Companion
+heartbeats do not affect bit 4. Bits 6--15 are zero. `slave_count` comes from the
 configured BMS monitor chain and is variable between builds. A production module contains two
 monitor slaves, but a single-slave development chain is supported until its second slave is
 connected. The Gateway must use the reported value and must not reject an odd count.
@@ -539,26 +539,54 @@ are not fresh.
 
 ==== States, faults, and events
 
-BMS states are `0 DEVICE_INITIALIZATION`, `1 REGISTER_INITIALIZATION`,
-`2 PERFORMING_DIAGNOSTICS`, `3 RUNNING`, and `4 PANIC`. HV states are `0 OFF`, `1 SELF_TEST`,
-`2 PRECHARGE`, `3 CONTACTOR_CLOSE`, and `4 RUN`.
+BMS states are `0 STARTING`, `1 READY`, `2 RUNNING`, `3 ERROR`, and `4 CRITICAL`.
+HV states are `0 OFF`, `1 SELF_TEST`, `2 PRECHARGE`, `3 CONTACTOR_CLOSE`, and `4 RUN`.
+`CRITICAL` has no bitmap: it represents an unrecoverable condition in the current software and
+forces HV safe-off for the remainder of that boot.
 
-BMS fault bitmap bits 0--15 are, in order: `INVALID_CONFIG`, `TPL_FAULT`,
-`CID_INITIALIZATION_FAULT`, `REGISTER_INITIALIZATION_FAULT`, `CELL_BALANCING_FAULT`,
-`DIAGNOSTICS_FAULT`, `OVERVOLTAGE_LIMIT`, `UNDERVOLTAGE_LIMIT`, `TEMPERATURE_LIMIT`,
-`OVERCURRENT_LIMIT`, `IC_TEMPERATURE`, `SOC_LIMIT`, `OPEN_SHORT_FAULT`, `SYSTEM_FAULT`,
-`COMMUNICATION_TIMEOUT`, and `HV_SUPERVISOR_FAULT`.
+BMS ERROR bitmap bits are: 0 `CONFIGURATION_INVALID`, 1 `SLAVE_UNAVAILABLE`,
+2 `BCC_DIAGNOSTICS`, 3 `CELL_VOLTAGE_LIMIT`, 4 `THERMAL_LIMIT`, 5
+`CURRENT_LIMIT`, 6 `BCC_INTEGRITY`, 7 `ADC_FAULT`, 8
+`BALANCING_HARDWARE_FAULT`, and 9 `BCC_COMMUNICATION`. Bits 10--31 are
+reserved and zero.
 
-HV fault bitmap bits 0--6 are: `SENSOR_DIAGNOSTIC`, `USB_ONLY`,
-`BATTERY_VOLTAGE_MISMATCH`, `LOAD_SIDE_ENERGIZED`, `PRECHARGE_TIMEOUT`,
-`PRECHARGE_VOLTAGE_LOST`, and `CONTACTOR_VOLTAGE_LOST`. An active reason is present now; a
-latched reason remains a block after its live condition clears, until the STM32 accepts a supported
-clear procedure and revalidates the system.
+HV ERROR bitmap bits are: 0 `HV_SENSOR_DIAGNOSTIC`, 1
+`BATTERY_VOLTAGE_MISMATCH`, 2 `LOAD_SIDE_ENERGISED`, 3 `PRECHARGE_TIMEOUT`, 4
+`PRECHARGE_VOLTAGE_LOST`, and 5 `CONTACTOR_VOLTAGE_LOST`. Bits 6--31 are
+reserved and zero.
 
-`EVENT` is three bytes:
+`warnings` is non-latched. Bits are: 0 `WATCHDOG_RESET` and 1
+`STARTUP_DIAGNOSTICS_BYPASSED`. Bits 2--31 are reserved and zero.
+`WATCHDOG_RESET` is set when this STM32 boot followed an independent or window
+watchdog reset. Gateway liveness, CAN condition, near-limit indication, and an
+inactive balancing request are not BMS warnings in this release.
+
+An active ERROR is present now. A latched ERROR remains blocking after its live condition clears
+until the STM32 accepts acknowledgement. The STM32 Fault Manager is the sole owner of
+active/latched aggregation, acknowledgement, and immediate HV safe-off. Detection modules may
+only assert or deassert their assigned condition. Startup monitor-chain, register-initialisation,
+and diagnostics attempts use their source retry budget before asserting their ERROR input. Once
+exhausted, they use these ordinary ERROR semantics.
+
+The independent watchdog starts after the required clock and DMA setup, before
+every fallible peripheral initialisation, has a nominal 500 ms timeout, and is
+refreshed every 100 ms only while both the PCC loop and BCC task continue to
+make progress. BCC initialisation retry waits are non-blocking, so they do not
+mask a stalled task. A subsequent platform-initialisation failure directly
+disables the precharge output and contactor PWM before the watchdog reset; the
+contactor driver pull-down is the hardware fallback. A clock-initialisation
+failure may occur before the watchdog is available; the hardware pull-down
+still holds the contactor control line safe.
+
+The STM32 ADC is calibrated at startup. Its continuous DMA acquisition is
+checked every 100 ms for DMA progress, ADC/DMA errors, and a 2.7--3.6 V VDDA
+reference. Three consecutive failed checks assert `ADC_FAULT` and immediately
+safe-off HV. Calibration is not repeated during normal operation.
+
+`EVENT` is five bytes:
 
 ```text
-event_id:u8 | value:u16
+event_id:u8 | value:u32
 ```
 
 #table(
@@ -569,11 +597,12 @@ event_id:u8 | value:u16
   table.header([*ID*], [*Event*], [*Value*]),
   [`0x01`], [BMS state changed], [new BMS state],
   [`0x02`], [HV state changed], [new HV state],
-  [`0x03`], [BMS active faults changed], [new active mask],
-  [`0x04`], [BMS latched faults changed], [new latched mask],
-  [`0x05`], [HV active reasons changed], [new active mask],
-  [`0x06`], [HV latched reasons changed], [new latched mask],
-  [`0x07`], [measurement freshness changed], [`0` or `1`],
+  [`0x03`], [BMS active errors changed], [new active mask],
+  [`0x04`], [BMS latched errors changed], [new latched mask],
+  [`0x05`], [HV active errors changed], [new active mask],
+  [`0x06`], [HV latched errors changed], [new latched mask],
+  [`0x07`], [warnings changed], [new warning mask],
+  [`0x08`], [measurement freshness changed], [`0` or `1`],
 )
 
 EVENT is a convenience notification; STATUS is authoritative, so loss of an event is harmless.
@@ -594,22 +623,31 @@ accepted and invoked the requested operation; STATUS and EVENT show the resultin
   stroke: none,
   inset: (x: 5pt, y: 3pt),
   table.header([*ID*], [*Service*], [*Request arguments*], [*OK response data*]),
-  [`0x01`], [GET_STATUS], [none], [17-byte STATUS],
+  [`0x01`], [GET_STATUS], [none], [29-byte STATUS],
   [`0x02`], [SET_RUN_REQUEST], [`requested:u8` (`0` or `1`)], [none],
-  [`0x03`], [CLEAR_FAULTS], [none], [none],
+  [`0x03`], [ACKNOWLEDGE_FAULTS], [none], [none],
   [`0x04`], [READ_REGISTER], [`slave_index:u8, register:u8`], [`slave_index:u8, register:u8, value:u16`],
   [`0x05`], [SET_RTC], [`unix_time_s:u32` UTC], [none],
   [`0x06`], [GET_DEVICE_INFO], [none], [`firmware_version:u32`],
   [`0x07`], [ENTER_STM32_BOOTLOADER], [`firmware_version:u32, image_length:u32, image_crc32:u32`], [none],
   [`0x08`], [GET_RTC], [none], [`unix_time_s:u32` UTC],
+  [`0x09`], [SET_BALANCING_REQUEST], [`requested:u8` (`0` or `1`)], [none],
 )
 
 `SET_RUN_REQUEST(0)` immediately removes the request through the STM32 PCC path. A request of 1
 does not guarantee an HV start: the STM32 alone decides whether BMS and HV checks permit the
-sequence. CLEAR_FAULTS is denied while run is requested or live HV conditions are unhealthy.
-Neither the Gateway nor Home Assistant can bypass a fault, write BCC registers, or override the
-HV supervisor. `firmware_version` is packed as
+sequence. `ACKNOWLEDGE_FAULTS` is denied while any ERROR condition remains active or the BMS is
+`CRITICAL`. Accepted acknowledgement clears inactive BMS/HV ERROR latches and warnings, but
+deliberately preserves the run request; PCC can therefore restart from `OFF` immediately once the
+Fault Manager permits it. Neither the Gateway nor Home Assistant can bypass a fault, write BCC
+registers, or override the HV supervisor. `firmware_version` is packed as
 `major | (minor << 8) | (patch << 16) | (build << 24)`.
+
+`SET_BALANCING_REQUEST` is an additional AND gate: a request of 1 does not guarantee
+balancing. The STM32 requires a running, fault-free BMS plus configured cell-voltage
+thresholds. A request of 0 disables the BCC balancing drivers on the next BCC loop. This
+development build defaults the volatile request to 0 after every reset; change and document
+that default explicitly for the production balancing enablement.
 
 `ENTER_STM32_BOOTLOADER` is the only STM32-update operation in this protocol. The Gateway must
 already have staged and CRC-checked the image. The STM32 validates the request shape and image

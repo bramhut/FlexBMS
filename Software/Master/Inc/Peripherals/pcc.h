@@ -25,7 +25,6 @@ namespace PCC
     {
         NO_ERROR,
         SENSOR_DIAGNOSTIC_ERROR,
-        USB_ONLY_ERROR,
         BATTERY_VOLTAGE_MISMATCH,
         LOAD_SIDE_ENERGIZED,
         PRECHARGE_TIMEOUT,
@@ -33,23 +32,12 @@ namespace PCC
         CONTACTOR_VOLTAGE_LOST
     };
 
-    enum HV_ERROR_MASK : uint16_t
-    {
-        HV_ERROR_NONE = 0U,
-        HV_ERROR_SENSOR_DIAGNOSTIC = 1U << 0,
-        HV_ERROR_USB_ONLY = 1U << 1,
-        HV_ERROR_BATTERY_VOLTAGE_MISMATCH = 1U << 2,
-        HV_ERROR_LOAD_SIDE_ENERGIZED = 1U << 3,
-        HV_ERROR_PRECHARGE_TIMEOUT = 1U << 4,
-        HV_ERROR_PRECHARGE_VOLTAGE_LOST = 1U << 5,
-        HV_ERROR_CONTACTOR_VOLTAGE_LOST = 1U << 6
-    };
-
     void setup();
     void loop();
 
     void setRunRequest(bool requested);
-    bool requestFaultClear();
+    // FaultManager is the only caller for this immediate safe-off command.
+    void forceSafeOffFromFaultManager();
     bool isSafeForFirmwareUpdate();
     bool enterFirmwareUpdateLock();
     bool isFirmwareUpdateLocked();
@@ -58,10 +46,6 @@ namespace PCC
     PCC_STATE getPCCState();
     PCC_ERROR getPCCError();
     uint32_t getLastPrechargeTime();
-
-    uint16_t getActiveErrors();
-    uint16_t getLatchedErrors();
-    uint16_t getHistoricalErrors();
 
     double getBatteryVoltage();
     double getLoadVoltage();
