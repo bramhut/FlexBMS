@@ -74,10 +74,11 @@ warnings:u32 | uptime_ms:u32
 
 `flags`: bit 0 BMS HV-ready; bit 1 charging allowed; bit 2 run request;
 bit 3 complete measurements fresh; bit 4 isolated-UART Gateway peer alive;
-bit 5 balancing request. Bits 6--15 are zero. USB heartbeats never change bit 4.
+bit 5 balancing request; bit 6 SOC valid. Bits 7--15 are zero. USB heartbeats
+never change bit 4.
 
 `slave_count` is the variable configured BMS monitor-chain count. A production
-module has two monitor slaves, but a single-slave development chain is valid.
+module has eight monitor slaves, but a single-slave development chain is valid.
 The Gateway must use the reported count and must not reject an odd count.
 
 ### `PACK` — 24 bytes
@@ -92,6 +93,16 @@ Voltages are microvolts. Current is signed amperes ×64; positive is charging.
 `soc_raw` uses the existing BCC range (`0 = -100%`, `65535 = 200%`):
 `percent = 100 * (soc_raw / 65535 * 3 - 1)`. NTC conversion is
 `raw / 65535 * 120 - 20` °C. IC raw is centikelvin: `raw / 100 - 273.15` °C.
+
+Only use `soc_raw` when STATUS bit 6 is set. SOC is informational and never
+commands HV. The estimate is retained in the CR2032-powered RTC backup domain
+with a version marker and checksum; an erased or corrupt value is invalid.
+Current sensing is deliberately disabled in the single-slave development
+configuration, so SOC remains invalid there. Production enables it only on
+CID 1. Full-charge calibration requires fresh measurements with no active BMS
+error, every cell at or above 3.450 V, current from -0.100 A through C/50 (6.28 A for the
+314 Ah default), continuously for 300 s. Any failed condition restarts the
+timer; calibration sets SOC to 100%.
 
 ### `CELL` — 51 bytes per configured slave
 
@@ -179,10 +190,15 @@ pull-down as the hardware fallback. A clock-initialisation failure may occur
 before the watchdog is available; the hardware pull-down still holds the
 contactor control line safe.
 
-The STM32 ADC is calibrated at startup. Its continuous DMA acquisition is
-checked every 100 ms for DMA progress, ADC/DMA errors, and a 2.7--3.6 V VDDA
-reference. Three consecutive failed checks assert `ADC_FAULT` and immediately
-safe-off HV. Calibration is not repeated during normal operation.
+The STM32 ADC is calibrated at startup. TIM7 triggers a three-rank HV scan at
+50 Hz: load-side differential voltage, battery-side differential voltage, and
+VREFINT. Each rank uses 640.5 ADC clock cycles of acquisition and 256x
+oversampling with right-shift 4. DMA publishes complete scans as one snapshot.
+The STM32 drives VREF+ from its 2.9 V internal reference buffer. ADC/DMA
+errors and a 2.8--3.0 V ADC reference are checked every 20 ms. DMA progress is
+stale only after no completed scan for 100 ms. Three consecutive failed checks
+assert `ADC_FAULT` and immediately safe-off HV. Calibration is not repeated
+during normal operation.
 
 `EVENT` is five bytes:
 
@@ -231,9 +247,10 @@ reads, to the link and sequence that originated them.
 | `0x04` | `READ_REGISTER` | `slave_index:u8, register:u8` | `slave_index:u8, register:u8, value:u16` |
 | `0x05` | `SET_RTC` | `unix_time_s:u32` UTC, 2000--2099 | None |
 | `0x06` | `GET_DEVICE_INFO` | None | `firmware_version:u32` |
-| `0x07` | `ENTER_STM32_BOOTLOADER` | `firmware_version:u32, image_length:u32, image_crc32:u32` | None |
+| `0x07` | `PREPARE_STM32_BOOTLOADER` | `firmware_version:u32, image_length:u32, image_crc32:u32` | None |
 | `0x08` | `GET_RTC` | None | `unix_time_s:u32` UTC |
 | `0x09` | `SET_BALANCING_REQUEST` | `requested:u8` (`0` or `1`) | None |
+| `0x0A` | `COMMIT_STM32_BOOTLOADER` | None | None (successful request enters ROM immediately) |
 
 The STM32 calendar stores UTC only. It accepts `SET_RTC` only for 2000--2099
 and returns `INVALID` for another timestamp or `DENIED` if the hardware write
@@ -262,18 +279,26 @@ the production balancing enablement.
 
 ### STM32 bootloader handoff
 
-`ENTER_STM32_BOOTLOADER` is the only STM32-update operation. The Gateway must
-already have staged and CRC-checked the image. The STM32 validates the request
-shape and image length; it cannot verify staged bytes it never receives.
+`PREPARE_STM32_BOOTLOADER` and `COMMIT_STM32_BOOTLOADER` form the STM32-update
+handoff. The Gateway must already have staged and CRC-checked the image. The
+STM32 validates the prepare request shape and image length; it cannot verify
+staged bytes it never receives.
 
 The STM32 returns `DENIED` unless run request is off and it can de-energise the
-HV path and inhibit normal services. It returns `USB_HOST_ACTIVE` if its USB CDC
-device is enumerated by a host, because the ROM bootloader would select USB DFU.
-USB-only power without host enumeration is allowed. After `OK`, it drains that response, stops
-framed UART, and enters the STM32 ROM bootloader. The Gateway then performs ROM
+HV path. It returns `USB_HOST_ACTIVE` if its USB CDC device is enumerated by a
+host. `PREPARE_STM32_BOOTLOADER` immediately holds HV safely off and blocks
+normal services, then returns `OK`. Its prepared state expires after 3 seconds
+unless the Gateway sends `COMMIT_STM32_BOOTLOADER`. The commit has no response:
+after successfully transmitting it, the Gateway owns USART1 and immediately
+changes to ROM settings. If prepare or commit transmission fails, the STM32
+remains in (or returns to) normal BMS operation; the Gateway reports the failure
+instead of waiting indefinitely. It then performs ROM
 bootloader sync, transfer, readback verification, and `Go` on USART1; these are
-not FlexBMS UART frames. On return, the Gateway waits for heartbeat. There are
-no update-data, acknowledgement, retry, or status frame types in UART v1.
+not FlexBMS UART frames. On return, the Gateway waits for an application
+heartbeat before reporting completion. Any failure after erase has
+begun requires wired STM32 recovery; the Gateway rejects further STM32 OTA
+attempts until it observes an application heartbeat. There are no update-data,
+retry, or status frame types in UART v1.
 
 ## Test vectors
 
@@ -292,7 +317,10 @@ SET_RUN_REQUEST(true), sequence 0x2B
 READ_REGISTER response, sequence 0x2C, slave 3, register 0x20, value 0x1234
 46 42 01 11 2C 06 00 04 00 03 20 34 12 1A 45 F6 9C
 
-ENTER_STM32_BOOTLOADER, sequence 0x2D, version 1.2.3 build 4,
+PREPARE_STM32_BOOTLOADER, sequence 0x2D, version 1.2.3 build 4,
 image length 131072 bytes, image CRC32 0xA1B2C3D4
 46 42 01 10 2D 0D 00 07 01 02 03 04 00 00 02 00 D4 C3 B2 A1 42 C9 9E 95
+
+COMMIT_STM32_BOOTLOADER, sequence 0x2E
+46 42 01 10 2E 01 00 0A 50 6F 02 53
 ```

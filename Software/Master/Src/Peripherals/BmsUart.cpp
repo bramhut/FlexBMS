@@ -62,9 +62,10 @@ namespace BmsUart
             READ_REGISTER = 0x04U,
             SET_RTC = 0x05U,
             GET_DEVICE_INFO = 0x06U,
-            ENTER_STM32_BOOTLOADER = 0x07U,
+            PREPARE_STM32_BOOTLOADER = 0x07U,
             GET_RTC = 0x08U,
             SET_BALANCING_REQUEST = 0x09U,
+            COMMIT_STM32_BOOTLOADER = 0x0AU,
         };
 
         enum ServiceResult : uint8_t
@@ -513,6 +514,7 @@ namespace BmsUart
             if (measurementsFresh) flags |= 1U << 3U;
             if (hasValidGatewayFrame && HAL_GetTick() - lastValidGatewayFrameMs < GATEWAY_LOSS_MS) flags |= 1U << 4U;
             if (SlaveController::isBalancingRequested()) flags |= 1U << 5U;
+            if (SlaveController::isSoCValid()) flags |= 1U << 6U;
 
             payload[0] = static_cast<uint8_t>(faultSnapshot.bmsState);
             payload[1] = static_cast<uint8_t>(PCC::getPCCState());
@@ -759,6 +761,11 @@ namespace BmsUart
                 sendServiceResponse(frame.sequence, serviceId, DENIED);
                 return;
             }
+            if (PCC::isFirmwareUpdatePrepared() && serviceId != COMMIT_STM32_BOOTLOADER)
+            {
+                sendServiceResponse(frame.sequence, serviceId, BUSY);
+                return;
+            }
             if (pendingRegisterRead.active)
             {
                 sendServiceResponse(frame.sequence, serviceId, BUSY);
@@ -886,7 +893,7 @@ namespace BmsUart
                 return;
             }
 
-            case ENTER_STM32_BOOTLOADER:
+            case PREPARE_STM32_BOOTLOADER:
             {
                 if (frame.length != 13U)
                 {
@@ -902,15 +909,34 @@ namespace BmsUart
                     return;
                 }
                 const uint32_t imageLength = readLe32(frame.payload.data() + 5U);
-                if (imageLength < 8U || imageLength > APP_FLASH_BYTES || !PCC::enterFirmwareUpdateLock())
+                if (imageLength < 8U || imageLength > APP_FLASH_BYTES || !PCC::prepareFirmwareUpdate())
                 {
                     sendServiceResponse(frame.sequence, serviceId, DENIED);
                     return;
                 }
-                if (sendServiceResponse(frame.sequence, serviceId, OK))
+                // PREPARE is reversible. The Gateway must explicitly COMMIT
+                // after it receives this response; otherwise PCC expires the
+                // prepared safe-off state and returns to normal operation.
+                sendServiceResponse(frame.sequence, serviceId, OK);
+                return;
+            }
+
+            case COMMIT_STM32_BOOTLOADER:
+            {
+                if (frame.length != 1U)
                 {
-                    enterSystemBootloader();
+                    sendServiceResponse(frame.sequence, serviceId, INVALID);
+                    return;
                 }
+                if (!PCC::commitFirmwareUpdate())
+                {
+                    sendServiceResponse(frame.sequence, serviceId, DENIED);
+                    return;
+                }
+                // This final request deliberately has no service response.
+                // The Gateway treats successful transmission as the commit and
+                // immediately changes USART1 to the STM32 ROM protocol.
+                enterSystemBootloader();
                 return;
             }
 

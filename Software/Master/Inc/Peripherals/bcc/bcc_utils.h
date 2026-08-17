@@ -209,11 +209,12 @@
  *
  * @param reg Value of the MEAS_IC_TEMP register.
  *
- * @return Converted value in [K] multiplied by 10
- *         (i.e. resolution of 0.1 K); int32_t type.
+ * @return Converted value in centikelvin (K multiplied by 100). The
+ *         MC33771C MEAS_IC_TEMP resolution is 32 mK per LSB, so this is
+ *         raw * 3.2 centikelvin. This matches the UART temperature contract.
  */
 #define BCC_GET_IC_TEMP(reg) \
-    ((uint16_t) (((((uint32_t)BCC_GET_MEAS_RAW(reg)) * 16 - 126'575U) << 11) / 1875))
+    ((uint16_t) ((((uint32_t) BCC_GET_MEAS_RAW(reg) * 16U) + 2U) / 5U))
 
 
 /*!

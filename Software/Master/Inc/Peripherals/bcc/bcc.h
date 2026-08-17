@@ -114,9 +114,13 @@ private:
     // Message count
     uint8_t mMsgCnt = 0; /*!< Last received value of Message counter (values 0-15). */
 
-    // Ampere-hour registers in the RTC backup domain (data retained when VDD is off)
-    size_t mAmpHourBackupReg;  // Register index of the first register of the pair
-    volatile double *mAmpHour; // Pointer to the value
+    // Ah and its validity record occupy four RTC backup registers. The backup
+    // domain is powered by the CR2032, so a valid estimate survives an STM32
+    // reset. A marker and checksum reject erased or interrupted writes.
+    size_t mAmpHourBackupReg;
+    volatile double *mAmpHour;
+    volatile uint32_t *mAmpHourStateMarker;
+    volatile uint32_t *mAmpHourStateChecksum;
 
     // Coulomb counter difference variables
     uint16_t mCCPrevSamples = 0;
@@ -280,10 +284,17 @@ public:
      */
     bcc_status_t resetBCCCoulombCounter();
 
-    /*!
-     * @brief This function resets the left ampere-hour counter (stored in NVM of uC)
-     */
+    /*! @brief Store an Ah value and mark the backup-domain estimate valid. */
     void setAhCounter(double amphour);
+
+    /*! @brief Return whether the retained Ah value passed its integrity check. */
+    bool ahCounterIsValid() const;
+
+    /*! @brief Return the retained Ah value without sampling the BCC. */
+    double getAhCounter() const;
+
+    /*! @brief Clear a missing or corrupt retained estimate without marking it valid. */
+    void invalidateAhCounter();
 
     /*!
      * @brief This function starts ADC conversion in selected BCC device. It sets

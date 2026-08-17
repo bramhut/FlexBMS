@@ -12,6 +12,9 @@
 #include "bcc/bcc.h"
 #include "bcc/UserSettings.h"
 
+#include <cmath>
+#include <cstring>
+
 #define DEBUG_LVL 2
 #include "Debug.h"
 
@@ -230,9 +233,10 @@ BCC::BCC(Config_t config, uint8_t cid) : mDevice(config.DEVICE_TYPE),
                                          mCellMap(s_cellMap[mDevice][mCellCount]),
                                          mAmpHourBackupReg(config.AMPHOUR_BACKUP_REG)
 {
-    // Set the correct amp hour backup register pointer if valid
-    BCC_MCU_Assert(IS_RTC_BKP(mAmpHourBackupReg) && IS_RTC_BKP(mAmpHourBackupReg + 1U));
+    BCC_MCU_Assert(IS_RTC_BKP(mAmpHourBackupReg) && IS_RTC_BKP(mAmpHourBackupReg + 3U));
     mAmpHour = (volatile double *)((&(TAMP->BKP0R)) + mAmpHourBackupReg);
+    mAmpHourStateMarker = (&(TAMP->BKP0R)) + mAmpHourBackupReg + 2U;
+    mAmpHourStateChecksum = (&(TAMP->BKP0R)) + mAmpHourBackupReg + 3U;
 }
 
 /*!
@@ -601,12 +605,52 @@ bcc_status_t BCC::resetBCCCoulombCounter()
     return regUpdate(MC33771C_ADC_CFG_OFFSET, MC33771C_ADC_CFG_CC_RST_MASK, MC33771C_ADC_CFG_CC_RST(MC33771C_ADC_CFG_CC_RST_RESET_ENUM_VAL));
 }
 
-/*!
- * @brief This function resets the left ampere-hour counter (stored in NVM of uC)
- */
+namespace
+{
+    constexpr uint32_t kAhStateMarker = 0x534F4331U; // "SOC1"
+
+    uint32_t ahStateChecksum(const double ampHour)
+    {
+        uint64_t raw = 0U;
+        static_assert(sizeof(raw) == sizeof(ampHour));
+        std::memcpy(&raw, &ampHour, sizeof(raw));
+        uint32_t checksum = 2166136261U;
+        for (uint8_t i = 0U; i < sizeof(raw); ++i)
+        {
+            checksum ^= static_cast<uint8_t>(raw >> (i * 8U));
+            checksum *= 16777619U;
+        }
+        return checksum;
+    }
+}
+
 void BCC::setAhCounter(double amphour)
 {
+    *mAmpHourStateMarker = 0U;
     *mAmpHour = amphour;
+    *mAmpHourStateChecksum = ahStateChecksum(amphour);
+    __DMB();
+    *mAmpHourStateMarker = kAhStateMarker;
+}
+
+bool BCC::ahCounterIsValid() const
+{
+    const double ampHour = *mAmpHour;
+    return *mAmpHourStateMarker == kAhStateMarker &&
+           std::isfinite(ampHour) &&
+           *mAmpHourStateChecksum == ahStateChecksum(ampHour);
+}
+
+double BCC::getAhCounter() const
+{
+    return *mAmpHour;
+}
+
+void BCC::invalidateAhCounter()
+{
+    *mAmpHourStateMarker = 0U;
+    *mAmpHour = 0.0;
+    *mAmpHourStateChecksum = 0U;
 }
 
 /*!
@@ -901,8 +945,15 @@ bcc_status_t BCC::meas_GetAmpHourAndIAvg(const double rShunt, const bool invertC
     else
     {
         mIAvg = iavg;
-        // Calculate the used capacity in Ah
-        *mAmpHour += deltaC / 3600;
+        const double ampHour = *mAmpHour + deltaC / 3600;
+        if (ahCounterIsValid())
+        {
+            setAhCounter(ampHour);
+        }
+        else
+        {
+            *mAmpHour = ampHour;
+        }
     }
     *Iavg = mIAvg;
     *amphour = *mAmpHour;

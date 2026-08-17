@@ -122,18 +122,58 @@ namespace FlexBms::GatewayApi
             }
         }
 
+        struct QueuedWebSocketText
+        {
+            char *text = nullptr;
+            httpd_ws_frame_t frame{};
+        };
+
+        void releaseQueuedWebSocketText(esp_err_t, int, void *context)
+        {
+            auto *message = static_cast<QueuedWebSocketText *>(context);
+            std::free(message->text);
+            delete message;
+        }
+
+        bool queueWebSocketText(int socket, const char *text, size_t length)
+        {
+            if (server == nullptr || text == nullptr ||
+                httpd_ws_get_fd_info(server, socket) != HTTPD_WS_CLIENT_WEBSOCKET)
+            {
+                return false;
+            }
+
+            auto *message = new (std::nothrow) QueuedWebSocketText{};
+            if (message == nullptr) return false;
+            message->text = static_cast<char *>(std::malloc(length + 1U));
+            if (message->text == nullptr)
+            {
+                delete message;
+                return false;
+            }
+            std::memcpy(message->text, text, length);
+            message->text[length] = '\0';
+            message->frame.type = HTTPD_WS_TYPE_TEXT;
+            message->frame.payload = reinterpret_cast<uint8_t *>(message->text);
+            message->frame.len = length;
+            if (httpd_ws_send_data_async(server, socket, &message->frame,
+                                         releaseQueuedWebSocketText, message) == ESP_OK)
+            {
+                return true;
+            }
+            std::free(message->text);
+            delete message;
+            return false;
+        }
+
         bool sendJsonTo(int socket, cJSON *root)
         {
             char *text = cJSON_PrintUnformatted(root);
             cJSON_Delete(root);
             if (text == nullptr) return false;
-            httpd_ws_frame_t frame{};
-            frame.type = HTTPD_WS_TYPE_TEXT;
-            frame.payload = reinterpret_cast<uint8_t *>(text);
-            frame.len = std::strlen(text);
-            const esp_err_t result = httpd_ws_send_frame_async(server, socket, &frame);
+            const bool queued = queueWebSocketText(socket, text, std::strlen(text));
             cJSON_free(text);
-            return result == ESP_OK;
+            return queued;
         }
 
         void broadcast(cJSON *root)
@@ -147,11 +187,10 @@ namespace FlexBms::GatewayApi
             if (text == nullptr) return;
             for (size_t index = 0U; index < count; ++index)
             {
-                httpd_ws_frame_t frame{};
-                frame.type = HTTPD_WS_TYPE_TEXT;
-                frame.payload = reinterpret_cast<uint8_t *>(text);
-                frame.len = std::strlen(text);
-                (void)httpd_ws_send_frame_async(server, sockets[index], &frame);
+                // httpd_get_client_list includes ordinary HTTP sockets. Never
+                // write WebSocket framing to those sockets, and queue delivery
+                // so a slow browser cannot stall the UART receive loop.
+                (void)queueWebSocketText(sockets[index], text, std::strlen(text));
             }
             cJSON_free(text);
         }
@@ -248,6 +287,7 @@ namespace FlexBms::GatewayApi
             cJSON_AddBoolToObject(root, "measurements_fresh", (status.flags & (1U << 3U)) != 0U);
             cJSON_AddBoolToObject(root, "run_request", (status.flags & (1U << 2U)) != 0U);
             cJSON_AddBoolToObject(root, "balancing_request", (status.flags & (1U << 5U)) != 0U);
+            cJSON_AddBoolToObject(root, "soc_valid", (status.flags & (1U << 6U)) != 0U);
         }
 
         cJSON *bmsStatusJson()
@@ -528,9 +568,15 @@ namespace FlexBms::GatewayApi
         esp_err_t firmwareHandler(httpd_req_t *request)
         {
             const FirmwareUpdate::Target target = std::strcmp(request->uri, "/api/firmware/gateway") == 0 ? FirmwareUpdate::Target::Gateway : FirmwareUpdate::Target::Stm32;
-            if (!Wifi::allowsBmsServices() || Wifi::isAccessPointActive() || !FirmwareUpdate::isAvailable() || serviceInFlight)
+            if (!Wifi::allowsBmsServices() || Wifi::isAccessPointActive())
             {
                 return httpd_resp_send_err(request, HTTPD_403_FORBIDDEN, "Firmware update is available only on the station LAN");
+            }
+            if (!FirmwareUpdate::isAvailable(target) || serviceInFlight)
+            {
+                const bool stm32NeedsRecovery = target == FirmwareUpdate::Target::Stm32 && FirmwareUpdate::isAvailable() && !FirmwareUpdate::isAvailable(target);
+                return httpd_resp_send_err(request, HTTPD_403_FORBIDDEN,
+                                           stm32NeedsRecovery ? "STM32 wired recovery is required before another update" : "Firmware update already in progress");
             }
             char manifestTarget[16]{};
             char version[48]{};

@@ -19,13 +19,14 @@ test('UART v1 decoder handles fragmented frames and resynchronises after bad CRC
   assert.deepEqual(decoder.consume(request), [{ type: messageType.serviceRequest, sequence: 42, payload: Uint8Array.of(serviceId.getStatus) }])
 })
 
-test('UART v1 status exposes run, balancing, and freshness requests', () => {
+test('UART v1 status exposes run, balancing, freshness, and SOC validity', () => {
   const payload = new Uint8Array(29)
-  payload.set([3, 4, 0x3c, 0x00, 1, 0x04, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 1, 0, 0, 0])
+  payload.set([3, 4, 0x7c, 0x00, 1, 0x04, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 1, 0, 0, 0])
   const status = decodeStatus(payload)
   assert.equal(status?.run_request, true)
   assert.equal(status?.balancing_request, true)
   assert.equal(status?.measurements_fresh, true)
+  assert.equal(status?.soc_valid, true)
   assert.equal(status?.bms_latched_errors, 8)
   assert.equal(status?.warnings, 1)
 })

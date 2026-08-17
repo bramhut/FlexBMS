@@ -4,6 +4,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Gateway's Vite build writes Unicode status markers. PlatformIO must inherit
+# UTF-8 on Windows or its output reader can crash under the CP1252 default.
+$env:PYTHONIOENCODING = 'utf-8'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $companionDirectory = Join-Path $repositoryRoot 'Software\Companion'
 $gatewayDirectory = Join-Path $repositoryRoot 'Software\Gateway'
@@ -49,6 +52,18 @@ inline constexpr uint32_t FIRMWARE_VERSION_PACKED =
     $contents = $contents.TrimStart("`r", "`n") + [Environment]::NewLine
     if ((Get-Content -Raw -LiteralPath $stm32VersionHeader) -ne $contents) {
         [System.IO.File]::WriteAllText($stm32VersionHeader, $contents, [System.Text.UTF8Encoding]::new($false))
+    }
+}
+
+function Get-Sha256FileHex([string]$Path) {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        return [System.BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '')
+    }
+    finally {
+        $stream.Dispose()
+        $sha256.Dispose()
     }
 }
 
@@ -244,6 +259,6 @@ Write-OtaBundle
 
 $hashes = Get-ChildItem -LiteralPath $releaseDirectory -File |
     Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
-    ForEach-Object { "$(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256 | Select-Object -ExpandProperty Hash) *$($_.Name)" }
+    ForEach-Object { "$(Get-Sha256FileHex $_.FullName) *$($_.Name)" }
 Set-Content -LiteralPath (Join-Path $releaseDirectory 'SHA256SUMS.txt') -Value $hashes
 Write-Host "Release artifacts created in $releaseDirectory"

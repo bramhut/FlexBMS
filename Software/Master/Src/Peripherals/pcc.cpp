@@ -26,11 +26,14 @@ namespace PCC
         constexpr double MIN_BATTERY_SOURCE_V = 30.0;
         constexpr double MIN_BATTERY_AGREEMENT_V = 10.0;
         constexpr double BATTERY_AGREEMENT_PERCENT = 0.05;
+        constexpr uint32_t FIRMWARE_UPDATE_PREPARE_TIMEOUT_MS = 3'000U;
         PCC_STATE state = OFF;
         PCC_ERROR error = NO_ERROR;
 
         bool runRequest = false;
+        bool firmwareUpdatePrepared = false;
         bool firmwareUpdateLocked = false;
+        uint32_t firmwareUpdatePrepareDeadlineMs = 0U;
 
         double batteryVoltage = 0.0;
         double loadVoltage = 0.0;
@@ -266,7 +269,9 @@ namespace PCC
     void setup()
     {
         runRequest = false;
+        firmwareUpdatePrepared = false;
         firmwareUpdateLocked = false;
+        firmwareUpdatePrepareDeadlineMs = 0U;
         state = OFF;
         error = NO_ERROR;
         disableOutputs();
@@ -274,7 +279,7 @@ namespace PCC
 
     void setRunRequest(bool requested)
     {
-        if (requested && firmwareUpdateLocked)
+        if (requested && (firmwareUpdatePrepared || firmwareUpdateLocked))
         {
             PRINTF_WARN("[PCC] Run request denied during firmware update\n");
             return;
@@ -300,20 +305,43 @@ namespace PCC
 
     bool isSafeForFirmwareUpdate()
     {
-        return !firmwareUpdateLocked && !runRequest && state == OFF;
+        return !firmwareUpdatePrepared && !firmwareUpdateLocked && !runRequest && state == OFF;
     }
 
-    bool enterFirmwareUpdateLock()
+    bool prepareFirmwareUpdate()
     {
         if (!isSafeForFirmwareUpdate())
         {
             return false;
         }
 
+        firmwareUpdatePrepared = true;
+        firmwareUpdatePrepareDeadlineMs = HAL_GetTick() + FIRMWARE_UPDATE_PREPARE_TIMEOUT_MS;
+        disableOutputs();
+        state = OFF;
+        FaultManager::setHvRunning(false);
+        return true;
+    }
+
+    bool commitFirmwareUpdate()
+    {
+        if (!firmwareUpdatePrepared || static_cast<int32_t>(HAL_GetTick() - firmwareUpdatePrepareDeadlineMs) >= 0)
+        {
+            firmwareUpdatePrepared = false;
+            return false;
+        }
+
+        firmwareUpdatePrepared = false;
         firmwareUpdateLocked = true;
         disableOutputs();
         state = OFF;
+        FaultManager::setHvRunning(false);
         return true;
+    }
+
+    bool isFirmwareUpdatePrepared()
+    {
+        return firmwareUpdatePrepared;
     }
 
     bool isFirmwareUpdateLocked()
@@ -336,6 +364,18 @@ namespace PCC
         {
             disableOutputs();
             state = OFF;
+            return;
+        }
+
+        if (firmwareUpdatePrepared)
+        {
+            disableOutputs();
+            state = OFF;
+            FaultManager::setHvRunning(false);
+            if (static_cast<int32_t>(HAL_GetTick() - firmwareUpdatePrepareDeadlineMs) >= 0)
+            {
+                firmwareUpdatePrepared = false;
+            }
             return;
         }
 

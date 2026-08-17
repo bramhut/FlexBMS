@@ -14,30 +14,63 @@ namespace IO
 {
     namespace
     {
-        constexpr size_t ADC_CHANNEL_COUNT = 5U;
+        constexpr size_t ADC_CHANNEL_COUNT = 3U;
         constexpr size_t LOAD_VOLTAGE_INDEX = 0U;
         constexpr size_t BATTERY_VOLTAGE_INDEX = 1U;
-        constexpr size_t VREFINT_INDEX = 3U;
+        constexpr size_t VREFINT_INDEX = 2U;
         constexpr double ADC_OVERSAMPLING_GAIN = 16.0;
         constexpr double ADC_DIFFERENTIAL_SCALE = 2048.0 * ADC_OVERSAMPLING_GAIN;
         constexpr double HV_DIVIDER_AND_GAIN = 801.0 / 2.0;
-        constexpr uint32_t ADC_HEALTH_CHECK_PERIOD_MS = 100U;
+        constexpr uint32_t ADC_HEALTH_CHECK_PERIOD_MS = 20U;
+        // The scan itself runs at 50 Hz. This timeout leaves margin for the
+        // ADC/DMA completion phase relative to the main task's 20 ms wake-up.
+        constexpr uint32_t ADC_DMA_STALE_TIMEOUT_MS = 100U;
         constexpr uint8_t ADC_HEALTH_FAILURE_LIMIT = 3U;
-        constexpr double MIN_VALID_VDDA = 2.7;
-        constexpr double MAX_VALID_VDDA = 3.6;
+        constexpr double MIN_VALID_ADC_REFERENCE = 2.8;
+        constexpr double MAX_VALID_ADC_REFERENCE = 3.0;
 
-        alignas(4) volatile uint32_t adcValues[ADC_CHANNEL_COUNT] = {};
-        volatile uint32_t adcDmaCompletionCount = 0U;
+        alignas(4) volatile uint32_t adcDmaValues[ADC_CHANNEL_COUNT] = {};
+        volatile uint32_t adcValues[ADC_CHANNEL_COUNT] = {};
+        volatile uint32_t adcSnapshotVersion = 0U;
+        volatile uint32_t lastAdcDmaCompletionAt = 0U;
         bool adcStarted = false;
-        uint32_t lastAdcDmaCompletionCount = 0U;
         uint32_t lastAdcHealthCheckAt = 0U;
         uint8_t adcHealthFailureCount = 0U;
         RGB_t ledColor{1.0, 1.0, 1.0};
         bool ledState = false;
 
-        double getVdda()
+        bool readAdcSnapshot(uint32_t (&values)[ADC_CHANNEL_COUNT])
         {
-            const uint32_t vrefRaw = adcValues[VREFINT_INDEX];
+            for (uint8_t attempt = 0U; attempt < 3U; ++attempt)
+            {
+                const uint32_t begin = adcSnapshotVersion;
+                if ((begin & 1U) != 0U)
+                {
+                    continue;
+                }
+
+                __DMB();
+                for (size_t index = 0U; index < ADC_CHANNEL_COUNT; ++index)
+                {
+                    values[index] = adcValues[index];
+                }
+                __DMB();
+
+                const uint32_t end = adcSnapshotVersion;
+                if (begin == end && (end & 1U) == 0U)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // VREF+ is driven by the STM32's 2.9 V internal VREFBUF. Sampling
+        // VREFINT therefore measures the ADC reference, not VDDA.
+        double getAdcReferenceVoltage(const uint32_t (&values)[ADC_CHANNEL_COUNT])
+        {
+            const uint32_t vrefRaw = values[VREFINT_INDEX];
             if (vrefRaw == 0U)
             {
                 return 0.0;
@@ -51,28 +84,36 @@ namespace IO
 
         double getHVVoltage(size_t index)
         {
-            const double vdda = getVdda();
+            uint32_t values[ADC_CHANNEL_COUNT] = {};
+            if (!readAdcSnapshot(values))
+            {
+                return 0.0;
+            }
+
+            const double adcReferenceVoltage = getAdcReferenceVoltage(values);
             const int16_t differentialRaw =
-                static_cast<int16_t>(adcValues[index] & 0xFFFFU);
+                static_cast<int16_t>(values[index] & 0xFFFFU);
             const double adcDifferentialVoltage =
-                static_cast<double>(differentialRaw) * vdda /
+                static_cast<double>(differentialRaw) * adcReferenceVoltage /
                 ADC_DIFFERENTIAL_SCALE;
             return std::max(0.0, adcDifferentialVoltage * HV_DIVIDER_AND_GAIN);
         }
 
-        bool isAdcHealthy()
+        bool isAdcHealthy(uint32_t now)
         {
-            const uint32_t currentDmaCompletionCount = adcDmaCompletionCount;
-            const bool dmaProgressed =
-                currentDmaCompletionCount != lastAdcDmaCompletionCount;
-            lastAdcDmaCompletionCount = currentDmaCompletionCount;
+            const bool dmaIsFresh =
+                now - lastAdcDmaCompletionAt <= ADC_DMA_STALE_TIMEOUT_MS;
 
-            const double vdda = getVdda();
-            return adcStarted && dmaProgressed &&
+            uint32_t values[ADC_CHANNEL_COUNT] = {};
+            const bool snapshotAvailable = readAdcSnapshot(values);
+            const double adcReferenceVoltage =
+                snapshotAvailable ? getAdcReferenceVoltage(values) : 0.0;
+            return adcStarted && dmaIsFresh && snapshotAvailable &&
                    HAL_ADC_GetError(&hadc1) == HAL_ADC_ERROR_NONE &&
                    hadc1.DMA_Handle != nullptr &&
                    HAL_DMA_GetError(hadc1.DMA_Handle) == HAL_DMA_ERROR_NONE &&
-                   vdda >= MIN_VALID_VDDA && vdda <= MAX_VALID_VDDA;
+                   adcReferenceVoltage >= MIN_VALID_ADC_REFERENCE &&
+                   adcReferenceVoltage <= MAX_VALID_ADC_REFERENCE;
         }
     }
 
@@ -80,7 +121,15 @@ namespace IO
     {
         if (hadc->Instance == ADC1)
         {
-            ++adcDmaCompletionCount;
+            ++adcSnapshotVersion;
+            __DMB();
+            for (size_t index = 0U; index < ADC_CHANNEL_COUNT; ++index)
+            {
+                adcValues[index] = adcDmaValues[index];
+            }
+            __DMB();
+            ++adcSnapshotVersion;
+            lastAdcDmaCompletionAt = HAL_GetTick();
         }
     }
 
@@ -94,11 +143,15 @@ namespace IO
                      HAL_ADCEx_Calibration_Start(&hadc1, ADC_DIFFERENTIAL_ENDED) == HAL_OK &&
                      HAL_ADC_Start_DMA(
                          &hadc1,
-                         const_cast<uint32_t *>(adcValues),
+                         const_cast<uint32_t *>(adcDmaValues),
                          ADC_CHANNEL_COUNT) == HAL_OK;
+        if (adcStarted)
+        {
+            adcStarted = HAL_TIM_Base_Start(&htim7) == HAL_OK;
+        }
         if (!adcStarted)
         {
-            PRINTF_ERR("[IO] ADC1 calibration or DMA startup failed\n");
+            PRINTF_ERR("[IO] ADC1 calibration, DMA, or 50 Hz trigger startup failed\n");
             FaultManager::setBmsFault(FaultManager::BmsFault::AdcFault, true);
         }
     }
@@ -200,7 +253,7 @@ namespace IO
         }
         lastAdcHealthCheckAt = now;
 
-        if (isAdcHealthy())
+        if (isAdcHealthy(now))
         {
             adcHealthFailureCount = 0U;
             FaultManager::setBmsFault(FaultManager::BmsFault::AdcFault, false);

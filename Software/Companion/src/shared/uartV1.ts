@@ -69,7 +69,7 @@ export class FrameDecoder {
 export function decodeStatus(payload: Uint8Array): Status | undefined {
   if (payload.length !== 29) return undefined
   const flags = readLe16(payload, 2)
-  return { bms_state: payload[0], hv_state: payload[1], flags, slave_count: payload[4], bms_active_errors: readLe32(payload, 5), bms_latched_errors: readLe32(payload, 9), hv_active_errors: readLe32(payload, 13), hv_latched_errors: readLe32(payload, 17), warnings: readLe32(payload, 21), uptime_ms: readLe32(payload, 25), measurements_fresh: (flags & (1 << 3)) !== 0, run_request: (flags & (1 << 2)) !== 0, balancing_request: (flags & (1 << 5)) !== 0 }
+  return { bms_state: payload[0], hv_state: payload[1], flags, slave_count: payload[4], bms_active_errors: readLe32(payload, 5), bms_latched_errors: readLe32(payload, 9), hv_active_errors: readLe32(payload, 13), hv_latched_errors: readLe32(payload, 17), warnings: readLe32(payload, 21), uptime_ms: readLe32(payload, 25), measurements_fresh: (flags & (1 << 3)) !== 0, run_request: (flags & (1 << 2)) !== 0, balancing_request: (flags & (1 << 5)) !== 0, soc_valid: (flags & (1 << 6)) !== 0 }
 }
 
 export function decodePack(payload: Uint8Array): Snapshot['pack'] | undefined {

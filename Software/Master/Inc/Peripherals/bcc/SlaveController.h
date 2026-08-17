@@ -215,6 +215,9 @@ namespace SlaveController
      */
     uint16_t getSoC();
 
+    /*! @brief True only when current sensing is configured and retained SOC is valid. */
+    bool isSoCValid();
+
     /*!
      * @brief Set the State of Charge [raw]
      *

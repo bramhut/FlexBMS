@@ -33,7 +33,7 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
         <article class="metric"><span>Balancing request</span><b>{{ status?.balancing_request ? 'Requested' : 'Off' }}</b></article>
         <article class="metric"><span>Pack voltage</span><b>{{ snapshot ? measurement(`${cellVoltageV(snapshot.pack.pack_voltage_uV).toFixed(3)} V`) : '—' }}</b></article>
         <article class="metric"><span>Pack current</span><b>{{ snapshot ? measurement(`${currentA(snapshot.pack.pack_current_raw).toFixed(2)} A`) : '—' }}</b></article>
-        <article class="metric"><span>State of charge</span><b>{{ snapshot ? measurement(`${socPercent(snapshot.pack.soc_raw).toFixed(1)} %`) : '—' }}</b></article>
+        <article class="metric"><span>State of charge</span><b>{{ snapshot && status?.soc_valid ? measurement(`${socPercent(snapshot.pack.soc_raw).toFixed(1)} %`) : 'Unavailable' }}</b></article>
         <article class="metric"><span>Cell range</span><b>{{ snapshot ? measurement(`${cellVoltageV(snapshot.pack.min_cell_uV).toFixed(3)}–${cellVoltageV(snapshot.pack.max_cell_uV).toFixed(3)} V`) : '—' }}</b></article>
         <article class="metric"><span>Temperature range</span><b>{{ snapshot ? measurement(`${ntcCelsius(snapshot.pack.min_ntc_raw).toFixed(1)}–${ntcCelsius(snapshot.pack.max_ntc_raw).toFixed(1)} °C`) : '—' }}</b></article>
       </div>

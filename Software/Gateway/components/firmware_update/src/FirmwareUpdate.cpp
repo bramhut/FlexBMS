@@ -25,6 +25,7 @@ namespace FlexBms::FirmwareUpdate
         constexpr uint32_t kStm32MaxBytes = 512U * 1024U;
         constexpr int kShortTimeoutMs = 500;
         constexpr int kEraseTimeoutMs = 20'000;
+        constexpr int64_t kStm32HandoffTimeoutUs = 3'000'000;
         constexpr int64_t kStm32RomStartDelayUs = 200'000;
         constexpr int64_t kStm32HeartbeatTimeoutUs = 10'000'000;
         constexpr uint8_t kAck = 0x79U;
@@ -40,13 +41,17 @@ namespace FlexBms::FirmwareUpdate
         bool uartOwned = false;
         bool resetFramedUart = false;
         bool stm32HandoffSent = false;
+        bool stm32CommitSent = false;
         bool stm32RomStarted = false;
         bool stm32AwaitingHeartbeat = false;
+        bool stm32EraseMayHaveStarted = false;
         Stm32Operation stm32Operation = Stm32Operation::Idle;
         bool statusChanged = false;
         int64_t restartAtUs = 0;
+        int64_t stm32HandoffDeadlineUs = 0;
         int64_t stm32RomReadyAtUs = 0;
         int64_t stm32HeartbeatDeadlineUs = 0;
+        uint32_t expectedStm32Version = 0U;
         uint32_t stm32Offset = 0U;
         uint32_t stm32PaddedBytes = 0U;
         uint32_t stm32ReadbackCrc = 0xFFFFFFFFU;
@@ -64,6 +69,35 @@ namespace FlexBms::FirmwareUpdate
                 }
             }
             return crc;
+        }
+
+        bool parseStm32Version(const char *text, uint32_t &packed)
+        {
+            if (text == nullptr) return false;
+            uint32_t components[3]{};
+            const char *cursor = text;
+            for (uint8_t component = 0U; component < 3U; ++component)
+            {
+                if (*cursor < '0' || *cursor > '9') return false;
+                uint32_t value = 0U;
+                do
+                {
+                    value = value * 10U + static_cast<uint32_t>(*cursor - '0');
+                    if (value > 255U) return false;
+                    ++cursor;
+                } while (*cursor >= '0' && *cursor <= '9');
+                components[component] = value;
+                if (component < 2U)
+                {
+                    if (*cursor != '.') return false;
+                    ++cursor;
+                }
+            }
+            // STM32 stores the numeric major.minor.patch portion. The release
+            // bundle may still use a SemVer prerelease/build suffix.
+            if (*cursor != '\0' && *cursor != '-' && *cursor != '+') return false;
+            packed = components[0] | (components[1] << 8U) | (components[2] << 16U);
+            return true;
         }
 
         void setStatus(Phase phase, Stage stage, const char *message)
@@ -110,7 +144,9 @@ namespace FlexBms::FirmwareUpdate
             stm32RomStarted = false;
             stm32AwaitingHeartbeat = false;
             stm32HandoffSent = false;
+            stm32CommitSent = false;
             stm32Operation = Stm32Operation::Idle;
+            stm32HandoffDeadlineUs = 0;
             stm32RomReadyAtUs = 0;
             stm32HeartbeatDeadlineUs = 0;
             if (uartOwned)
@@ -118,6 +154,11 @@ namespace FlexBms::FirmwareUpdate
                 configureNormalUart();
                 uartOwned = false;
                 resetFramedUart = true;
+            }
+            if (stm32EraseMayHaveStarted && status.target == Target::Stm32)
+            {
+                setStatus(Phase::Failed, status.stage, "STM32 update failed after erase; wired recovery required");
+                return;
             }
             setStatus(Phase::Failed, status.stage, message);
         }
@@ -215,24 +256,33 @@ namespace FlexBms::FirmwareUpdate
             return writeBytes(&sync, 1U) && expectAck() && verifyStm32ProductId();
         }
 
-        bool sendBootloaderRequest()
+        bool sendFramedRequest(uint8_t serviceId, uint8_t sequence, const uint8_t *arguments, uint8_t argumentLength)
         {
             std::array<uint8_t, UartV1::kMaxFrameBytes> bytes{};
-            UartV1::Frame frame{.type = UartV1::MessageType::ServiceRequest, .sequence = 0xFEU, .length = 13U};
-            frame.payload[0] = 0x07U;
-            // Version is informational only for this personal update path.
-            frame.payload[1] = 0U; frame.payload[2] = 0U; frame.payload[3] = 0U; frame.payload[4] = 0U;
+            if (argumentLength > UartV1::kMaxPayloadBytes - 1U) return false;
+            UartV1::Frame frame{.type = UartV1::MessageType::ServiceRequest, .sequence = sequence, .length = static_cast<uint16_t>(argumentLength + 1U)};
+            frame.payload[0] = serviceId;
+            if (argumentLength != 0U) std::memcpy(frame.payload.data() + 1U, arguments, argumentLength);
+            const size_t length = UartV1::encode(frame, bytes.data(), bytes.size());
+            return length != 0U && uart_write_bytes(kUart, bytes.data(), length) == static_cast<int>(length) &&
+                   uart_wait_tx_done(kUart, pdMS_TO_TICKS(kShortTimeoutMs)) == ESP_OK;
+        }
+
+        bool sendPrepareRequest()
+        {
+            std::array<uint8_t, 12U> arguments{};
             for (uint8_t index = 0U; index < 4U; ++index)
             {
-                frame.payload[5U + index] = static_cast<uint8_t>(status.bytesExpected >> (index * 8U));
-                frame.payload[9U + index] = static_cast<uint8_t>(expectedCrc >> (index * 8U));
+                arguments[index] = static_cast<uint8_t>(expectedStm32Version >> (index * 8U));
+                arguments[4U + index] = static_cast<uint8_t>(status.bytesExpected >> (index * 8U));
+                arguments[8U + index] = static_cast<uint8_t>(expectedCrc >> (index * 8U));
             }
-            const size_t length = UartV1::encode(frame, bytes.data(), bytes.size());
-            return length != 0U && uart_write_bytes(kUart, bytes.data(), length) == static_cast<int>(length);
+            return sendFramedRequest(0x07U, 0xFEU, arguments.data(), arguments.size());
         }
     }
 
     bool isAvailable() { return Wifi::allowsBmsServices() && !Wifi::isAccessPointActive() && !uploadOpen && status.phase != Phase::Installing; }
+    bool isAvailable(Target target) { return isAvailable() && (target != Target::Stm32 || !stm32EraseMayHaveStarted); }
     const Status &getStatus() { return status; }
     bool consumeStatusChanged() { const bool changed = statusChanged; statusChanged = false; return changed; }
     bool ownsUart() { return uartOwned; }
@@ -240,11 +290,14 @@ namespace FlexBms::FirmwareUpdate
 
     bool beginUpload(Target target, const char *requestedVersion, uint32_t bytes, uint32_t crc32)
     {
-        if (!isAvailable() || requestedVersion == nullptr || bytes == 0U || (target == Target::Stm32 && bytes > kStm32MaxBytes)) return false;
+        if (!isAvailable(target) || requestedVersion == nullptr || bytes == 0U || (target == Target::Stm32 && bytes > kStm32MaxBytes)) return false;
+        if (target == Target::Stm32 && !parseStm32Version(requestedVersion, expectedStm32Version)) return false;
         stm32HandoffSent = false;
+        stm32CommitSent = false;
         stm32RomStarted = false;
         stm32AwaitingHeartbeat = false;
         stm32Operation = Stm32Operation::Idle;
+        stm32HandoffDeadlineUs = 0;
         stm32RomReadyAtUs = 0;
         stm32HeartbeatDeadlineUs = 0;
         std::strncpy(version, requestedVersion, sizeof(version) - 1U);
@@ -303,11 +356,20 @@ namespace FlexBms::FirmwareUpdate
 
     void onFrame(const UartV1::Frame &frame)
     {
+        if (stm32EraseMayHaveStarted && frame.type == UartV1::MessageType::Heartbeat)
+        {
+            // A heartbeat proves that a valid application is running again,
+            // for example after a manual recovery flash.
+            stm32EraseMayHaveStarted = false;
+        }
         if (status.target != Target::Stm32 || status.phase != Phase::Installing) return;
         if (frame.type == UartV1::MessageType::ServiceResponse && frame.sequence == 0xFEU && frame.length >= 2U && frame.payload[0] == 0x07U)
         {
+            stm32HandoffDeadlineUs = 0;
             if (frame.payload[1] == 4U) { fail("Disconnect STM32 USB data connection before updating"); return; }
             if (frame.payload[1] != 0U) { fail("STM32 denied update handoff"); return; }
+            if (!sendFramedRequest(0x0AU, 0xFEU, nullptr, 0U)) { fail("STM32 handoff commit send failed"); return; }
+            stm32CommitSent = true;
             uartOwned = true;
             stm32RomStarted = true;
             stm32RomReadyAtUs = esp_timer_get_time() + kStm32RomStartDelayUs;
@@ -319,6 +381,7 @@ namespace FlexBms::FirmwareUpdate
             stm32AwaitingHeartbeat = false;
             stm32HeartbeatDeadlineUs = 0;
             stm32Operation = Stm32Operation::Idle;
+            stm32EraseMayHaveStarted = false;
             setProgress(status.bytesExpected);
             setStatus(Phase::Complete, Stage::Complete, "STM32 update complete");
         }
@@ -334,7 +397,13 @@ namespace FlexBms::FirmwareUpdate
         if (!stm32HandoffSent)
         {
             stm32HandoffSent = true;
-            if (!sendBootloaderRequest()) fail("STM32 handoff send failed");
+            stm32HandoffDeadlineUs = esp_timer_get_time() + kStm32HandoffTimeoutUs;
+            if (!sendPrepareRequest()) fail("STM32 handoff prepare send failed");
+            return;
+        }
+        if (!stm32RomStarted && stm32HandoffDeadlineUs != 0 && esp_timer_get_time() >= stm32HandoffDeadlineUs)
+        {
+            fail("STM32 handoff response timed out");
             return;
         }
         if (stm32AwaitingHeartbeat)
@@ -364,6 +433,7 @@ namespace FlexBms::FirmwareUpdate
             return;
 
         case Stm32Operation::Erase:
+            stm32EraseMayHaveStarted = true;
             if (!eraseStm32()) { fail("STM32 ROM transfer failed"); return; }
             stm32Offset = 0U;
             stm32PaddedBytes = (status.bytesExpected + 7U) & ~7U;

@@ -33,6 +33,7 @@ namespace FlexBms::FirmwareUpdate
     const Status &getStatus();
     bool consumeStatusChanged();
     bool isAvailable();
+    bool isAvailable(Target target);
     bool ownsUart();
     bool consumeFramedUartReset();
 

@@ -39,7 +39,9 @@ namespace PCC
     // FaultManager is the only caller for this immediate safe-off command.
     void forceSafeOffFromFaultManager();
     bool isSafeForFirmwareUpdate();
-    bool enterFirmwareUpdateLock();
+    bool prepareFirmwareUpdate();
+    bool commitFirmwareUpdate();
+    bool isFirmwareUpdatePrepared();
     bool isFirmwareUpdateLocked();
     bool isRunRequested();
 

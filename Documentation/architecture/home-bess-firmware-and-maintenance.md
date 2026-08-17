@@ -370,15 +370,19 @@ the factory-image application address.
 ### STM32 update
 
 The Gateway stages `FlexBMS-STM32.bin` in `bms_update` and checks its length
-and CRC-32 before asking the STM32 to enter update mode. The STM32 accepts only
-from safe-off: run request off, HV outputs inactive, and normal services
-inhibited. It replies before jumping to the immutable system-memory bootloader
-on USART1 (PA9/PA10).
+and CRC-32 before asking the STM32 to prepare update mode. The STM32 accepts
+only from safe-off: run request off and HV outputs inactive. Prepare immediately
+holds HV off and returns `OK`; it automatically expires after 3 seconds unless
+the Gateway sends a response-free commit. Only commit takes the update lock and
+jumps to the immutable system-memory bootloader on USART1 (PA9/PA10). Thus a
+lost prepare response or a Gateway-local transmit failure leaves the STM32 in,
+or returns it to, normal BMS operation rather than stranding it in update mode.
 
 The ESP32 temporarily switches UART1 from framed 1 Mbit/s 8-N-1 to the STM32
 ROM USART protocol, synchronises, verifies bootloader ID, erases application
 flash, writes chunks, reads them back for CRC-32 verification, and issues `Go`
 at the application address. It restores framed UART and reports completion only
-after a new STM32 heartbeat. ESP32 reset/power loss during this rare service
-operation is accepted as a manual ST-Link recovery case; BMS outputs remain
-de-energised during the handoff.
+after a new STM32 application heartbeat. Any failure
+after erase begins is a wired STM32 recovery case; Gateway OTA is blocked until
+an application heartbeat proves the STM32 has been recovered. BMS outputs
+remain de-energised during the handoff.

@@ -77,6 +77,9 @@ namespace SlaveController
         std::atomic<bool> balancingRequested{false};
 
         uint8_t currentMeasurementSlaveIdx = 0; // Index of the slave responsible for current measurement
+        bool currentMeasurementConfigured = false;
+        uint32_t fullSocConditionsSinceMs = 0U;
+        bool fullSocCalibrationApplied = false;
 
         std::atomic<uint32_t> measurementSequence{0};
         bool completeMeasurementSetValid = false;
@@ -118,6 +121,38 @@ namespace SlaveController
                 }
             }
             return true;
+        }
+
+        void updateFullSocCalibration(const double current)
+        {
+            const FaultManager::Snapshot faults = FaultManager::getSnapshot();
+            const bool conditionsMet = currentMeasurementConfigured &&
+                                       settings.AUTO_CALIBRATE_SOC &&
+                                       completeMeasurementSetValid &&
+                                       minCellVoltage >= static_cast<uint32_t>(settings.SOC_FULL_CALIBRATION_CELL_VOLTAGE * 1'000'000.0) &&
+                                       current >= settings.SOC_FULL_CALIBRATION_MIN_CURRENT &&
+                                       current <= settings.BATTERY_AMPHOURS * settings.SOC_FULL_CALIBRATION_MAX_CURRENT_C &&
+                                       faults.bmsActive == 0U;
+            if (!conditionsMet)
+            {
+                fullSocConditionsSinceMs = 0U;
+                fullSocCalibrationApplied = false;
+                return;
+            }
+
+            const uint32_t now = millis();
+            if (fullSocConditionsSinceMs == 0U)
+            {
+                fullSocConditionsSinceMs = now;
+                return;
+            }
+
+            if (!fullSocCalibrationApplied && now - fullSocConditionsSinceMs >= settings.SOC_FULL_CALIBRATION_DWELL_MS)
+            {
+                setSoC(BCC_SOC_TO_SOCRAW(1));
+                fullSocCalibrationApplied = true;
+                PRINTF_INFO("[SC] SoC calibrated to full charge\n");
+            }
         }
 
         void setState(BMSState state)
@@ -372,25 +407,33 @@ namespace SlaveController
                 // TODO Log all fault registers in FLASH or something
             }
 
-            double ampHour = 0.0;
-            double current = 0.0;
-            if (mSlaves[currentMeasurementSlaveIdx].meas_GetAmpHourAndIAvg(
-                    settings.SHUNT_RESISTANCE,
-                    settings.INVERT_CURRENT,
-                    &ampHour,
-                    &current) != BCC_STATUS_SUCCESS)
+            if (currentMeasurementConfigured)
             {
-                PRINTF_WARN("[SC] Current measurement failed on CID %u\n",
-                            mSlaves[currentMeasurementSlaveIdx].getCID());
-                faultStatusSuccessful = false;
+                double ampHour = 0.0;
+                double current = 0.0;
+                if (mSlaves[currentMeasurementSlaveIdx].meas_GetAmpHourAndIAvg(
+                        settings.SHUNT_RESISTANCE,
+                        settings.INVERT_CURRENT,
+                        &ampHour,
+                        &current) != BCC_STATUS_SUCCESS)
+                {
+                    PRINTF_WARN("[SC] Current measurement failed on CID %u\n",
+                                mSlaves[currentMeasurementSlaveIdx].getCID());
+                    faultStatusSuccessful = false;
+                }
+                else
+                {
+                    packCurrent = current;
+                    updateFault(
+                        OVERCURRENT_LIMIT,
+                        current < -settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT ||
+                            current > settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT);
+                }
             }
             else
             {
-                packCurrent = current;
-                updateFault(
-                    OVERCURRENT_LIMIT,
-                    current < -settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT ||
-                        current > settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT);
+                packCurrent = 0.0;
+                updateFault(OVERCURRENT_LIMIT, false);
             }
 
             if (!faultStatusSuccessful)
@@ -404,6 +447,10 @@ namespace SlaveController
             updateFault(OPEN_SHORT_FAULT, combinedFaults[BCC_FS_CB_OPEN] != 0 || combinedFaults[BCC_FS_CB_SHORT] != 0 || combinedFaults[BCC_FS_GPIO_SHORT]);
             updateFault(IC_TEMPERATURE, (combinedFaults[BCC_FS_FAULT2] & MC33771C_FAULT2_STATUS_IC_TSD_FLT_MASK) != 0);
             updateFault(SYSTEM_FAULT, combinedFaults[BCC_FS_FAULT1] != 0 || combinedFaults[BCC_FS_FAULT2] != 0 || combinedFaults[BCC_FS_FAULT3] != 0);
+            if (currentMeasurementConfigured)
+            {
+                updateFullSocCalibration(packCurrent);
+            }
             return true;
         };
 
@@ -502,17 +549,6 @@ namespace SlaveController
                 if (ICtemperatures[i] < minICtemperature)
                 {
                     minICtemperature = ICtemperatures[i];
-                }
-            }
-
-            // Update the SoC if necessary
-            if (success && settings.AUTO_CALIBRATE_SOC)
-            {
-                // If the pack voltage is above the threshold, set the SoC to 100%
-                const uint32_t calibrateVoltage = settings.AUTO_CALIBRATE_SOC_THRESHOLD * settings.SAFETY_LIMITS.OVERVOLTAGE_LIMIT * getCellCount() * 1'000'000U;
-                if (getPackVoltage() > calibrateVoltage)
-                {
-                    setSoC(BCC_SOC_TO_SOCRAW(1));
                 }
             }
 
@@ -945,6 +981,7 @@ namespace SlaveController
         {
             // For now always use the default settings. Later on we can add a way to load settings from flash
             settings = DEFAULT_SETTINGS;
+            currentMeasurementConfigured = false;
 
             // Verify that the set maximum current is measurable with the given shunt resistance
             double maxCurrentForShunt = 0.15 / settings.SHUNT_RESISTANCE;
@@ -998,6 +1035,7 @@ namespace SlaveController
                 if (mSlaves.back().currentSenseEnabled())
                 {
                     currentMeasurementSlaveIdx = i;
+                    currentMeasurementConfigured = true;
                 }
 
                 // Check config of slave last pushed to the array
@@ -1039,6 +1077,12 @@ namespace SlaveController
 
         // Enable backup domain register access
         HAL_PWR_EnableBkUpAccess();
+
+        if (currentMeasurementConfigured && !mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid())
+        {
+            mSlaves[currentMeasurementSlaveIdx].invalidateAhCounter();
+            PRINTF_WARN("[SC] SoC unavailable until a full-charge calibration\n");
+        }
 
         // Make some memory available for the vectors and arrays
         cellVoltages.resize(getNumOfSlaves());
@@ -1224,19 +1268,23 @@ namespace SlaveController
 
     uint16_t getSoC()
     {
-        double current;
-        double ampHour;
-        bcc_status_t status;
-        if ((status = mSlaves[currentMeasurementSlaveIdx].meas_GetAmpHourAndIAvg(settings.SHUNT_RESISTANCE, settings.INVERT_CURRENT, &ampHour, &current)) != BCC_STATUS_SUCCESS)
+        if (!isSoCValid())
         {
-            // In case of an error, return 0%
             return BCC_AMPHOUR_TO_SOC(0, settings.BATTERY_AMPHOURS);
         }
-        return BCC_AMPHOUR_TO_SOC(ampHour, settings.BATTERY_AMPHOURS);
+        return BCC_AMPHOUR_TO_SOC(mSlaves[currentMeasurementSlaveIdx].getAhCounter(), settings.BATTERY_AMPHOURS);
+    }
+
+    bool isSoCValid()
+    {
+        return currentMeasurementConfigured &&
+               currentMeasurementSlaveIdx < mSlaves.size() &&
+               mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid();
     }
 
     void setSoC(uint16_t soc)
     {
+        if (!currentMeasurementConfigured) return;
         double ampHour = BCC_SOC_TO_AMPHOUR(soc, settings.BATTERY_AMPHOURS);
         mSlaves[currentMeasurementSlaveIdx].setAhCounter(ampHour);
     }

@@ -36,8 +36,11 @@ struct UserSettings_t
 
     // Current and SoC
     bool INVERT_CURRENT;                 // Inverts the current measurement, and therefore also the SoC calculation. Usefull in case sense wires are connected the wrong way
-    bool AUTO_CALIBRATE_SOC;             // Automatically calibrates the SoC at Vmax
-    double AUTO_CALIBRATE_SOC_THRESHOLD; // The threshold for the SoC to be calibrated to 100%, relative to max pack voltage (0-1) [V]
+    bool AUTO_CALIBRATE_SOC;
+    double SOC_FULL_CALIBRATION_CELL_VOLTAGE;  // [V] every cell must reach this voltage
+    double SOC_FULL_CALIBRATION_MAX_CURRENT_C; // [C] maximum charging current (C/50 = 0.02)
+    double SOC_FULL_CALIBRATION_MIN_CURRENT;   // [A] tolerated discharge/noise current
+    uint32_t SOC_FULL_CALIBRATION_DWELL_MS;    // [ms] conditions must remain true continuously
 
     // Balancing
     double MIN_BALANCING_VOLTAGE;      // [V] The minimum voltage for a cell to be considered for balancing
@@ -72,7 +75,10 @@ const UserSettings_t DEFAULT_SETTINGS = {
     // Current and SoC
     .INVERT_CURRENT = false, // Positive current is charging; negative current is discharging
     .AUTO_CALIBRATE_SOC = true,
-    .AUTO_CALIBRATE_SOC_THRESHOLD = 0.96,
+    .SOC_FULL_CALIBRATION_CELL_VOLTAGE = 3.450,
+    .SOC_FULL_CALIBRATION_MAX_CURRENT_C = 1.0 / 50.0,
+    .SOC_FULL_CALIBRATION_MIN_CURRENT = -0.100,
+    .SOC_FULL_CALIBRATION_DWELL_MS = 300'000U,
 
     // Balancing
     .MIN_BALANCING_VOLTAGE = 3.3,
