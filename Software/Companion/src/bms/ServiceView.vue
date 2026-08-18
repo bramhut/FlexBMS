@@ -3,9 +3,9 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { BmsTransport, Capabilities, GatewayStatus, ServiceResponse } from '@/transports/Transport'
 import { registerFields } from '@/shared/registers'
 import { serviceResultLabel } from '@/shared/service'
-import { advancingUnixTime } from '@/shared/time'
+import { advancingUnixTime, advancingUptimeMs, formatUptime } from '@/shared/time'
 
-const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities; connected: boolean; runRequested: boolean; balancingRequested: boolean; gateway?: GatewayStatus }>()
+const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities; connected: boolean; runRequested: boolean; balancingRequested: boolean; acknowledgementPending: boolean; stm32UptimeMs?: number; gateway?: GatewayStatus }>()
 const requested = ref(false)
 const changingRunRequest = ref(false)
 const balancingRequested = ref(false)
@@ -19,6 +19,12 @@ const deviceUnixTime = ref<number | null>(null)
 const deviceTimeSampledAt = ref(0)
 const deviceTimeError = ref('')
 const clockNow = ref(Date.now())
+const stm32UptimeSampledAt = ref(0)
+const gatewayUptimeSampledAt = ref(0)
+const previousStm32UptimeMs = ref<number>()
+const previousGatewayUptimeMs = ref<number>()
+const stm32Restarted = ref(false)
+const gatewayRestarted = ref(false)
 let clockTimer: number | undefined
 
 const availability = (capability: keyof Capabilities) => props.capabilities[capability] ? '' : 'Unavailable in the current Gateway state.'
@@ -40,6 +46,18 @@ const formattedNtpSync = computed(() => {
     return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(timeSync.last_sync_unix_s * 1000))
   }
   return ({ waiting_for_network: 'Waiting for network.', waiting_for_ntp: 'Waiting for NTP.', waiting_for_stm32: 'Updating STM32.', synchronized: 'Waiting for NTP.' } as const)[timeSync.state]
+})
+const formattedStm32Uptime = computed(() => {
+  if (!props.connected) return 'Not connected.'
+  if (props.stm32UptimeMs === undefined) return 'Waiting for BMS status.'
+  return formatUptime(advancingUptimeMs(props.stm32UptimeMs, stm32UptimeSampledAt.value, clockNow.value))
+})
+const formattedGatewayUptime = computed(() => {
+  if (!props.gateway) return 'Gateway only.'
+  if (!props.connected) return 'Not connected.'
+  const uptimeMs = props.gateway?.gateway_uptime_ms
+  if (uptimeMs === undefined) return 'Waiting for Gateway status.'
+  return formatUptime(advancingUptimeMs(uptimeMs, gatewayUptimeSampledAt.value, clockNow.value))
 })
 
 function describe(response: ServiceResponse): string {
@@ -98,6 +116,19 @@ async function readRegister(): Promise<void> {
 watch(() => props.runRequested, value => { if (!changingRunRequest.value) requested.value = value }, { immediate: true })
 watch(() => props.balancingRequested, value => { if (!changingBalancingRequest.value) balancingRequested.value = value }, { immediate: true })
 watch([() => props.connected, () => props.capabilities.get_rtc], ([connected, supported]) => { if (connected && supported) void refreshDeviceTime(false) }, { immediate: true })
+watch(() => props.stm32UptimeMs, uptimeMs => {
+  if (uptimeMs === undefined) return
+  if (previousStm32UptimeMs.value !== undefined && uptimeMs < previousStm32UptimeMs.value &&
+      !(previousStm32UptimeMs.value > 0xf0000000 && uptimeMs < 0x0fffffff)) stm32Restarted.value = true
+  previousStm32UptimeMs.value = uptimeMs
+  stm32UptimeSampledAt.value = Date.now()
+}, { immediate: true })
+watch(() => props.gateway?.gateway_uptime_ms, uptimeMs => {
+  if (uptimeMs === undefined) return
+  if (previousGatewayUptimeMs.value !== undefined && uptimeMs < previousGatewayUptimeMs.value) gatewayRestarted.value = true
+  previousGatewayUptimeMs.value = uptimeMs
+  gatewayUptimeSampledAt.value = Date.now()
+}, { immediate: true })
 clockTimer = window.setInterval(() => { clockNow.value = Date.now() }, 1000)
 onBeforeUnmount(() => { if (clockTimer !== undefined) window.clearInterval(clockTimer) })
 </script>
@@ -105,13 +136,32 @@ onBeforeUnmount(() => { if (clockTimer !== undefined) window.clearInterval(clock
 <template>
   <section class="panel controls-panel">
     <div class="panel-heading"><div><h2>BMS controls</h2></div><p>Named requests only; the STM32 remains the safety authority.</p></div>
-    <div class="control-grid">
-      <div class="control-block"><h3>Run request</h3><label class="ios-switch"><input v-model="requested" type="checkbox" role="switch" :disabled="!capabilities.set_run_request || changingRunRequest" @change="setRunRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Request BMS run</span></label><small>{{ availability('set_run_request') }}</small></div>
-      <div class="control-block"><h3>Cell balancing</h3><label class="ios-switch"><input v-model="balancingRequested" type="checkbox" role="switch" :disabled="!capabilities.set_balancing_request || changingBalancingRequest" @change="setBalancingRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Request balancing</span></label><small>Development default: off. The STM32 still requires all balancing safety conditions.</small><small>{{ availability('set_balancing_request') }}</small></div>
-      <div class="control-block"><h3>Fault handling</h3><p>Acknowledgement clears inactive error latches; the STM32 remains the safety authority.</p><button class="danger" :disabled="!capabilities.acknowledge_faults" @click="acknowledgeFaults">Acknowledge errors</button><small>{{ availability('acknowledge_faults') }}</small></div>
-      <div class="control-block"><h3>Real-time clock</h3><p>Device time: <b>{{ formattedDeviceTime }}</b></p><p>Last NTP sync: <b>{{ formattedNtpSync }}</b></p><div class="button-row"><button :disabled="!connected || !capabilities.get_rtc" @click="refreshDeviceTime()">Refresh</button></div><small>{{ availability('get_rtc') }}</small></div>
+    <div class="control-layout">
+      <div class="control-section">
+        <h3>Requests</h3>
+        <div class="switch-row"><label class="ios-switch"><input v-model="requested" type="checkbox" role="switch" :disabled="!capabilities.set_run_request || changingRunRequest" @change="setRunRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Request BMS run</span></label><small v-if="!capabilities.set_run_request">{{ availability('set_run_request') }}</small></div>
+        <div class="switch-row"><label class="ios-switch"><input v-model="balancingRequested" type="checkbox" role="switch" :disabled="!capabilities.set_balancing_request || changingBalancingRequest" @change="setBalancingRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Request cell balancing</span></label><small v-if="!capabilities.set_balancing_request">{{ availability('set_balancing_request') }}</small></div>
+      </div>
+      <div v-if="acknowledgementPending" class="control-section recovery-section">
+        <h3>Error recovery</h3>
+        <p>Acknowledgement clears inactive error latches and warnings.</p>
+        <button class="danger" :disabled="!capabilities.acknowledge_faults" @click="acknowledgeFaults">Acknowledge errors</button>
+        <small v-if="!capabilities.acknowledge_faults">{{ availability('acknowledge_faults') }}</small>
+      </div>
     </div>
     <p v-if="result" class="action-result">{{ result }}</p>
+  </section>
+
+  <section class="panel clock-panel">
+    <div class="panel-heading"><div><h2>System time</h2></div><p>UTC is stored on the STM32; dates are shown in this browser’s locale.</p></div>
+    <dl class="clock-details"><div><dt>Device time</dt><dd>{{ formattedDeviceTime }}</dd></div><div><dt>Last NTP sync</dt><dd>{{ formattedNtpSync }}</dd></div></dl>
+    <button :disabled="!connected || !capabilities.get_rtc" @click="refreshDeviceTime()">Refresh device time</button>
+    <small v-if="!capabilities.get_rtc">{{ availability('get_rtc') }}</small>
+  </section>
+
+  <section class="panel uptime-panel">
+    <div class="panel-heading"><div><h2>Controller uptime</h2></div><p>Time since the controller last restarted.</p></div>
+    <dl class="uptime-details"><div><dt>STM32 BMS</dt><dd>{{ formattedStm32Uptime }}</dd><small v-if="stm32Restarted">Restart detected in this Companion session.</small></div><div><dt>ESP32 Gateway</dt><dd>{{ formattedGatewayUptime }}</dd><small v-if="gatewayRestarted">Restart detected in this Companion session.</small></div></dl>
   </section>
 
   <section class="panel register-panel">

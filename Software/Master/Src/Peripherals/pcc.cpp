@@ -56,11 +56,20 @@ namespace PCC
         bool batteryVoltageAgreesWithBms()
         {
             const double bccVoltage = getBccPackVoltage();
+            const bool batteryPresent = batteryVoltage >= MIN_BATTERY_SOURCE_V;
+            const bool bccPresent = bccVoltage >= MIN_BATTERY_SOURCE_V;
+            if (!batteryPresent && !bccPresent)
+            {
+                return true;
+            }
+            if (batteryPresent != bccPresent)
+            {
+                return false;
+            }
             const double allowedDelta =
                 std::max(MIN_BATTERY_AGREEMENT_V,
                          bccVoltage * BATTERY_AGREEMENT_PERCENT);
-            return batteryVoltage >= MIN_BATTERY_SOURCE_V &&
-                   std::abs(batteryVoltage - bccVoltage) <= allowedDelta;
+            return std::abs(batteryVoltage - bccVoltage) <= allowedDelta;
         }
 
         bool prechargeVoltageReached()
@@ -78,13 +87,24 @@ namespace PCC
         void refreshActiveErrors()
         {
             const uint32_t latched = FaultManager::getSnapshot().hvLatched;
+            const bool batteryMismatch = !batteryVoltageAgreesWithBms();
+
+            // A pack-voltage disagreement remains visible while deliberately
+            // OFF, but becomes a blocking HV fault only for a run request.
+            FaultManager::setWarning(FaultManager::Warning::BatteryVoltageMismatchOff,
+                                     !runRequest && batteryMismatch);
+            if (!runRequest)
+            {
+                FaultManager::setHvFault(FaultManager::HvFault::BatteryVoltageMismatch, false);
+            }
             if ((latched & (1UL << static_cast<uint8_t>(FaultManager::HvFault::SensorDiagnostic))) != 0U)
             {
                 FaultManager::setHvFault(FaultManager::HvFault::SensorDiagnostic, !IO::areHVSensorDiagnosticsHealthy());
             }
-            if ((latched & (1UL << static_cast<uint8_t>(FaultManager::HvFault::BatteryVoltageMismatch))) != 0U)
+            if (runRequest &&
+                (latched & (1UL << static_cast<uint8_t>(FaultManager::HvFault::BatteryVoltageMismatch))) != 0U)
             {
-                FaultManager::setHvFault(FaultManager::HvFault::BatteryVoltageMismatch, !batteryVoltageAgreesWithBms());
+                FaultManager::setHvFault(FaultManager::HvFault::BatteryVoltageMismatch, batteryMismatch);
             }
             if ((latched & (1UL << static_cast<uint8_t>(FaultManager::HvFault::LoadSideEnergized))) != 0U)
             {
@@ -290,6 +310,9 @@ namespace PCC
             runRequest = false;
             disableOutputs();
             state = OFF;
+            FaultManager::setHvFault(FaultManager::HvFault::BatteryVoltageMismatch, false);
+            FaultManager::setWarning(FaultManager::Warning::BatteryVoltageMismatchOff,
+                                     !batteryVoltageAgreesWithBms());
             return;
         }
 

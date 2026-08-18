@@ -46,6 +46,7 @@ namespace FlexBms::UartV1
         uint32_t hvLatchedErrors{};
         uint32_t warnings{};
         uint32_t uptimeMs{};
+        uint32_t socLastCalibrationUnixS{};
     };
 
     struct Pack

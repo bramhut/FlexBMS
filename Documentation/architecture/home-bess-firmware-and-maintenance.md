@@ -332,9 +332,12 @@ to the target-specific Gateway endpoint; it completes STM32 first and the
 rebooting Gateway last. Provisioning and recovery APs never expose update
 controls. The Gateway checks the declared length and CRC-32 while streaming a
 Gateway image into the inactive OTA slot, selects it for boot, acknowledges the
-browser, and reboots. It marks itself healthy once normal Gateway startup
-reaches the main loop. Manual USB factory flashing remains the recovery path;
-no extra rollback policy is added.
+browser, and reboots. ESP-IDF rollback is enabled: the new slot remains pending
+until the local HTTP/WebSocket service has started and the Gateway regains a
+station address. If that cannot happen within one minute, it resets without
+confirmation and the bootloader returns to the previous slot. Companion reports
+the observed restart and reloads itself when the compiled web bundle changed.
+Manual USB factory flashing remains the recovery path.
 
 The fitted ESP32-C3-WROOM-02U-N4 has 4 MiB flash. `Software/Gateway/partitions.csv`
 defines the accepted layout. Its two 1.5 MiB OTA application slots accommodate

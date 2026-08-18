@@ -41,5 +41,10 @@ namespace FlexBms::FirmwareUpdate
     // framed bootloader handoff.  ROM bootloader bytes are then handled here.
     void onFrame(const UartV1::Frame &frame);
     void poll();
+    bool isGatewayBootPendingVerification();
+    // Confirm a pending OTA image only after the network service is available.
     void markGatewayBootHealthy();
+    // A failed new image must reboot before it is confirmed so the bootloader
+    // can select the previous OTA slot.
+    void restartPendingGatewayImage();
 }

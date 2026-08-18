@@ -173,9 +173,9 @@ extern "C" void app_main(void)
     configureUart();
     FlexBms::StatusLed statusLed;
     statusLed.setup();
-    FlexBms::FirmwareUpdate::markGatewayBootHealthy();
     ESP_LOGI(kLogTag, "UART v1 ready: UART1, GPIO2 TX -> STM32 PA10, GPIO3 RX <- STM32 PA9");
-    if (!FlexBms::Wifi::start())
+    const bool wifiStarted = FlexBms::Wifi::start();
+    if (!wifiStarted)
     {
         ESP_LOGW(kLogTag, "Wi-Fi unavailable for this boot; UART remains active");
     }
@@ -190,9 +190,15 @@ extern "C" void app_main(void)
     int64_t nextHeartbeatUs = esp_timer_get_time();
     lastValidFrameUs = nextHeartbeatUs;
     const bool gatewayApiStarted = FlexBms::GatewayApi::start(sendService);
+    bool gatewayBootConfirmed = !FlexBms::FirmwareUpdate::isGatewayBootPendingVerification();
+    const int64_t gatewayBootConfirmationDeadlineUs = esp_timer_get_time() + 60'000'000LL;
     if (!gatewayApiStarted)
     {
         ESP_LOGE(kLogTag, "Gateway HTTP/WebSocket service failed to start");
+    }
+    if (!wifiStarted || !gatewayApiStarted)
+    {
+        FlexBms::FirmwareUpdate::restartPendingGatewayImage();
     }
 
     while (true)
@@ -245,6 +251,18 @@ extern "C" void app_main(void)
         FlexBms::GatewayApi::setUartHealthy(!uartLinkTimedOut && linkWasHealthy);
 
         FlexBms::Wifi::tick();
+        if (!gatewayBootConfirmed && FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected)
+        {
+            // A pending OTA image is trusted only once the LAN Companion is
+            // reachable again, not merely after the Wi-Fi driver initialises.
+            FlexBms::FirmwareUpdate::markGatewayBootHealthy();
+            gatewayBootConfirmed = true;
+        }
+        if (!gatewayBootConfirmed && nowUs >= gatewayBootConfirmationDeadlineUs)
+        {
+            ESP_LOGE(kLogTag, "Gateway did not regain station connectivity after OTA; rolling back pending image");
+            FlexBms::FirmwareUpdate::restartPendingGatewayImage();
+        }
         FlexBms::TimeSync::setStationConnected(FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected);
         if (FlexBms::Wifi::consumeStatusChanged())
         {

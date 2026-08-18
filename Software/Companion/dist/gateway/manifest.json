@@ -1,22 +1,23 @@
 {
   "format": 1,
-  "companion_version": "0.1.16",
+  "companion_version": "0.1.21",
+  "build_id": "6b318611311d56f9",
   "files": [
     {
-      "path": "assets/index-7jmF5r0Q.js",
-      "bytes": 91299,
-      "sha256": "cafe0b62babea729364e386c2da8979a7b017fa446f70ed146e92734bdbd39d2"
+      "path": "assets/index-Ce4wGch0.css",
+      "bytes": 12071,
+      "sha256": "4ed4f92dc95ed708504db7e4977d74647f0bc33c5011e3e9a952f36f2fc33c2f"
     },
     {
-      "path": "assets/index-z2hbMaqh.css",
-      "bytes": 8381,
-      "sha256": "6720aa7a0aa5d5459fc20d7f6afb7563a21018fd1d94678491035d7f5c9d6b61"
+      "path": "assets/index-HMOMt30z.js",
+      "bytes": 96914,
+      "sha256": "f9e8113dbe61795cc7ee1a5243eb2d6932ac1995b8daff70c279c2d9c7294a72"
     },
     {
       "path": "index.html",
       "bytes": 373,
-      "sha256": "9178e23c639cd22475c6a3e3936904a9e7602ee4f3c871760ce2e9bf5a99f0fe"
+      "sha256": "133f1dd3d8c6d5399241c2dca3676f2dba268b80405d291b551f569e53696b09"
     }
   ],
-  "total_bytes": 100053
+  "total_bytes": 109358
 }

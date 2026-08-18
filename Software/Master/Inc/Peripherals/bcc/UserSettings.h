@@ -57,17 +57,19 @@ struct UserSettings_t
 
 const UserSettings_t DEFAULT_SETTINGS = {
     .SLAVE_CONFIG = {
-        // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4, .CURRENT_SENSING_ENABLED = true, .AMPHOUR_BACKUP_REG = 4},
+        {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4, .CURRENT_SENSING_ENABLED = true, .AMPHOUR_BACKUP_REG = 4},
         // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
         // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
         // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
         // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
         // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
         // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
-        {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
+        // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
     },
-    .SAFETY_LIMITS = {.OVERVOLTAGE_LIMIT = 3.6, .UNDERVOLTAGE_LIMIT = 2.5, .OVERTEMPERATURE_LIMIT = 60, .UNDERTEMPERATURE_LIMIT = 5, .CHARGE_CURRENT_LIMIT = 63, .DISCHARGE_CURRENT_LIMIT = 63, .COMMUNICATION_TIMEOUT = 500},
-    .SHUNT_RESISTANCE = 375e-6, // 200 A / 75 mV shunt
+    // .SAFETY_LIMITS = {.OVERVOLTAGE_LIMIT = 3.6, .UNDERVOLTAGE_LIMIT = 2.5, .OVERTEMPERATURE_LIMIT = 60, .UNDERTEMPERATURE_LIMIT = 5, .CHARGE_CURRENT_LIMIT = 63, .DISCHARGE_CURRENT_LIMIT = 63, .COMMUNICATION_TIMEOUT = 500},
+    // TEMP:
+    .SAFETY_LIMITS = {.OVERVOLTAGE_LIMIT = 3.6, .UNDERVOLTAGE_LIMIT = 2.5, .OVERTEMPERATURE_LIMIT = 60, .UNDERTEMPERATURE_LIMIT = 5, .CHARGE_CURRENT_LIMIT = 10, .DISCHARGE_CURRENT_LIMIT = 10, .COMMUNICATION_TIMEOUT = 500},
+    .SHUNT_RESISTANCE = 10.0e-3, // 10 Ohm temporary resistor //375e-6, // 200 A / 75 mV shunt
     .NTC_RESISTANCE = 10000,
     .NTC_BETA = 3950,
     .BATTERY_AMPHOURS = 314,
@@ -97,7 +99,7 @@ const UserSettings_t DEFAULT_SETTINGS = {
  * Initial register values for the BCC. Shouldn't have to change these
  *******************************************************************************/
 
-#define BMS_BAL_RESISTANCE (37.5 + 3.3 + 0.8) // [Ohm] The balancing resistance on the BMS slave board
+#define BMS_BAL_RESISTANCE (20.0 + 2.0 + 0.8) // [Ohm] The balancing resistance on the BMS slave board
 #define MC33771C_AVG_CURRENT_DRAW 9e-3        // [A] The average current draw of the MC33771C in normal operation
 #define CURRENT_NOISE_THRESHOLD 15e-3         // [A] The threshold for which current is considered noise (and therefore set to zero)
 

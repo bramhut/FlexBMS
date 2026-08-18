@@ -16,6 +16,7 @@ def ensure_time_sync_config():
         return  # sdkconfig.defaults supplies these values during first configuration.
 
     required = {
+        "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE": "y",
         "CONFIG_LWIP_SNTP_MAX_SERVERS": "4",
         "CONFIG_LWIP_SNTP_UPDATE_DELAY": "3600000",
     }

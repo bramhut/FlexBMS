@@ -10,6 +10,8 @@
  ******************************************************************************/
 
 #include "TimeFunctions.h"
+#include "RtcTime.h"
+#include "main.h"
 #include "FaultManager.h"
 #include "Watchdog.h"
 #include "bcc/SlaveController.h"
@@ -80,6 +82,13 @@ namespace SlaveController
         bool currentMeasurementConfigured = false;
         uint32_t fullSocConditionsSinceMs = 0U;
         bool fullSocCalibrationApplied = false;
+        constexpr uint32_t kSocCalibrationMarker = 0x534F4332U; // "SOC2"
+        constexpr uint32_t kSocCalibrationChecksumXor = 0xA56CC39DU;
+        constexpr uint8_t kSocCalibrationTimeBackupRegister = 28U;
+
+        volatile uint32_t *socCalibrationTime = &(TAMP->BKP0R) + kSocCalibrationTimeBackupRegister;
+        volatile uint32_t *socCalibrationChecksum = &(TAMP->BKP0R) + kSocCalibrationTimeBackupRegister + 1U;
+        volatile uint32_t *socCalibrationMarker = &(TAMP->BKP0R) + kSocCalibrationTimeBackupRegister + 2U;
 
         std::atomic<uint32_t> measurementSequence{0};
         bool completeMeasurementSetValid = false;
@@ -151,7 +160,23 @@ namespace SlaveController
             {
                 setSoC(BCC_SOC_TO_SOCRAW(1));
                 fullSocCalibrationApplied = true;
-                PRINTF_INFO("[SC] SoC calibrated to full charge\n");
+                HAL_PWR_EnableBkUpAccess();
+                // A calibration without valid UTC must not leave an older
+                // timestamp behind and imply a false SoC accuracy age.
+                *socCalibrationMarker = 0U;
+                uint32_t unixTime = 0U;
+                if (RtcTime::getUnixTime(unixTime))
+                {
+                    *socCalibrationTime = unixTime;
+                    *socCalibrationChecksum = unixTime ^ kSocCalibrationChecksumXor;
+                    __DMB();
+                    *socCalibrationMarker = kSocCalibrationMarker;
+                    PRINTF_INFO("[SC] SoC calibrated to full charge at %lu UTC\n", static_cast<unsigned long>(unixTime));
+                }
+                else
+                {
+                    PRINTF_WARN("[SC] SoC calibrated to full charge before UTC was available\n");
+                }
             }
         }
 
@@ -556,7 +581,7 @@ namespace SlaveController
             return success;
         }
 
-        void doCommunicationCheck(bool faultStatusSuccessful)
+        bool doCommunicationCheck(bool faultStatusSuccessful)
         {
             bool communicationFault = !measurementsAreFresh() || !faultStatusSuccessful;
 
@@ -566,6 +591,7 @@ namespace SlaveController
             }
 
             updateFault(COMMUNICATION_TIMEOUT, communicationFault);
+            return communicationFault;
         }
 
         // Balancing is allowed only with a healthy, fully running BMS.
@@ -738,7 +764,15 @@ namespace SlaveController
 
             const bool faultStatusSuccessful = faultDetection();
 
-            doCommunicationCheck(faultStatusSuccessful);
+            if (doCommunicationCheck(faultStatusSuccessful))
+            {
+                // A live TPL loss invalidates CID assignment and/or monitor
+                // configuration.  Safe-off has already occurred through the
+                // FaultManager; retry the complete recoverable chain path.
+                PRINTF_WARN("[SC] Communication lost; restarting TPL initialization\n");
+                setState(DEVICE_INITIALIZATION);
+                initializationRetryNotBeforeMs = millis();
+            }
         }
 
         bcc_status_t globalSoftwareReset()
@@ -982,6 +1016,17 @@ namespace SlaveController
             // For now always use the default settings. Later on we can add a way to load settings from flash
             settings = DEFAULT_SETTINGS;
             currentMeasurementConfigured = false;
+
+            for (const BCC::Config_t &config : settings.SLAVE_CONFIG)
+            {
+                const uint8_t first = config.AMPHOUR_BACKUP_REG;
+                const uint8_t last = static_cast<uint8_t>(first + 3U);
+                if (config.CURRENT_SENSING_ENABLED && first <= kSocCalibrationTimeBackupRegister + 2U && last >= kSocCalibrationTimeBackupRegister)
+                {
+                    PRINTF_ERR("[SC] CONFIG ERR: Ah backup registers overlap SoC calibration timestamp storage!\n");
+                    return false;
+                }
+            }
 
             // Verify that the set maximum current is measurable with the given shunt resistance
             double maxCurrentForShunt = 0.15 / settings.SHUNT_RESISTANCE;
@@ -1280,6 +1325,25 @@ namespace SlaveController
         return currentMeasurementConfigured &&
                currentMeasurementSlaveIdx < mSlaves.size() &&
                mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid();
+    }
+
+    bool isCurrentSensingEnabled()
+    {
+        return currentMeasurementConfigured;
+    }
+
+    bool getLastSoCCalibrationUnixTime(uint32_t &unixTime)
+    {
+        HAL_PWR_EnableBkUpAccess();
+        const uint32_t value = *socCalibrationTime;
+        if (*socCalibrationMarker != kSocCalibrationMarker ||
+            *socCalibrationChecksum != (value ^ kSocCalibrationChecksumXor) ||
+            !RtcTime::isSupportedUnixTime(value))
+        {
+            return false;
+        }
+        unixTime = value;
+        return true;
     }
 
     void setSoC(uint16_t soc)

@@ -22,7 +22,9 @@ for (const path of files) {
 const total_bytes = listed.reduce((total, file) => total + file.bytes, 0)
 if (total_bytes > 512000) throw new Error(`Gateway bundle is ${total_bytes} bytes; limit is 512000 bytes.`)
 const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url)))
-await writeFile(join(rootPath, 'manifest.json'), `${JSON.stringify({ format: 1, companion_version: pkg.version, files: listed, total_bytes }, null, 2)}\n`)
+const build_id = createHash('sha256').update(listed.map(file => `${file.path}:${file.sha256}`).join('\n')).digest('hex').slice(0, 16)
+const publishedVersion = `${pkg.version}+${build_id}`
+await writeFile(join(rootPath, 'manifest.json'), `${JSON.stringify({ format: 1, companion_version: pkg.version, build_id, files: listed, total_bytes }, null, 2)}\n`)
 const mime = (path) => path.endsWith('.html') ? 'text/html' : path.endsWith('.js') ? 'application/javascript' : path.endsWith('.css') ? 'text/css' : 'application/octet-stream'
 const bytes = (data) => [...data].map(value => `0x${value.toString(16).padStart(2, '0')}`).join(',')
 const escaped = (value) => JSON.stringify(value)
@@ -30,6 +32,6 @@ const sourceLines = ['#include "flexbms/GatewayAssets.h"', 'namespace FlexBms::G
 for (const [index, file] of listed.entries()) sourceLines.push(`static const uint8_t asset_${index}[] = {${bytes(await readFile(join(rootPath, file.path)))}};`)
 sourceLines.push('const Asset kAssets[] = {')
 for (const [index, file] of listed.entries()) sourceLines.push(`{${escaped(file.path)}, ${escaped(mime(file.path))}, asset_${index}, ${file.bytes}U},`)
-sourceLines.push('};', `const size_t kAssetCount = ${listed.length}U;`, `const char kCompanionVersion[] = ${escaped(pkg.version)};`, '}', '')
+sourceLines.push('};', `const size_t kAssetCount = ${listed.length}U;`, `const char kCompanionVersion[] = ${escaped(publishedVersion)};`, `const char kCompanionBuildId[] = ${escaped(build_id)};`, '}', '')
 const source = sourceLines.join('\n')
 await writeFile(new URL('../../Gateway/components/gateway_api/src/GatewayAssets.cpp', import.meta.url), source)

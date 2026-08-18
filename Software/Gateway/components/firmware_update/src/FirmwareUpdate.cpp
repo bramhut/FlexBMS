@@ -4,7 +4,9 @@
 
 #include "esp_ota_ops.h"
 #include "driver/uart.h"
+#include "esp_log.h"
 #include "esp_partition.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 
 #include <algorithm>
@@ -498,8 +500,29 @@ namespace FlexBms::FirmwareUpdate
         }
     }
 
+    bool isGatewayBootPendingVerification()
+    {
+        const esp_partition_t *running = esp_ota_get_running_partition();
+        esp_ota_img_states_t imageState{};
+        return running != nullptr && esp_ota_get_state_partition(running, &imageState) == ESP_OK && imageState == ESP_OTA_IMG_PENDING_VERIFY;
+    }
+
     void markGatewayBootHealthy()
     {
-        (void)esp_ota_mark_app_valid_cancel_rollback();
+        if (!isGatewayBootPendingVerification()) return;
+        const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
+        if (result != ESP_OK && result != ESP_ERR_NOT_SUPPORTED)
+        {
+            ESP_LOGW("flexbms_update", "Could not confirm Gateway OTA image: %s", esp_err_to_name(result));
+        }
+    }
+
+    void restartPendingGatewayImage()
+    {
+        if (isGatewayBootPendingVerification())
+        {
+            ESP_LOGE("flexbms_update", "Gateway startup incomplete; rebooting pending image for bootloader rollback");
+            esp_restart();
+        }
     }
 }

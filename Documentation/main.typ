@@ -403,6 +403,14 @@ remains listen-only on shared BMS/GoodWe CAN. It is not a safety authority. The
 detailed transport, local-network, and recovery design is in
 `Documentation/architecture/home-bess-firmware-and-maintenance.md`.
 
+After a station reconnect, the Gateway withdraws and re-announces
+`flexbms.local`; a temporary mDNS failure is retried. Gateway OTA boots the
+inactive slot as pending and confirms it only after the local HTTP/WebSocket
+service starts and a station address returns. If that cannot happen within one
+minute, the ESP-IDF bootloader returns to the previous slot. Companion compares
+a content-derived web bundle identity and reloads its non-cacheable HTML shell
+automatically when a new bundle responds.
+
 The 4 MiB ESP32-C3 partition table uses two 1.5 MiB OTA application slots,
 a 512 KiB `bms_update` staging partition, and 384 KiB LittleFS reserved for
 future diagnostics/metadata. The committed Companion bundle is currently
@@ -481,21 +489,26 @@ service request uses a value from 1 through 255; the STM32 response echoes that 
 
 `HEARTBEAT` has an empty payload.
 
-`STATUS` is 29 bytes:
+`STATUS` is 33 bytes:
 
 ```text
 bms_state:u8 | hv_state:u8 | flags:u16 | slave_count:u8 |
 bms_active_errors:u32 | bms_latched_errors:u32 |
 hv_active_errors:u32 | hv_latched_errors:u32 |
-warnings:u32 | uptime_ms:u32
+warnings:u32 | uptime_ms:u32 | soc_last_calibration_unix_s:u32
 ```
 
 Status flag bits are: 0 BMS HV-ready, 1 charging allowed, 2 run request asserted, 3 complete
 measurements fresh, 4 isolated-UART Gateway peer alive, and 5 balancing request. USB Companion
-heartbeats do not affect bit 4. Bit 6 is SoC valid; bits 7--15 are zero. `slave_count` comes
-from the configured BMS monitor chain and is variable between builds. A production module contains
-eight monitor slaves, but a single-slave development chain is supported during bench work. The
-Gateway must use the reported value and must not reject an odd count.
+heartbeats do not affect bit 4. Bit 6 is SoC valid, bit 7 current sensing enabled, and bit 8
+the SoC calibration UTC value valid; bits 9--15 are zero. `slave_count` comes from the configured
+BMS monitor chain and is variable between builds. A production module contains eight monitor slaves,
+but a single-slave development chain is supported during bench work. The Gateway must use the
+reported value and must not reject an odd count.
+
+`uptime_ms` is the STM32 HAL millisecond tick since its most recent reset. It is diagnostic
+telemetry only, resets to zero after a controller restart, and wraps naturally after about 49.7
+days. The STM32 sends STATUS at least every 500 ms while its UART service runs.
 
 `PACK` is 24 bytes:
 
@@ -511,13 +524,15 @@ SoC uses the existing BCC raw range (`0 = -100%`, `65535 = 200%`), so percent is
 `raw / 65535 * 120 - 20` degrees C. IC raw values are centikelvin, so degrees C are
 `raw / 100 - 273.15`.
 
-Use `soc_raw` only when STATUS bit 6 is set. SoC is informational and never commands HV. The
-estimate is retained in the CR2032-powered RTC backup domain with a version marker and checksum;
-an erased or corrupt value is invalid. Current sensing is deliberately disabled in the single-slave
-development configuration, so SoC remains invalid there. Production enables it only on CID 1.
-Full-charge calibration requires fresh measurements with no active BMS error, every cell at or above 3.450 V,
-current from -0.100 A through C/50 (6.28 A for the 314 Ah default), continuously for 300 s. Any
-failed condition restarts the timer; calibration sets SoC to 100%.
+Use `pack_current_raw` only when STATUS bit 7 is set and `soc_raw` only when bit 6 is set. SoC is
+informational and never commands HV. The estimate is retained in the CR2032-powered RTC backup
+domain with a version marker and checksum; an erased or corrupt value is invalid. Current sensing is
+deliberately disabled in the single-slave development configuration, so current and SoC are unavailable
+there. Production enables it only on CID 1. Full-charge calibration requires fresh measurements with
+no active BMS error, every cell at or above 3.450 V, current from -0.100 A through C/50 (6.28 A for the
+314 Ah default), continuously for 300 s. Any failed condition restarts the timer; calibration sets SoC to
+100%. When valid UTC is available, the STM32 persists that instant in integrity-protected backup
+registers and reports it in `soc_last_calibration_unix_s`; it otherwise reports no calibration time.
 
 `CELL` is 51 bytes, once per configured slave:
 
@@ -563,11 +578,17 @@ HV ERROR bitmap bits are: 0 `HV_SENSOR_DIAGNOSTIC`, 1
 `PRECHARGE_VOLTAGE_LOST`, and 5 `CONTACTOR_VOLTAGE_LOST`. Bits 6--31 are
 reserved and zero.
 
-`warnings` is non-latched. Bits are: 0 `WATCHDOG_RESET` and 1
-`STARTUP_DIAGNOSTICS_BYPASSED`. Bits 2--31 are reserved and zero.
+`warnings` is non-latched. Bits are: 0 `WATCHDOG_RESET`, 1
+`STARTUP_DIAGNOSTICS_BYPASSED`, and 2 `BATTERY_VOLTAGE_MISMATCH_OFF`.
+Bits 3--31 are reserved and zero.
 `WATCHDOG_RESET` is set when this STM32 boot followed an independent or window
 watchdog reset. Gateway liveness, CAN condition, near-limit indication, and an
 inactive balancing request are not BMS warnings in this release.
+
+The STM32 compares BAT+ and the slave-reported pack voltage continuously. A disagreement is an
+OFF-state warning while no run request is present; a run request promotes the same condition to
+the blocking `BATTERY_VOLTAGE_MISMATCH` HV error. Releasing the request deasserts that active HV
+error, retains its latch for acknowledgement, and restores the warning until the readings agree.
 
 An active ERROR is present now. A latched ERROR remains blocking after its live condition clears
 until the STM32 accepts acknowledgement. The STM32 Fault Manager is the sole owner of
@@ -575,6 +596,11 @@ active/latched aggregation, acknowledgement, and immediate HV safe-off. Detectio
 only assert or deassert their assigned condition. Startup monitor-chain, register-initialisation,
 and diagnostics attempts use their source retry budget before asserting their ERROR input. Once
 exhausted, they use these ordinary ERROR semantics.
+
+A live TPL/BCC communication loss immediately safe-offs HV and re-enters the same non-blocking
+TPL, CID, register, and measurement initialisation path. A successful complete measurement and
+fault-status cycle deasserts the active communication error; its latched error still requires
+acknowledgement.
 
 The independent watchdog starts after the required clock and DMA setup, before
 every fallible peripheral initialisation, has a nominal 500 ms timeout, and is
@@ -636,7 +662,7 @@ accepted and invoked the requested operation; STATUS and EVENT show the resultin
   stroke: none,
   inset: (x: 5pt, y: 3pt),
   table.header([*ID*], [*Service*], [*Request arguments*], [*OK response data*]),
-  [`0x01`], [GET_STATUS], [none], [29-byte STATUS],
+  [`0x01`], [GET_STATUS], [none], [33-byte STATUS],
   [`0x02`], [SET_RUN_REQUEST], [`requested:u8` (`0` or `1`)], [none],
   [`0x03`], [ACKNOWLEDGE_FAULTS], [none], [none],
   [`0x04`], [READ_REGISTER], [`slave_index:u8, register:u8`], [`slave_index:u8, register:u8, value:u16`],

@@ -35,6 +35,7 @@ namespace FaultManager
     {
         WatchdogReset = 0U,
         StartupDiagnosticsBypassed,
+        BatteryVoltageMismatchOff,
     };
 
     enum class BmsState : uint8_t

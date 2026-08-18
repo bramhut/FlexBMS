@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { parseFirmwareBundle, type FirmwareBundle, type FirmwareTarget } from '@/shared/firmwareBundle'
 import type { Capabilities, FirmwareUpdateStage, GatewayStatus } from '@/transports/Transport'
 
@@ -10,6 +10,8 @@ const selected = ref<Record<FirmwareTarget, boolean>>({ stm32: true, gateway: tr
 const result = ref('')
 const uploading = ref(false)
 const currentTarget = ref<FirmwareTarget | null>(null)
+const sawGatewayDisconnect = ref(false)
+const gatewayRestartKey = 'flexbms.gateway-update-pending'
 const canUpdate = computed(() => props.connected && props.capabilities.firmware_update && props.gateway?.wifi_state === 'connected' && !props.gateway?.setup_ap.active)
 const update = computed(() => props.gateway?.firmware_update)
 const selectedTargets = computed(() => (['stm32', 'gateway'] as FirmwareTarget[]).filter(target => selected.value[target]))
@@ -44,6 +46,32 @@ function flowState(index: number): 'complete' | 'active' | 'pending' | 'failed' 
 }
 function selectedFile(event: Event): File | undefined { return (event.target as HTMLInputElement).files?.[0] }
 function targetName(target: FirmwareTarget): string { return target === 'gateway' ? 'ESP32 Gateway' : 'STM32 BMS' }
+function recordGatewayRestart(): void {
+  const gateway = props.gateway
+  if (!gateway) return
+  sessionStorage.setItem(gatewayRestartKey, JSON.stringify({ partition: gateway.gateway_partition, uptimeMs: gateway.gateway_uptime_ms, acceptedAtMs: Date.now() }))
+}
+watch(() => props.connected, connected => {
+  if (!connected && sessionStorage.getItem(gatewayRestartKey)) sawGatewayDisconnect.value = true
+})
+watch([() => props.connected, () => props.gateway?.gateway_partition, () => props.gateway?.gateway_uptime_ms], ([connected, partition, uptimeMs]) => {
+  const raw = sessionStorage.getItem(gatewayRestartKey)
+  if (!raw || !connected || typeof uptimeMs !== 'number') return
+  try {
+    const pending = JSON.parse(raw) as { partition?: string; uptimeMs?: number; acceptedAtMs: number }
+    const changedPartition = typeof partition === 'string' && typeof pending.partition === 'string' && partition !== pending.partition
+    const restartedByUptime = typeof pending.uptimeMs === 'number' && uptimeMs < pending.uptimeMs
+    // Old Gateways did not publish uptime/partition. In that upgrade path, a
+    // reconnect after the expected socket close is the only available proof.
+    const restartedAfterDisconnect = sawGatewayDisconnect.value && Date.now() - pending.acceptedAtMs < 120000
+    const firstUpgradeFreshBoot = pending.partition === undefined && typeof props.gateway?.gateway_build_id === 'string' && uptimeMs < 120000 && Date.now() - pending.acceptedAtMs < 120000
+    if (changedPartition || restartedByUptime || restartedAfterDisconnect || firstUpgradeFreshBoot) {
+      sessionStorage.removeItem(gatewayRestartKey)
+      sawGatewayDisconnect.value = false
+      result.value = 'Gateway restarted and Companion reconnected. Confirm the new Gateway version above.'
+    }
+  } catch { sessionStorage.removeItem(gatewayRestartKey) }
+})
 async function chooseBundle(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   bundleFile.value = selectedFile(event); bundle.value = undefined; result.value = ''
@@ -90,7 +118,8 @@ async function installSelected(): Promise<void> {
     }
     if (selected.value.gateway) {
       if (!await upload('gateway')) return
-      result.value = 'Gateway image accepted. The Gateway will reboot.'
+      recordGatewayRestart()
+      result.value = 'Gateway image accepted. Waiting for the Gateway to restart and Companion to reconnect...'
     }
     if (!selected.value.gateway) result.value = 'Selected firmware installed.'
   } catch { result.value = 'Upload failed because the Gateway connection was lost.' }

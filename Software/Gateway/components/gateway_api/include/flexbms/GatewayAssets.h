@@ -9,4 +9,5 @@ namespace FlexBms::GatewayAssets
     extern const Asset kAssets[];
     extern const size_t kAssetCount;
     extern const char kCompanionVersion[];
+    extern const char kCompanionBuildId[];
 }

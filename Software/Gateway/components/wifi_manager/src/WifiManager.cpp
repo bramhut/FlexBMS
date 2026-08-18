@@ -40,6 +40,7 @@ namespace FlexBms::Wifi
         constexpr int64_t kRecoveryStationGapUs = 60LL * 1000LL * 1000LL;
         constexpr int64_t kScanCooldownUs = 10LL * 1000LL * 1000LL;
         constexpr int64_t kScanCompletionTimeoutUs = 12LL * 1000LL * 1000LL;
+        constexpr int64_t kMdnsRetryUs = 5LL * 1000LL * 1000LL;
         constexpr uint32_t kRestartDelayMs = 1500U;
         constexpr const char *kMdnsHostname = "flexbms";
         constexpr const char *kMdnsInstanceName = "FlexBMS Gateway";
@@ -80,6 +81,8 @@ namespace FlexBms::Wifi
         bool restartScheduled = false;
         bool wifiStarted = false;
         bool mdnsStarted = false;
+        std::atomic<bool> mdnsRefreshRequested{false};
+        int64_t nextMdnsAttemptUs = 0;
         std::atomic<bool> scanPending{false};
         std::atomic<bool> scanReady{false};
         std::atomic<ScanPurpose> scanPurpose{ScanPurpose::None};
@@ -124,6 +127,29 @@ namespace FlexBms::Wifi
             mdnsStarted = true;
             ESP_LOGI(kLogTag, "mDNS host announced as %s.local", kMdnsHostname);
             return true;
+        }
+
+        void stopMdns()
+        {
+            if (!mdnsStarted) return;
+            mdns_free();
+            mdnsStarted = false;
+            ESP_LOGI(kLogTag, "mDNS host withdrawn while station link is unavailable");
+        }
+
+        void refreshMdns(int64_t now)
+        {
+            // Do this from the main Gateway task, not the small ESP event task.
+            // A station reconnect can give us a different address, and keeping a
+            // stale mDNS responder was the source of intermittent flexbms.local
+            // discovery after link loss.
+            if (mdnsRefreshRequested.exchange(false))
+            {
+                stopMdns();
+                nextMdnsAttemptUs = now;
+            }
+            if (state.load() != State::Connected || mdnsStarted || now < nextMdnsAttemptUs) return;
+            if (!startMdns()) nextMdnsAttemptUs = now + kMdnsRetryUs;
         }
 
         void setState(State value)
@@ -538,6 +564,8 @@ namespace FlexBms::Wifi
                 }
                 activeCandidate = CandidateKind::None;
                 activeFallbackNetwork = kNoFallbackNetwork;
+                setState(State::Connecting);
+                mdnsRefreshRequested.store(true);
                 ESP_LOGW(kLogTag, "Wi-Fi disconnected (reason %u); selecting a visible network", event->reason);
                 if (!accessPointActive.load()) startNetworkSelection();
             }
@@ -558,7 +586,7 @@ namespace FlexBms::Wifi
                 setState(State::Connected);
                 const auto *event = static_cast<const ip_event_got_ip_t *>(eventData);
                 ESP_LOGI(kLogTag, "Wi-Fi connected, IP " IPSTR, IP2STR(&event->ip_info.ip));
-                (void)startMdns();
+                mdnsRefreshRequested.store(true);
             }
         }
 
@@ -641,6 +669,7 @@ namespace FlexBms::Wifi
     void tick()
     {
         const int64_t now = esp_timer_get_time();
+        refreshMdns(now);
         if (scanPending.load(std::memory_order_acquire) && now - scanStartedUs.load(std::memory_order_acquire) >= kScanCompletionTimeoutUs)
         {
             ESP_LOGW(kLogTag, "Wi-Fi scan timed out");

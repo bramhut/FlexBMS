@@ -6,6 +6,8 @@
 
 #include "cJSON.h"
 #include "esp_http_server.h"
+#include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_timer.h"
 
 #include <array>
@@ -20,6 +22,7 @@ namespace FlexBms::GatewayApi
 {
     namespace
     {
+        constexpr const char *kLogTag = "flexbms_gateway_api";
         constexpr size_t kMaxBrowserMessageBytes = 4096U;
         constexpr size_t kMaxRequestIdBytes = 64U;
         constexpr size_t kMaxSlaves = 16U;
@@ -128,11 +131,18 @@ namespace FlexBms::GatewayApi
             httpd_ws_frame_t frame{};
         };
 
-        void releaseQueuedWebSocketText(esp_err_t, int, void *context)
+        void releaseQueuedWebSocketText(esp_err_t result, int socket, void *context)
         {
             auto *message = static_cast<QueuedWebSocketText *>(context);
             std::free(message->text);
             delete message;
+            if (result != ESP_OK && server != nullptr)
+            {
+                // EAGAIN and reset peers otherwise stay in httpd's client list
+                // and cause a failed send for every telemetry publication.
+                ESP_LOGW(kLogTag, "Closing unresponsive WebSocket client: %s", esp_err_to_name(result));
+                (void)httpd_sess_trigger_close(server, socket);
+            }
         }
 
         bool queueWebSocketText(int socket, const char *text, size_t length)
@@ -205,6 +215,9 @@ namespace FlexBms::GatewayApi
 
         void addGatewayStatus(cJSON *root)
         {
+            cJSON_AddNumberToObject(root, "gateway_uptime_ms", static_cast<double>(esp_timer_get_time() / 1000LL));
+            const esp_partition_t *runningPartition = esp_ota_get_running_partition();
+            if (runningPartition != nullptr) cJSON_AddStringToObject(root, "gateway_partition", runningPartition->label);
             cJSON_AddStringToObject(root, "wifi_state", wifiState());
             if (Wifi::getState() != Wifi::State::Provisioning && Wifi::getState() != Wifi::State::Unavailable)
             {
@@ -244,6 +257,7 @@ namespace FlexBms::GatewayApi
             const bool bmsServices = Wifi::allowsBmsServices();
             cJSON *root = base("hello");
             cJSON_AddStringToObject(root, "gateway_version", GatewayAssets::kCompanionVersion);
+            cJSON_AddStringToObject(root, "gateway_build_id", GatewayAssets::kCompanionBuildId);
             cJSON *caps = cJSON_AddObjectToObject(root, "capabilities");
             cJSON_AddBoolToObject(caps, "monitor", true);
             cJSON_AddBoolToObject(caps, "csv_logging", true);
@@ -288,6 +302,8 @@ namespace FlexBms::GatewayApi
             cJSON_AddBoolToObject(root, "run_request", (status.flags & (1U << 2U)) != 0U);
             cJSON_AddBoolToObject(root, "balancing_request", (status.flags & (1U << 5U)) != 0U);
             cJSON_AddBoolToObject(root, "soc_valid", (status.flags & (1U << 6U)) != 0U);
+            cJSON_AddBoolToObject(root, "current_sensing_enabled", (status.flags & (1U << 7U)) != 0U);
+            if ((status.flags & (1U << 8U)) != 0U) cJSON_AddNumberToObject(root, "soc_last_calibration_unix_s", status.socLastCalibrationUnixS);
         }
 
         cJSON *bmsStatusJson()

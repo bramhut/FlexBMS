@@ -174,7 +174,7 @@ namespace FlexBms::UartV1
 
     bool decodeStatus(const Frame &frame, Status &status)
     {
-        if (!frameHasPayload(frame, MessageType::Status, 29U)) return false;
+        if (!frameHasPayload(frame, MessageType::Status, 33U)) return false;
         status.bmsState = frame.payload[0];
         status.hvState = frame.payload[1];
         status.flags = readLe16(frame.payload.data() + 2U);
@@ -185,6 +185,7 @@ namespace FlexBms::UartV1
         status.hvLatchedErrors = readLe32(frame.payload.data() + 17U);
         status.warnings = readLe32(frame.payload.data() + 21U);
         status.uptimeMs = readLe32(frame.payload.data() + 25U);
+        status.socLastCalibrationUnixS = readLe32(frame.payload.data() + 29U);
         return true;
     }
 

@@ -320,7 +320,7 @@ The Gateway sends these server-to-browser messages:
 | `bms_status` | `status` | Current UART v1 `STATUS`, sent even while measurements are stale. |
 | `snapshot` | `status`, `pack`, `cells`, `temperatures` | Complete current source-unit BMS view. `status` includes `measurements_fresh`. |
 | `event` | `event_id`, `value`, `gateway_uptime_ms` | Direct representation of a UART v1 event; informational only. |
-| `gateway_status` | `wifi_state`, optional `wifi_ssid`, `setup_ap`, `uart_state`, `mqtt_state`, `time_sync`, `diagnostic_log` | Local Gateway state, setup AP details, NTP state, and diagnostic-log availability. |
+| `gateway_status` | `gateway_uptime_ms`, `gateway_partition`, `wifi_state`, optional `wifi_ssid`, `setup_ap`, `uart_state`, `mqtt_state`, `time_sync`, `diagnostic_log` | Local Gateway state, uptime, running OTA partition, setup AP details, NTP state, and diagnostic-log availability. |
 | `service_result` | `request_id`, `service`, `result`, optional `data` | Result for exactly one browser service request. |
 | `wifi_configuration_result` | `request_id`, `result` | Accepted or failed local credential persistence/restart request. |
 | `wifi_scan_result` | `request_id`, `result`, optional `networks` | Completion of an on-demand nearby-network scan. |
@@ -330,6 +330,11 @@ waiting_for_stm32 | synchronized", "last_sync_unix_s": 0 }`. The last-sync
 field is omitted until an NTP sample has been accepted by the STM32 and is not
 persisted across a Gateway reboot. SNTP uses `0.nl.pool.ntp.org` through
 `3.nl.pool.ntp.org`, starts only after station connection, and polls hourly.
+
+`gateway_uptime_ms` is the ESP32 microsecond timer converted to milliseconds
+since the Gateway most recently booted. It is diagnostic telemetry only and
+returns to a small value after a Gateway restart. Companion may advance it
+locally between Gateway-status messages; direct USB mode has no Gateway value.
 
 `snapshot` has this exact shape. All numeric measurement fields preserve the
 source raw units and map directly to the identically named UART v1 fields.

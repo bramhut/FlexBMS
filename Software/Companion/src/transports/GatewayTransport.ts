@@ -25,6 +25,7 @@ export class GatewayTransport implements BmsTransport {
   private explicitlyDisconnected = false
   private gatewayStatus: GatewayStatus | undefined
   private loadedGatewayVersion: string | undefined
+  private loadedGatewayBuildId: string | undefined
   private lastBmsStatus: Status | undefined
 
   async connect(): Promise<void> {
@@ -82,10 +83,16 @@ export class GatewayTransport implements BmsTransport {
     if (parsed.v !== 1 || typeof parsed.type !== 'string') return
     if (parsed.type === 'hello') {
       const gatewayVersion = typeof parsed.gateway_version === 'string' ? parsed.gateway_version : undefined
-      if (gatewayVersion && this.loadedGatewayVersion && gatewayVersion !== this.loadedGatewayVersion) { window.location.reload(); return }
+      const gatewayBuildId = typeof parsed.gateway_build_id === 'string' ? parsed.gateway_build_id : undefined
+      // gateway_version has a SemVer build suffix for older Companions; new
+      // ones also use the explicit content-derived id. Both paths reload the
+      // non-cacheable HTML shell without a Shift+F5 cache bypass.
+      if ((gatewayBuildId && this.loadedGatewayBuildId && gatewayBuildId !== this.loadedGatewayBuildId) ||
+          (!gatewayBuildId && gatewayVersion && this.loadedGatewayVersion && gatewayVersion !== this.loadedGatewayVersion)) { window.location.reload(); return }
       this.loadedGatewayVersion = gatewayVersion ?? this.loadedGatewayVersion
+      this.loadedGatewayBuildId = gatewayBuildId ?? this.loadedGatewayBuildId
       this.capabilities = parsed.capabilities as Capabilities
-      this.gatewayStatus = { ...(parsed.gateway_status as GatewayStatus), gateway_version: gatewayVersion }
+      this.gatewayStatus = { ...(parsed.gateway_status as GatewayStatus), gateway_version: gatewayVersion, gateway_build_id: gatewayBuildId }
       this.emitState(this.gatewayStatus)
       return
     }

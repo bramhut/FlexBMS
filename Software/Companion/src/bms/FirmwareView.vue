@@ -8,7 +8,13 @@ const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities;
 const stm32Version = ref<number | null>(null)
 const versionError = ref('')
 const reading = ref(false)
-const gatewayVersion = computed(() => !props.connected ? 'Connect to read version.' : (props.gateway?.gateway_version ?? 'Unavailable on a direct USB connection'))
+const gatewayVersion = computed(() => {
+  if (!props.connected) return 'Connect to read version.'
+  const version = props.gateway?.gateway_version
+  // The Gateway appends SemVer build metadata to detect a changed browser
+  // bundle. It is transport identity, not part of the release shown to users.
+  return version?.split('+', 1)[0] ?? 'Unavailable on a direct USB connection'
+})
 const canReadStm32Version = computed(() => props.connected && props.capabilities.get_device_info && (props.gateway === undefined || props.gateway.uart_state === 'healthy'))
 const stm32VersionText = computed(() => {
   if (!props.connected) return 'Connect to read version.'

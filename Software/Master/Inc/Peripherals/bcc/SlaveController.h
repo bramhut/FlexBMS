@@ -218,6 +218,12 @@ namespace SlaveController
     /*! @brief True only when current sensing is configured and retained SOC is valid. */
     bool isSoCValid();
 
+    /*! @brief True when a configured BCC supplies pack-current measurements. */
+    bool isCurrentSensingEnabled();
+
+    /*! @brief Return the UTC instant of the last automatic full-SOC calibration. */
+    bool getLastSoCCalibrationUnixTime(uint32_t &unixTime);
+
     /*!
      * @brief Set the State of Charge [raw]
      *

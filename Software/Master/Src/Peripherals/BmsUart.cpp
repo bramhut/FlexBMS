@@ -515,6 +515,9 @@ namespace BmsUart
             if (hasValidGatewayFrame && HAL_GetTick() - lastValidGatewayFrameMs < GATEWAY_LOSS_MS) flags |= 1U << 4U;
             if (SlaveController::isBalancingRequested()) flags |= 1U << 5U;
             if (SlaveController::isSoCValid()) flags |= 1U << 6U;
+            if (SlaveController::isCurrentSensingEnabled()) flags |= 1U << 7U;
+            uint32_t socCalibrationUnixTime = 0U;
+            if (SlaveController::getLastSoCCalibrationUnixTime(socCalibrationUnixTime)) flags |= 1U << 8U;
 
             payload[0] = static_cast<uint8_t>(faultSnapshot.bmsState);
             payload[1] = static_cast<uint8_t>(PCC::getPCCState());
@@ -526,12 +529,13 @@ namespace BmsUart
             writeLe32(payload + 17U, faultSnapshot.hvLatched);
             writeLe32(payload + 21U, faultSnapshot.warnings);
             writeLe32(payload + 25U, HAL_GetTick());
-            return 29U;
+            writeLe32(payload + 29U, socCalibrationUnixTime);
+            return 33U;
         }
 
         void sendStatus()
         {
-            std::array<uint8_t, 29U> payload = {};
+            std::array<uint8_t, 33U> payload = {};
             broadcastFrame(STATUS, 0U, payload.data(), makeStatusPayload(payload.data()));
         }
 
@@ -781,7 +785,7 @@ namespace BmsUart
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
                     return;
                 }
-                std::array<uint8_t, 29U> status = {};
+                std::array<uint8_t, 33U> status = {};
                 sendServiceResponse(frame.link, frame.sequence, serviceId, OK, status.data(), makeStatusPayload(status.data()));
                 return;
             }

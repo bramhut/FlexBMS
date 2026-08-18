@@ -129,7 +129,9 @@ stops the AP immediately.
 
 After DHCP assigns a station address, the Gateway announces the hostname
 `flexbms.local` with mDNS. It does not advertise mDNS during the setup or
-recovery AP, and does not add a separate mDNS service record.
+recovery AP, and does not add a separate mDNS service record. Each station
+link loss withdraws the responder; a later DHCP lease starts it again, with a
+short retry if the mDNS stack is temporarily unavailable.
 
 The first-time setup AP is intentionally open, so use it only while physically
 present. It is also an open recovery AP: nearby users can view monitoring and
@@ -169,3 +171,8 @@ updates the rebooting Gateway last. `FlexBMS-Gateway-factory.bin` is only for
 the wired recovery script. Setup and recovery APs do not expose update
 controls. No account, signature, cloud, or automatic retry path is used; retain
 `flash-release.ps1` for recovery.
+
+After an accepted Gateway upload, Companion waits for the Gateway to reboot and
+reconnect. A fresh Gateway bundle is identified by its content-derived build ID,
+so the browser automatically reloads the non-cacheable HTML shell when needed;
+a manual hard refresh is not required.
