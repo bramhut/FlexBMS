@@ -171,13 +171,16 @@ Assistant loss have no BMS safety effect in this stage.
 
 ## MQTT and Home Assistant
 
-The Gateway uses MQTT Discovery so Home Assistant needs no YAML configuration.
-The initial MQTT device and state prefix is `flexbms/home_bess`; Home Assistant
-Discovery configuration uses its standard discovery prefix. The intended broker
-is the official Mosquitto Broker add-on on Home Assistant OS. The ESP32 uses a
-normal broker login, reconnects when the broker returns, and republishes current
-state after reconnect. Home Assistant, the broker, and MQTT are not BMS safety
-dependencies.
+The Gateway uses Home Assistant MQTT Device Discovery, so Home Assistant needs
+no YAML configuration. Its identity and state prefix are derived from the
+Gateway Wi-Fi MAC as `flexbms/flexbms_XXYYZZ`; Discovery uses the standard
+`homeassistant` prefix. The intended broker is the official Mosquitto Broker
+add-on on Home Assistant OS. The Companion stores a normal local-broker host,
+port, username, and write-only password in Gateway NVS. MQTT configuration is
+available only on the trusted station LAN, never through the open setup or
+recovery AP. The ESP32 reconnects when the broker returns and republishes
+current discovery and state after reconnect. Home Assistant, the broker, and
+MQTT are not BMS safety dependencies.
 
 Discovery/configuration and the most recent state values are retained. Gateway
 availability uses MQTT last-will/offline status. An unavailable Gateway marks
@@ -191,17 +194,29 @@ KiB Gateway log remain in Companion. The initial entity catalogue is:
 | Entity | Meaning |
 |---|---|
 | `switch.run_request` | Requested BMS operation only; never a contactor-state guarantee. |
-| `sensor.hv_state` and `binary_sensor.hv_active` | Actual STM32 HV-supervisor state. |
-| Pack sensors | Voltage, current, SoC, minimum/maximum cell voltage, and minimum/maximum temperature. |
+| `sensor.hv_state` and `binary_sensor.hv_running` | Actual STM32 HV-supervisor state; `hv_running` is true only in `RUN`. |
+| Pack sensors | Pack voltage, current, power, and SoC when valid; minimum/maximum cell voltage display in V with three decimals; minimum/maximum NTC temperature. |
+| `sensor.cell_delta` | Maximum minus minimum cell voltage, published and displayed as whole mV. |
 | `binary_sensor.fault_active` | On whenever any active or blocking BMS fault exists. |
 | `sensor.active_faults` | Human-readable active fault names, or `No faults`. |
-| Link/version sensors | STM32 and Gateway firmware versions, UART health, telemetry freshness, and Gateway availability. |
-| Update status sensor | Gateway/STM32 update phase and result, when the corresponding update function exists. |
-| Maintenance-page link | Local Gateway Companion page for diagnostics and log download. |
+| Link sensors | ESP32 Gateway uptime, STM32 BMS-controller uptime, UART health, telemetry freshness, MQTT state, and Gateway availability. |
+| Maintenance-page link | The discovered device links to the local Gateway Companion page. |
 
-The `run_request` switch reports the STM32-owned retained intent. Separate HV
-and fault entities show whether that intent is presently effective. Home
-Assistant does not upload images or directly initiate safety-related actions.
+The `run_request` switch reports the STM32-owned retained intent. Its MQTT
+command topic accepts only `ON` and `OFF`, is never retained, and shares the
+Gateway's one active STM32 service slot with Companion and NTP. The Gateway
+does not report an optimistic switch result: the next STM32 `STATUS` is the
+authoritative state. Separate HV and fault entities show whether that intent is
+presently effective. Home Assistant does not upload images or directly initiate
+safety-related actions.
+
+The four binary diagnostics (`telemetry_fresh`, `hv_running`, `fault_active`,
+and `uart_healthy`) publish canonical MQTT `ON`/`OFF` states. Home Assistant
+therefore reports a real state rather than `Unknown`; `fault_active` is `ON`
+only for an active/blocking BMS or HV fault. Gateway uptime is the ESP32
+microsecond timer converted to seconds; BMS-controller uptime is the STM32
+`STATUS.uptime_ms` tick converted to seconds. Both reset on their respective
+controller reset and are diagnostic only.
 
 ## Status LED language
 
@@ -286,6 +301,7 @@ sensible display rounding. The initial cadence is:
 |---|---:|---:|
 | BMS/HV state, fault state, and `run_request` | On change and 1 Hz | On change |
 | Pack voltage/current/SoC and min/max values | 2 Hz | 1 Hz |
+| AMC3330 BAT+ and LOAD+ voltage readings | Every fresh BMS set | Companion only |
 | Per-slave cell voltages and balancing | Every fresh BMS set | Companion only |
 | Per-slave temperatures | Every fresh BMS set | Companion only |
 | UART health and telemetry freshness | 1 Hz | 1 Hz |
@@ -295,8 +311,9 @@ sensible display rounding. The initial cadence is:
 The Gateway publishes individual BMS event messages to MQTT in addition to
 maintaining the current `fault_active` and `active_faults` entities. This
 supports Home Assistant history and automations without making events a BMS
-safety dependency. Events use STM32 RTC Unix time after it has been
-synchronised. Before then, they carry uptime and an explicit unknown-time state.
+safety dependency. UART v1 events contain an ID and value only, so v1 MQTT
+events carry Gateway uptime rather than claiming an STM32-originated wall-clock
+timestamp.
 
 ## Framed BMS protocol
 

@@ -19,6 +19,7 @@
 #include "bcc/UserSettings.h"
 #include "USBCOM.h"
 #include "FreeRTOS.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 
@@ -439,6 +440,7 @@ namespace SlaveController
                 if (mSlaves[currentMeasurementSlaveIdx].meas_GetAmpHourAndIAvg(
                         settings.SHUNT_RESISTANCE,
                         settings.INVERT_CURRENT,
+                        settings.BATTERY_AMPHOURS,
                         &ampHour,
                         &current) != BCC_STATUS_SUCCESS)
                 {
@@ -1317,7 +1319,11 @@ namespace SlaveController
         {
             return BCC_AMPHOUR_TO_SOC(0, settings.BATTERY_AMPHOURS);
         }
-        return BCC_AMPHOUR_TO_SOC(mSlaves[currentMeasurementSlaveIdx].getAhCounter(), settings.BATTERY_AMPHOURS);
+        const double ampHour = std::clamp(
+            mSlaves[currentMeasurementSlaveIdx].getAhCounter(),
+            0.0,
+            settings.BATTERY_AMPHOURS);
+        return BCC_AMPHOUR_TO_SOC(ampHour, settings.BATTERY_AMPHOURS);
     }
 
     bool isSoCValid()
@@ -1349,7 +1355,10 @@ namespace SlaveController
     void setSoC(uint16_t soc)
     {
         if (!currentMeasurementConfigured) return;
-        double ampHour = BCC_SOC_TO_AMPHOUR(soc, settings.BATTERY_AMPHOURS);
+        const double ampHour = std::clamp(
+            BCC_SOC_TO_AMPHOUR(soc, settings.BATTERY_AMPHOURS),
+            0.0,
+            settings.BATTERY_AMPHOURS);
         mSlaves[currentMeasurementSlaveIdx].setAhCounter(ampHour);
     }
 

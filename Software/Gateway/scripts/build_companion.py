@@ -17,6 +17,7 @@ def ensure_time_sync_config():
 
     required = {
         "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE": "y",
+        "CONFIG_ESP_MAIN_TASK_STACK_SIZE": "16384",
         "CONFIG_LWIP_SNTP_MAX_SERVERS": "4",
         "CONFIG_LWIP_SNTP_UPDATE_DELAY": "3600000",
     }

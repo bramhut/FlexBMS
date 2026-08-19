@@ -1,6 +1,7 @@
 #include "flexbms/Protocol.h"
 #include "flexbms/GatewayApi.h"
 #include "flexbms/FirmwareUpdate.h"
+#include "flexbms/MqttClient.h"
 #include "flexbms/StatusLed.h"
 #include "flexbms/TimeSync.h"
 #include "flexbms/WifiManager.h"
@@ -69,6 +70,18 @@ namespace
     void completeTimeSync(FlexBms::GatewayApi::ServiceResult result)
     {
         FlexBms::TimeSync::completeStm32Sync(result == FlexBms::GatewayApi::ServiceResult::Ok);
+    }
+
+    void completeMqttRunRequest(FlexBms::GatewayApi::ServiceResult)
+    {
+        // STATUS is the only authoritative state response. MQTT publishes it
+        // after the STM32 has processed the named service.
+    }
+
+    bool sendMqttRunRequest(bool requested)
+    {
+        const uint8_t argument = requested ? 1U : 0U;
+        return FlexBms::GatewayApi::beginInternalService(FlexBms::GatewayApi::Service::SetRunRequest, &argument, 1U, completeMqttRunRequest);
     }
 
     void handleServiceResponse(const FlexBms::UartV1::Frame &frame)
@@ -190,13 +203,14 @@ extern "C" void app_main(void)
     int64_t nextHeartbeatUs = esp_timer_get_time();
     lastValidFrameUs = nextHeartbeatUs;
     const bool gatewayApiStarted = FlexBms::GatewayApi::start(sendService);
+    const bool mqttStarted = FlexBms::Mqtt::start(sendMqttRunRequest);
     bool gatewayBootConfirmed = !FlexBms::FirmwareUpdate::isGatewayBootPendingVerification();
     const int64_t gatewayBootConfirmationDeadlineUs = esp_timer_get_time() + 60'000'000LL;
     if (!gatewayApiStarted)
     {
         ESP_LOGE(kLogTag, "Gateway HTTP/WebSocket service failed to start");
     }
-    if (!wifiStarted || !gatewayApiStarted)
+    if (!wifiStarted || !gatewayApiStarted || !mqttStarted)
     {
         FlexBms::FirmwareUpdate::restartPendingGatewayImage();
     }
@@ -227,6 +241,7 @@ extern "C" void app_main(void)
                     }
                     logTelemetry(frame);
                     FlexBms::GatewayApi::publishFrame(frame, static_cast<uint32_t>(esp_timer_get_time() / 1000));
+                    FlexBms::Mqtt::publishFrame(frame, static_cast<uint32_t>(esp_timer_get_time() / 1000));
                     if (frame.type == FlexBms::UartV1::MessageType::ServiceResponse)
                     {
                         handleServiceResponse(frame);
@@ -249,8 +264,11 @@ extern "C" void app_main(void)
         }
         uartLinkTimedOut = linkTimedOut;
         FlexBms::GatewayApi::setUartHealthy(!uartLinkTimedOut && linkWasHealthy);
+        FlexBms::Mqtt::setUartHealthy(!uartLinkTimedOut && linkWasHealthy);
 
         FlexBms::Wifi::tick();
+        FlexBms::Mqtt::tick(FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected);
+        if (FlexBms::Mqtt::consumeStatusChanged()) FlexBms::GatewayApi::publishGatewayStatus();
         if (!gatewayBootConfirmed && FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected)
         {
             // A pending OTA image is trusted only once the LAN Companion is
@@ -303,9 +321,9 @@ extern "C" void app_main(void)
 
         statusLed.setUartLinkLost(uartLinkTimedOut);
         statusLed.setWifiWaiting(FlexBms::Wifi::getState() != FlexBms::Wifi::State::Connected);
-        // MQTT, OTA and fatal-source integration remain explicit hooks; no
-        // network service is introduced merely to select an LED pattern.
-        statusLed.setMqttUnavailable(false);
+        // The LED reflects the actual MQTT connection without making the
+        // network path a BMS safety dependency.
+        statusLed.setMqttUnavailable(FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected && FlexBms::Mqtt::getState() != FlexBms::Mqtt::State::Connected);
         statusLed.setFirmwareUpdateActive(FlexBms::FirmwareUpdate::getStatus().phase == FlexBms::FirmwareUpdate::Phase::Uploading ||
                                           FlexBms::FirmwareUpdate::getStatus().phase == FlexBms::FirmwareUpdate::Phase::Installing);
         statusLed.setFatalLocalFailure(false);

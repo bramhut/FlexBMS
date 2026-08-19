@@ -1,6 +1,7 @@
 #include "flexbms/GatewayApi.h"
 #include "flexbms/GatewayAssets.h"
 #include "flexbms/FirmwareUpdate.h"
+#include "flexbms/MqttClient.h"
 #include "flexbms/TimeSync.h"
 #include "flexbms/WifiManager.h"
 
@@ -26,6 +27,8 @@ namespace FlexBms::GatewayApi
         constexpr size_t kMaxBrowserMessageBytes = 4096U;
         constexpr size_t kMaxRequestIdBytes = 64U;
         constexpr size_t kMaxSlaves = 16U;
+        constexpr size_t kMaxHttpClients = 4U;
+        constexpr size_t kMaxTrackedWebSockets = 4U;
         constexpr uint8_t kFirmwareReceiveTimeoutLimit = 3U;
         httpd_handle_t server = nullptr;
         ServiceSender serviceSender = nullptr;
@@ -44,12 +47,23 @@ namespace FlexBms::GatewayApi
         char pendingScanRequestId[kMaxRequestIdBytes + 1U] = {};
         UartV1::Status status{};
         UartV1::Pack pack{};
+        UartV1::HvVoltages hvVoltages{};
         std::array<UartV1::Cell, kMaxSlaves> cells{};
         std::array<UartV1::Temperature, kMaxSlaves> temperatures{};
         std::array<bool, kMaxSlaves> hasCell{};
         std::array<bool, kMaxSlaves> hasTemperature{};
         bool hasStatus = false;
         bool hasPack = false;
+        bool hasHvVoltages = false;
+
+        struct WebSocketDelivery
+        {
+            int socket = -1;
+            bool sendPending = false;
+            bool retiring = false;
+            int64_t nextCloseAttemptUs = 0;
+        };
+        std::array<WebSocketDelivery, kMaxTrackedWebSockets> webSocketDeliveries{};
 
         const char *wifiState()
         {
@@ -131,17 +145,73 @@ namespace FlexBms::GatewayApi
             httpd_ws_frame_t frame{};
         };
 
+        WebSocketDelivery *findWebSocketDelivery(int socket, bool create)
+        {
+            for (auto &delivery : webSocketDeliveries)
+            {
+                if (delivery.socket == socket) return &delivery;
+            }
+            if (!create) return nullptr;
+            for (auto &delivery : webSocketDeliveries)
+            {
+                if (delivery.socket < 0)
+                {
+                    delivery.socket = socket;
+                    return &delivery;
+                }
+            }
+            return nullptr;
+        }
+
+        void resetWebSocketDelivery(WebSocketDelivery &delivery)
+        {
+            delivery = {};
+        }
+
+        void retireUnresponsiveWebSockets()
+        {
+            if (server == nullptr) return;
+            const int64_t now = esp_timer_get_time();
+            for (auto &delivery : webSocketDeliveries)
+            {
+                if (delivery.socket < 0) continue;
+                if (httpd_ws_get_fd_info(server, delivery.socket) != HTTPD_WS_CLIENT_WEBSOCKET)
+                {
+                    resetWebSocketDelivery(delivery);
+                    continue;
+                }
+                if (!delivery.retiring || now < delivery.nextCloseAttemptUs) continue;
+
+                // This runs from the Gateway task, not from the HTTP server's
+                // asynchronous-send callback. That keeps the server control
+                // queue free to process the requested close.
+                delivery.nextCloseAttemptUs = now + 5'000'000LL;
+                const esp_err_t closeResult = httpd_sess_trigger_close(server, delivery.socket);
+                if (closeResult != ESP_OK && closeResult != ESP_ERR_NOT_FOUND)
+                {
+                    ESP_LOGW(kLogTag, "WebSocket close request failed for socket %d: %s", delivery.socket, esp_err_to_name(closeResult));
+                }
+            }
+        }
+
         void releaseQueuedWebSocketText(esp_err_t result, int socket, void *context)
         {
             auto *message = static_cast<QueuedWebSocketText *>(context);
             std::free(message->text);
             delete message;
-            if (result != ESP_OK && server != nullptr)
+            WebSocketDelivery *delivery = findWebSocketDelivery(socket, false);
+            if (delivery != nullptr)
             {
-                // EAGAIN and reset peers otherwise stay in httpd's client list
-                // and cause a failed send for every telemetry publication.
-                ESP_LOGW(kLogTag, "Closing unresponsive WebSocket client: %s", esp_err_to_name(result));
-                (void)httpd_sess_trigger_close(server, socket);
+                delivery->sendPending = false;
+                if (result != ESP_OK)
+                {
+                    // Do not queue another telemetry frame or close request to
+                    // this socket. poll() retires it from outside the HTTP
+                    // server callback, avoiding a control-queue feedback loop.
+                    delivery->retiring = true;
+                    delivery->nextCloseAttemptUs = 0;
+                    ESP_LOGW(kLogTag, "Retiring unresponsive WebSocket client %d: %s", socket, esp_err_to_name(result));
+                }
             }
         }
 
@@ -152,6 +222,9 @@ namespace FlexBms::GatewayApi
             {
                 return false;
             }
+
+            WebSocketDelivery *delivery = findWebSocketDelivery(socket, true);
+            if (delivery == nullptr || delivery->retiring || delivery->sendPending) return false;
 
             auto *message = new (std::nothrow) QueuedWebSocketText{};
             if (message == nullptr) return false;
@@ -166,11 +239,15 @@ namespace FlexBms::GatewayApi
             message->frame.type = HTTPD_WS_TYPE_TEXT;
             message->frame.payload = reinterpret_cast<uint8_t *>(message->text);
             message->frame.len = length;
+            delivery->sendPending = true;
             if (httpd_ws_send_data_async(server, socket, &message->frame,
                                          releaseQueuedWebSocketText, message) == ESP_OK)
             {
                 return true;
             }
+            delivery->sendPending = false;
+            delivery->retiring = true;
+            delivery->nextCloseAttemptUs = 0;
             std::free(message->text);
             delete message;
             return false;
@@ -189,6 +266,7 @@ namespace FlexBms::GatewayApi
         void broadcast(cJSON *root)
         {
             if (server == nullptr) { cJSON_Delete(root); return; }
+            retireUnresponsiveWebSockets();
             size_t count = 8U;
             std::array<int, 8U> sockets{};
             if (httpd_get_client_list(server, &count, sockets.data()) != ESP_OK) { cJSON_Delete(root); return; }
@@ -232,7 +310,16 @@ namespace FlexBms::GatewayApi
                 cJSON_AddStringToObject(setup, "address", accessPoint.address.data());
             }
             cJSON_AddStringToObject(root, "uart_state", uartHealthy ? "healthy" : (hasStatus ? "lost" : "starting"));
-            cJSON_AddStringToObject(root, "mqtt_state", "unavailable");
+            cJSON_AddStringToObject(root, "mqtt_state", Mqtt::stateName(Mqtt::getState()));
+            const Mqtt::Settings mqtt = Mqtt::getSettings();
+            cJSON *mqttJson = cJSON_AddObjectToObject(root, "mqtt");
+            cJSON_AddBoolToObject(mqttJson, "configured", mqtt.configured);
+            if (mqtt.configured)
+            {
+                cJSON_AddStringToObject(mqttJson, "host", mqtt.host);
+                cJSON_AddNumberToObject(mqttJson, "port", mqtt.port);
+                cJSON_AddStringToObject(mqttJson, "username", mqtt.username);
+            }
             const TimeSync::Status timeSync = TimeSync::getStatus();
             cJSON *timeSyncJson = cJSON_AddObjectToObject(root, "time_sync");
             cJSON_AddStringToObject(timeSyncJson, "state", TimeSync::stateName(timeSync.state));
@@ -268,6 +355,7 @@ namespace FlexBms::GatewayApi
             cJSON_AddBoolToObject(caps, "get_device_info", bmsServices);
             cJSON_AddBoolToObject(caps, "read_register", bmsServices);
             cJSON_AddBoolToObject(caps, "wifi_configuration", Wifi::getState() != Wifi::State::Unavailable);
+            cJSON_AddBoolToObject(caps, "mqtt_configuration", Wifi::allowsBmsServices());
             cJSON_AddBoolToObject(caps, "diagnostic_log_download", false);
             cJSON_AddBoolToObject(caps, "raw_terminal", false);
             cJSON_AddBoolToObject(caps, "firmware_update", FirmwareUpdate::isAvailable());
@@ -329,6 +417,13 @@ namespace FlexBms::GatewayApi
             cJSON_AddNumberToObject(packJson, "max_ntc_raw", pack.maxNtcRaw);
             cJSON_AddNumberToObject(packJson, "min_ic_raw", pack.minIcRaw);
             cJSON_AddNumberToObject(packJson, "max_ic_raw", pack.maxIcRaw);
+            if (hasHvVoltages)
+            {
+                cJSON *hvVoltagesJson = cJSON_AddObjectToObject(root, "hv_voltages");
+                cJSON_AddBoolToObject(hvVoltagesJson, "valid", hvVoltages.valid);
+                cJSON_AddNumberToObject(hvVoltagesJson, "bat_plus_uV", hvVoltages.batteryVoltageUv);
+                cJSON_AddNumberToObject(hvVoltagesJson, "load_plus_uV", hvVoltages.loadVoltageUv);
+            }
             cJSON *cellArray = cJSON_AddArrayToObject(root, "cells");
             cJSON *temperatureArray = cJSON_AddArrayToObject(root, "temperatures");
             for (uint8_t slave = 0U; slave < status.slaveCount; ++slave)
@@ -478,6 +573,25 @@ namespace FlexBms::GatewayApi
                    validRequestId(cJSON_GetObjectItemCaseSensitive(root, "request_id"));
         }
 
+        bool parseMqttConfigure(cJSON *root, const char *&host, uint16_t &port, const char *&username, const char *&password)
+        {
+            if (!objectHasExactly(root, {"v", "type", "request_id", "host", "port", "username", "password"})) return false;
+            cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "v");
+            cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+            cJSON *hostItem = cJSON_GetObjectItemCaseSensitive(root, "host");
+            cJSON *usernameItem = cJSON_GetObjectItemCaseSensitive(root, "username");
+            cJSON *passwordItem = cJSON_GetObjectItemCaseSensitive(root, "password");
+            uint32_t portValue = 0U;
+            if (!cJSON_IsNumber(version) || version->valueint != 1 || !cJSON_IsString(type) || std::strcmp(type->valuestring, "mqtt_configure") != 0 ||
+                !validRequestId(cJSON_GetObjectItemCaseSensitive(root, "request_id")) || !validText(hostItem, 63U, false) || !validText(usernameItem, 63U, false) ||
+                !validText(passwordItem, 63U, false) || !jsonInteger(cJSON_GetObjectItemCaseSensitive(root, "port"), 65535U, portValue) || portValue == 0U) return false;
+            host = hostItem->valuestring;
+            username = usernameItem->valuestring;
+            password = passwordItem->valuestring;
+            port = static_cast<uint16_t>(portValue);
+            return true;
+        }
+
         void sendServiceResult(int socket, const char *requestId, Service service, ServiceResult result)
         {
             cJSON *root = base("service_result");
@@ -490,6 +604,14 @@ namespace FlexBms::GatewayApi
         void sendWifiConfigurationResult(int socket, const char *requestId, const char *result)
         {
             cJSON *root = base("wifi_configuration_result");
+            cJSON_AddStringToObject(root, "request_id", requestId);
+            cJSON_AddStringToObject(root, "result", result);
+            (void)sendJsonTo(socket, root);
+        }
+
+        void sendMqttConfigurationResult(int socket, const char *requestId, const char *result)
+        {
+            cJSON *root = base("mqtt_configuration_result");
             cJSON_AddStringToObject(root, "request_id", requestId);
             cJSON_AddStringToObject(root, "result", result);
             (void)sendJsonTo(socket, root);
@@ -664,6 +786,7 @@ namespace FlexBms::GatewayApi
             const bool isService = cJSON_IsString(type) && std::strcmp(type->valuestring, "service") == 0;
             const bool isConfigure = cJSON_IsString(type) && std::strcmp(type->valuestring, "wifi_configure") == 0;
             const bool isScan = cJSON_IsString(type) && std::strcmp(type->valuestring, "wifi_scan") == 0;
+            const bool isMqttConfigure = cJSON_IsString(type) && std::strcmp(type->valuestring, "mqtt_configure") == 0;
             if (isService)
             {
                 Service requestedService{};
@@ -720,6 +843,20 @@ namespace FlexBms::GatewayApi
                 default: sendWifiScanResult(socket, requestId, "unavailable"); break;
                 }
             }
+            else if (isMqttConfigure)
+            {
+                const char *host = nullptr;
+                const char *username = nullptr;
+                const char *password = nullptr;
+                uint16_t port = 0U;
+                if (parseMqttConfigure(root, host, port, username, password))
+                {
+                    const char *requestId = cJSON_GetObjectItemCaseSensitive(root, "request_id")->valuestring;
+                    const bool allowed = Wifi::allowsBmsServices() && !Wifi::isAccessPointActive();
+                    sendMqttConfigurationResult(socket, requestId, allowed && Mqtt::configure(host, port, username, password) ? "accepted" : "error");
+                    publishGatewayStatus();
+                }
+            }
             cJSON_Delete(root);
             return ESP_OK;
         }
@@ -731,6 +868,10 @@ namespace FlexBms::GatewayApi
         serviceSender = sender;
         httpd_config_t config = HTTPD_DEFAULT_CONFIG();
         config.lru_purge_enable = true;
+        // The ESP32-C3 has ten lwIP sockets total. Keep enough capacity for
+        // MQTT, DNS/NTP, and an OTA upload instead of allowing seven browser
+        // clients to consume the network stack.
+        config.max_open_sockets = kMaxHttpClients;
         config.max_uri_handlers = 6;
         config.uri_match_fn = httpd_uri_match_wildcard;
         if (httpd_start(&server, &config) != ESP_OK) return false;
@@ -751,6 +892,7 @@ namespace FlexBms::GatewayApi
 
     void poll()
     {
+        retireUnresponsiveWebSockets();
         Wifi::ScanResults results{};
         if (Wifi::consumeScanResults(results) && pendingScanSocket >= 0)
         {
@@ -812,11 +954,13 @@ namespace FlexBms::GatewayApi
             if ((status.flags & (1U << 3U)) == 0U)
             {
                 hasPack = false;
+                hasHvVoltages = false;
                 hasCell.fill(false);
                 hasTemperature.fill(false);
             }
         }
         else if (frame.type == UartV1::MessageType::Pack && UartV1::decodePack(frame, pack)) hasPack = true;
+        else if (frame.type == UartV1::MessageType::HvVoltages && UartV1::decodeHvVoltages(frame, hvVoltages)) hasHvVoltages = true;
         else if (frame.type == UartV1::MessageType::Cell)
         {
             UartV1::Cell cell{};
@@ -835,11 +979,15 @@ namespace FlexBms::GatewayApi
                 hasTemperature[temperature.slaveIndex] = true;
             }
         }
-        else if (frame.type == UartV1::MessageType::Event && frame.length == 3U)
+        else if (frame.type == UartV1::MessageType::Event && frame.length == 5U)
         {
             cJSON *event = base("event");
             cJSON_AddNumberToObject(event, "event_id", frame.payload[0]);
-            cJSON_AddNumberToObject(event, "value", static_cast<uint16_t>(frame.payload[1]) | (static_cast<uint16_t>(frame.payload[2]) << 8U));
+            const uint32_t value = static_cast<uint32_t>(frame.payload[1]) |
+                                   (static_cast<uint32_t>(frame.payload[2]) << 8U) |
+                                   (static_cast<uint32_t>(frame.payload[3]) << 16U) |
+                                   (static_cast<uint32_t>(frame.payload[4]) << 24U);
+            cJSON_AddNumberToObject(event, "value", value);
             cJSON_AddNumberToObject(event, "gateway_uptime_ms", gatewayUptimeMs);
             broadcast(event);
         }

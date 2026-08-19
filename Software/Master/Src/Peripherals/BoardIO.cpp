@@ -19,6 +19,7 @@ namespace IO
         constexpr size_t BATTERY_VOLTAGE_INDEX = 1U;
         constexpr size_t VREFINT_INDEX = 2U;
         constexpr double ADC_OVERSAMPLING_GAIN = 16.0;
+        constexpr int32_t ADC_DIFFERENTIAL_ZERO_CODE = 2048 * 16;
         constexpr double ADC_DIFFERENTIAL_SCALE = 2048.0 * ADC_OVERSAMPLING_GAIN;
         constexpr double HV_DIVIDER_AND_GAIN = 801.0 / 2.0;
         constexpr uint32_t ADC_HEALTH_CHECK_PERIOD_MS = 20U;
@@ -91,8 +92,21 @@ namespace IO
             }
 
             const double adcReferenceVoltage = getAdcReferenceVoltage(values);
-            const int16_t differentialRaw =
-                static_cast<int16_t>(values[index] & 0xFFFFU);
+            const int32_t differentialRaw =
+                static_cast<int32_t>(values[index] & 0xFFFFU) -
+                ADC_DIFFERENTIAL_ZERO_CODE;
+            const double adcDifferentialVoltage =
+                static_cast<double>(differentialRaw) * adcReferenceVoltage /
+                ADC_DIFFERENTIAL_SCALE;
+            return std::max(0.0, adcDifferentialVoltage * HV_DIVIDER_AND_GAIN);
+        }
+
+        double getHVVoltage(const uint32_t (&values)[ADC_CHANNEL_COUNT], size_t index)
+        {
+            const double adcReferenceVoltage = getAdcReferenceVoltage(values);
+            const int32_t differentialRaw =
+                static_cast<int32_t>(values[index] & 0xFFFFU) -
+                ADC_DIFFERENTIAL_ZERO_CODE;
             const double adcDifferentialVoltage =
                 static_cast<double>(differentialRaw) * adcReferenceVoltage /
                 ADC_DIFFERENTIAL_SCALE;
@@ -283,6 +297,28 @@ namespace IO
     double getBatterySideVoltage()
     {
         return getHVVoltage(BATTERY_VOLTAGE_INDEX);
+    }
+
+    HVVoltages getHVVoltages()
+    {
+        uint32_t values[ADC_CHANNEL_COUNT] = {};
+        const uint32_t now = HAL_GetTick();
+        if (!adcStarted || now - lastAdcDmaCompletionAt > ADC_DMA_STALE_TIMEOUT_MS || !readAdcSnapshot(values))
+        {
+            return {};
+        }
+
+        const double adcReferenceVoltage = getAdcReferenceVoltage(values);
+        if (adcReferenceVoltage < MIN_VALID_ADC_REFERENCE || adcReferenceVoltage > MAX_VALID_ADC_REFERENCE)
+        {
+            return {};
+        }
+
+        return {
+            true,
+            getHVVoltage(values, BATTERY_VOLTAGE_INDEX),
+            getHVVoltage(values, LOAD_VOLTAGE_INDEX),
+        };
     }
 }
 

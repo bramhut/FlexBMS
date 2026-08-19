@@ -71,8 +71,11 @@ namespace FaultManager
     void setStartupComplete(bool complete);
     void setHvRunning(bool running);
 
-    // Acknowledges every eligible latch without changing the run request. It
-    // is denied while any ERROR condition is active or state is CRITICAL.
+    // Acknowledges resolved ERROR latches and the recorded watchdog-reset
+    // warning without changing the run request. Live and configuration
+    // warnings remain visible until their underlying condition changes.
+    // The request is denied while any ERROR condition is active, state is
+    // CRITICAL, or no acknowledgeable state is pending.
     bool acknowledge();
 
     Snapshot getSnapshot();

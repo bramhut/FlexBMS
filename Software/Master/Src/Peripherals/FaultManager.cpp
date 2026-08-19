@@ -23,6 +23,8 @@ namespace FaultManager
             return static_cast<uint32_t>(1UL << bit);
         }
 
+        constexpr uint32_t kAcknowledgeableWarnings = mask(static_cast<uint8_t>(Warning::WatchdogReset));
+
         BmsState stateLocked()
         {
             if (critical) return BmsState::Critical;
@@ -120,11 +122,12 @@ namespace FaultManager
     {
         bool accepted = false;
         taskENTER_CRITICAL();
-        if (!critical && (bmsActive | hvActive) == 0U)
+        const bool hasAcknowledgeableState = (bmsLatched | hvLatched | (warnings & kAcknowledgeableWarnings)) != 0U;
+        if (!critical && (bmsActive | hvActive) == 0U && hasAcknowledgeableState)
         {
             bmsLatched = 0U;
             hvLatched = 0U;
-            warnings = 0U;
+            warnings &= ~kAcknowledgeableWarnings;
             accepted = true;
         }
         taskEXIT_CRITICAL();

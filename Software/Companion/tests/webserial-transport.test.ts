@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { WebSerialTransport } from '../src/transports/WebSerialTransport.ts'
-import { encodeFrame, FrameDecoder, messageType, serviceId } from '../src/shared/uartV1.ts'
+import { encodeFrame, FrameDecoder, messageType, serviceId, writeLe16, writeLe32 } from '../src/shared/uartV1.ts'
 
 type TestPort = {
   port: { open(options: { baudRate: number }): Promise<void>; close(): Promise<void>; readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }
@@ -61,5 +61,27 @@ test('direct USB resolves pending services when the port disconnects', async () 
     const response = transport.request('acknowledge_faults', {})
     transport.disconnect()
     assert.equal((await response).result, 'transport_error')
+  })
+})
+
+test('direct USB includes AMC3330 BAT+ and LOAD+ telemetry in a complete snapshot', async () => {
+  await withSerial(async ({ reader }) => {
+    const transport = new WebSerialTransport()
+    await transport.connect()
+    const snapshot = new Promise<Parameters<Parameters<typeof transport.onSnapshot>[0]>[0]>(resolve => transport.onSnapshot(resolve))
+    const status = new Uint8Array(33)
+    writeLe16(status, 2, 1 << 3)
+    status[4] = 1
+    const hvVoltages = new Uint8Array(12)
+    hvVoltages[0] = 1
+    writeLe32(hvVoltages, 4, 302_500_000)
+    writeLe32(hvVoltages, 8, 1_250_000)
+    reader.enqueue(encodeFrame({ type: messageType.status, sequence: 0, payload: status }))
+    reader.enqueue(encodeFrame({ type: messageType.hvVoltages, sequence: 0, payload: hvVoltages }))
+    reader.enqueue(encodeFrame({ type: messageType.pack, sequence: 0, payload: new Uint8Array(24) }))
+    reader.enqueue(encodeFrame({ type: messageType.cell, sequence: 0, payload: new Uint8Array(51) }))
+    reader.enqueue(encodeFrame({ type: messageType.temperature, sequence: 0, payload: new Uint8Array(11) }))
+    assert.deepEqual((await snapshot).hv_voltages, { valid: true, bat_plus_uV: 302_500_000, load_plus_uV: 1_250_000 })
+    transport.disconnect()
   })
 })

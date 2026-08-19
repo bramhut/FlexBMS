@@ -144,8 +144,8 @@ onBeforeUnmount(() => { if (clockTimer !== undefined) window.clearInterval(clock
       </div>
       <div v-if="acknowledgementPending" class="control-section recovery-section">
         <h3>Error recovery</h3>
-        <p>Acknowledgement clears inactive error latches and warnings.</p>
-        <button class="danger" :disabled="!capabilities.acknowledge_faults" @click="acknowledgeFaults">Acknowledge errors</button>
+        <p>Acknowledgement clears resolved error latches and a recorded watchdog reset. Live and configuration warnings remain until their condition changes.</p>
+        <button class="danger" :disabled="!capabilities.acknowledge_faults" @click="acknowledgeFaults">Acknowledge resolved faults</button>
         <small v-if="!capabilities.acknowledge_faults">{{ availability('acknowledge_faults') }}</small>
       </div>
     </div>
@@ -154,14 +154,9 @@ onBeforeUnmount(() => { if (clockTimer !== undefined) window.clearInterval(clock
 
   <section class="panel clock-panel">
     <div class="panel-heading"><div><h2>System time</h2></div><p>UTC is stored on the STM32; dates are shown in this browser’s locale.</p></div>
-    <dl class="clock-details"><div><dt>Device time</dt><dd>{{ formattedDeviceTime }}</dd></div><div><dt>Last NTP sync</dt><dd>{{ formattedNtpSync }}</dd></div></dl>
+    <dl class="clock-details"><div><dt>Device time</dt><dd>{{ formattedDeviceTime }}</dd></div><div><dt>Last NTP sync</dt><dd>{{ formattedNtpSync }}</dd></div><div><dt>BMS uptime</dt><dd>{{ formattedStm32Uptime }}</dd><small v-if="stm32Restarted">Restart detected in this Companion session.</small></div><div><dt>Gateway uptime</dt><dd>{{ formattedGatewayUptime }}</dd><small v-if="gatewayRestarted">Restart detected in this Companion session.</small></div></dl>
     <button :disabled="!connected || !capabilities.get_rtc" @click="refreshDeviceTime()">Refresh device time</button>
     <small v-if="!capabilities.get_rtc">{{ availability('get_rtc') }}</small>
-  </section>
-
-  <section class="panel uptime-panel">
-    <div class="panel-heading"><div><h2>Controller uptime</h2></div><p>Time since the controller last restarted.</p></div>
-    <dl class="uptime-details"><div><dt>STM32 BMS</dt><dd>{{ formattedStm32Uptime }}</dd><small v-if="stm32Restarted">Restart detected in this Companion session.</small></div><div><dt>ESP32 Gateway</dt><dd>{{ formattedGatewayUptime }}</dd><small v-if="gatewayRestarted">Restart detected in this Companion session.</small></div></dl>
   </section>
 
   <section class="panel register-panel">

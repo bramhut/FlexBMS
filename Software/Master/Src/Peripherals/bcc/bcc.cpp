@@ -12,6 +12,7 @@
 #include "bcc/bcc.h"
 #include "bcc/UserSettings.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -859,13 +860,16 @@ bcc_status_t BCC::meas_GetRawValues()
  * Note that the Coulomb counter is independent on the on-demand conversions.
  *
  * @param rShunt    Shunt resistance [Ohm].
+ * @param capacityAh Configured usable battery capacity [Ah].
  * @param amphour   Provide pointer to store: Ampere-hour left [Ah].
  * @param Iavg      Provide pointer to store: Average current [A].
  * @param forceRead If True will force an register read command. Else will use previously fetched value
  *
  * @return bcc_status_t Error code.
  */
-bcc_status_t BCC::meas_GetAmpHourAndIAvg(const double rShunt, const bool invertCurrent, double *const amphour, double *const Iavg, bool forceRead)
+bcc_status_t BCC::meas_GetAmpHourAndIAvg(const double rShunt, const bool invertCurrent,
+                                          const double capacityAh, double *const amphour,
+                                          double *const Iavg, bool forceRead)
 {
     bcc_status_t status;
 
@@ -875,9 +879,22 @@ bcc_status_t BCC::meas_GetAmpHourAndIAvg(const double rShunt, const bool invertC
 
     BCC_MCU_Assert(amphour != NULL);
     BCC_MCU_Assert(Iavg != NULL);
-    if (!mCurrentSenseEnabled)
+    if (!mCurrentSenseEnabled || !std::isfinite(capacityAh) || capacityAh <= 0.0)
     {
         return BCC_STATUS_PARAM_RANGE;
+    }
+
+    // The retained counter can have been written by an earlier firmware
+    // version. Repair a valid, but out-of-range, estimate before reporting or
+    // integrating it further.
+    if (ahCounterIsValid())
+    {
+        const double retainedAh = *mAmpHour;
+        const double boundedAh = std::clamp(retainedAh, 0.0, capacityAh);
+        if (boundedAh != retainedAh)
+        {
+            setAhCounter(boundedAh);
+        }
     }
 
     if (forceRead)
@@ -945,7 +962,8 @@ bcc_status_t BCC::meas_GetAmpHourAndIAvg(const double rShunt, const bool invertC
     else
     {
         mIAvg = iavg;
-        const double ampHour = *mAmpHour + deltaC / 3600;
+        const double ampHour = std::clamp(*mAmpHour + deltaC / 3600,
+                                          0.0, capacityAh);
         if (ahCounterIsValid())
         {
             setAhCounter(ampHour);

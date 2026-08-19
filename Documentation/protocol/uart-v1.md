@@ -55,6 +55,7 @@ magic byte, and resumes magic scanning. There is no escaping or byte stuffing.
 | `0x03` | `PACK` | STM32 to Gateway or direct USB Companion |
 | `0x04` | `CELL` | STM32 to Gateway or direct USB Companion |
 | `0x05` | `TEMPERATURE` | STM32 to Gateway or direct USB Companion |
+| `0x06` | `HV_VOLTAGES` | STM32 to Gateway or direct USB Companion |
 | `0x10` | `SERVICE_REQUEST` | Gateway or direct USB Companion to STM32 |
 | `0x11` | `SERVICE_RESPONSE` | STM32 to Gateway or direct USB Companion |
 | `0x12` | `EVENT` | STM32 to Gateway or direct USB Companion |
@@ -97,7 +98,9 @@ min_ntc_raw:u16 | max_ntc_raw:u16 | min_ic_raw:u16 | max_ic_raw:u16
 
 Voltages are microvolts. Current is signed amperes ×64; positive is charging.
 `soc_raw` uses the existing BCC range (`0 = -100%`, `65535 = 200%`):
-`percent = 100 * (soc_raw / 65535 * 3 - 1)`. NTC conversion is
+`percent = 100 * (soc_raw / 65535 * 3 - 1)`. The STM32 bounds retained and
+reported SOC to 0--100%, so the wider transport representation is not used in
+normal operation. NTC conversion is
 `raw / 65535 * 120 - 20` °C. IC raw is centikelvin: `raw / 100 - 273.15` °C.
 
 Only use `pack_current_raw` when STATUS bit 7 is set, and `soc_raw` when bit 6
@@ -109,13 +112,30 @@ there. Production enables it only on CID 1. Full-charge calibration requires
 fresh measurements with no active BMS error, every cell at or above 3.450 V,
 current from -0.100 A through C/50 (6.28 A for the 314 Ah default), continuously
 for 300 s. Any failed condition restarts the timer; calibration sets SOC to
-100%.
+100%. Coulomb counting is bounded at 0% and 100%, allowing a subsequent
+discharge to lower SOC normally without retaining an out-of-range value.
 
 When calibration succeeds with valid STM32 RTC UTC, its `u32` Unix time is
 stored with a marker and checksum in reserved backup registers BKP28--BKP30 and
 reported in `soc_last_calibration_unix_s` with STATUS bit 8 set. A calibration
 before UTC is valid is deliberately reported without a timestamp rather than
 with an invented date.
+
+### `HV_VOLTAGES` — 12 bytes
+
+```text
+valid_flags:u8 | reserved:u8[3] | bat_plus_uV:u32 | load_plus_uV:u32
+```
+
+Bit 0 of `valid_flags` means both values were obtained from one fresh,
+coherent STM32 ADC/DMA scan and its ADC reference was valid. Bits 1--7 and the
+three reserved bytes are zero. The values are positive microvolts measured by
+the isolated AMC3330 battery-side (BAT+) and load-side (LOAD+) channels. When
+the valid bit is clear, consumers must show the values as unavailable rather
+than treating the zero payload as a measurement.
+
+These diagnostic readings are sent with each normal fresh snapshot. They do
+not change PCC thresholds, fault decisions, or STM32 safety ownership.
 
 ### `CELL` — 51 bytes per configured slave
 
@@ -139,7 +159,7 @@ Each packet includes four NTC readings and one IC reading. Both endpoint
 implementations must enforce the four-NTC-per-slave configuration at compile
 time.
 
-The STM32 sends `STATUS` and a complete `PACK`/`CELL`/`TEMPERATURE` snapshot
+The STM32 sends `STATUS` and a complete `HV_VOLTAGES`/`PACK`/`CELL`/`TEMPERATURE` snapshot
 after fresh measurement data, no more than once every 500 ms. It sends `EVENT`
 immediately on change. The Gateway treats all measurement telemetry as invalid
 while `STATUS` says measurements are not fresh.
@@ -178,7 +198,10 @@ reserved and zero.
 
 `warnings` is non-latched. Bits are: 0 `WATCHDOG_RESET`, 1
 `STARTUP_DIAGNOSTICS_BYPASSED`, and 2 `BATTERY_VOLTAGE_MISMATCH_OFF`.
-Bits 3--31 are reserved and zero.
+Bits 3--31 are reserved and zero. `WATCHDOG_RESET` is a recorded warning that
+an accepted acknowledgement clears. `STARTUP_DIAGNOSTICS_BYPASSED` remains
+present while that build configuration is active; `BATTERY_VOLTAGE_MISMATCH_OFF`
+remains present while the measurements disagree.
 `WATCHDOG_RESET` is set when this STM32 boot followed an independent or window
 watchdog reset. Gateway liveness, CAN condition, near-limit indication, and an
 inactive balancing request are not BMS warnings in this release.
@@ -286,12 +309,14 @@ connection and forwards the result through this same service slot.
 
 `SET_RUN_REQUEST(0)` immediately removes the request through the STM32 PCC
 path. A request of 1 does not guarantee an HV start. `ACKNOWLEDGE_FAULTS` is
-denied while any ERROR condition remains active or the BMS is `CRITICAL`.
-Accepted acknowledgement clears inactive BMS/HV ERROR latches and warnings,
-but deliberately preserves the run request; PCC can therefore restart from
-`OFF` immediately once the Fault Manager permits it. The Gateway and Home
-Assistant cannot bypass a fault, write BCC registers, or override the HV
-supervisor.
+denied while any ERROR condition remains active or the BMS is `CRITICAL`. It
+is also denied when no inactive BMS/HV ERROR latch or recorded `WATCHDOG_RESET`
+warning remains to clear. Accepted acknowledgement clears those states only,
+leaving live and configuration warnings visible until their underlying
+condition changes; it deliberately preserves the run request. PCC can
+therefore restart from `OFF` immediately once the Fault Manager permits it.
+The Gateway and Home Assistant cannot bypass a fault, write BCC registers, or
+override the HV supervisor.
 
 `SET_BALANCING_REQUEST` is an additional AND gate: a request of 1 does not
 guarantee balancing. The STM32 requires a running, fault-free BMS plus its

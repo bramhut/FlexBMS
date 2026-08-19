@@ -2,8 +2,8 @@
 
 ESP32-C3-WROOM-02U-N4 Gateway firmware. It implements the STM32 framed BMS v1
 transport/telemetry decoder, serves the BMS Companion on the local network,
-and provides local Wi-Fi configuration/recovery. MQTT, Home Assistant, and OTA
-remain out of scope.
+and provides local Wi-Fi configuration/recovery, station-LAN OTA, and Home
+Assistant MQTT Device Discovery.
 
 The canonical framed-BMS payload contract, shared by Gateway UART and direct
 STM32 USB Companion, is
@@ -55,6 +55,25 @@ pio run
 pio run --target upload --upload-port COMx
 pio device monitor --baud 115200
 ```
+
+The Gateway main FreeRTOS task is configured for a 16 KiB stack. MQTT Device
+Discovery and compact-state JSON serialisation run from that task, so the
+default ESP-IDF stack is insufficient. `sdkconfig.defaults` supplies the value
+for a fresh configuration and the pre-build script keeps PlatformIO's ignored,
+persisted `sdkconfig.flexbms_gateway` aligned; no manual menuconfig change is
+required.
+
+The local HTTP server is deliberately limited to four browser connections so
+the ESP32-C3's small TCP socket pool retains room for MQTT and network services.
+At most one asynchronous telemetry frame is outstanding per WebSocket. A
+browser that stops reading is marked for retirement after its first failed
+send, receives no more queued telemetry, and is closed by the regular Gateway
+task. MQTT client-start failures use a 5--60 second backoff and report heap
+headroom rather than retrying once per main-loop tick.
+
+The project monitor explicitly leaves DTR and RTS inactive because COM6 is the
+ESP32-C3 native USB Serial/JTAG console. Opening or closing it is therefore a
+passive observation operation, not a request to reset or enter download mode.
 
 At boot the firmware verifies the UART framing/CRC test vector, starts UART1,
 and sends an empty v1 HEARTBEAT every 500 ms. Valid STM32 frames are decoded
@@ -138,6 +157,48 @@ present. It is also an open recovery AP: nearby users can view monitoring and
 change Wi-Fi settings while it is active. Gateway-to-STM32 service controls
 are disabled in this state. Credentials are never written to the log. Wi-Fi
 failure or loss does not affect the STM32 UART link or safety decisions.
+
+## MQTT and Home Assistant
+
+On the trusted station LAN, the Companion **Wi-Fi** page also accepts a local
+MQTT broker host, port, username, and write-only password. The Gateway stores
+these separately in NVS and never connects to MQTT while its open setup or
+recovery AP is active. It publishes one retained Home Assistant MQTT Device
+Discovery configuration under `homeassistant/device/flexbms_XXYYZZ/config`, a
+retained compact state at `flexbms/flexbms_XXYYZZ/state`, and retained
+availability with an `offline` MQTT last will. `XXYYZZ` is derived from the
+Gateway Wi-Fi MAC.
+
+| Topic | Retention | Direction | Purpose |
+|---|---|---|---|
+| `homeassistant/device/flexbms_XXYYZZ/config` | retained | publish | Home Assistant Device Discovery configuration. |
+| `flexbms/flexbms_XXYYZZ/state` | retained | publish | Compact aggregate BMS/Gateway state. |
+| `flexbms/flexbms_XXYYZZ/availability` | retained | publish | `online`, with `offline` configured as the MQTT last will. |
+| `flexbms/flexbms_XXYYZZ/event` | not retained | publish | UART v1 event ID/value with Gateway uptime. |
+| `flexbms/flexbms_XXYYZZ/command/run_request` | not retained | subscribe | Only `ON` and `OFF` are accepted. |
+
+The compact state exposes pack voltage/current/power, valid SoC, BMS/HV state,
+cell-voltage extrema in V (three display decimals), cell-voltage delta in whole
+mV, NTC-temperature extrema, active-fault text, and the `telemetry_fresh`,
+`hv_running`, `fault_active`, and `uart_healthy` binary states. It also exposes
+distinct ESP32 **Gateway uptime** and STM32 **BMS controller uptime** sensors.
+The latter comes from the STM32 `STATUS.uptime_ms` field; both counters reset
+when their respective controller resets and are diagnostic only. Home Assistant
+normally prefixes an entity's friendly name with this discovered device's name;
+that is Home Assistant's device-entity presentation, not a duplicate telemetry
+field.
+
+On MQTT connect and on Home Assistant's `homeassistant/status` birth `online`
+message, the Gateway republishes discovery and current state. This
+updates discovery metadata after a firmware upgrade without manually deleting
+entities.
+
+The published device provides aggregate BMS health and pack telemetry plus a
+`run_request` switch. Its non-retained command topic accepts only `ON` and
+`OFF`; those commands enter the same validated STM32 service slot as the local
+Companion. The switch reports STM32 status, never an optimistic result or a
+promise that HV will close. Fault acknowledgement, balancing, firmware update,
+raw diagnostics, and inverter/EMS control are deliberately not MQTT commands.
 ## Release build
 
 `../../scripts/build-release.ps1` runs the Companion checks, produces the

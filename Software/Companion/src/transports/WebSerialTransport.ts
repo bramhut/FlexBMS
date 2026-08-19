@@ -1,6 +1,6 @@
-import type { BmsTransport, Capabilities, ConnectionState, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport.ts'
+import type { BmsTransport, Capabilities, ConnectionState, MqttConfigurationResponse, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport.ts'
 import { unavailableCapabilities } from './Transport.ts'
-import { decodeCell, decodePack, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId } from '../shared/uartV1.ts'
+import { decodeCell, decodeHvVoltages, decodePack, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId } from '../shared/uartV1.ts'
 
 type SerialPortLike = { open(options: { baudRate: number }): Promise<void>; close(): Promise<void>; readable?: ReadableStream<Uint8Array>; writable?: WritableStream<Uint8Array> }
 declare global { interface Navigator { serial?: { requestPort(): Promise<SerialPortLike> } } }
@@ -25,6 +25,7 @@ export class WebSerialTransport implements BmsTransport {
   private decoder = new FrameDecoder()
   private status: Status | null = null
   private pack: Snapshot['pack'] | null = null
+  private hvVoltages: Snapshot['hv_voltages']
   private cells = new Map<number, Snapshot['cells'][number]>()
   private temperatures = new Map<number, Snapshot['temperatures'][number]>()
   private readonly capabilities: Capabilities = unavailableCapabilities()
@@ -55,6 +56,7 @@ export class WebSerialTransport implements BmsTransport {
   getConnectionState(): ConnectionState { return this.state }
   getCapabilities(): Capabilities { return this.capabilities }
   async configureWifi(_ssid: string, _password: string): Promise<WifiConfigurationResponse> { return { request_id: '', result: 'transport_error' } }
+  async configureMqtt(_host: string, _port: number, _username: string, _password: string): Promise<MqttConfigurationResponse> { return { request_id: '', result: 'transport_error' } }
   async scanWifi(): Promise<WifiScanResponse> { return { request_id: '', result: 'unavailable' } }
   onBmsStatus(listener: Listener<Status>): () => void { this.statusListeners.add(listener); return () => this.statusListeners.delete(listener) }
   onSnapshot(listener: Listener<Snapshot>): () => void { this.snapshotListeners.add(listener); return () => this.snapshotListeners.delete(listener) }
@@ -128,12 +130,13 @@ export class WebSerialTransport implements BmsTransport {
       const status = decodeStatus(payload)
       if (!status) return
       this.status = status
-      if (!status.measurements_fresh) { this.pack = null; this.cells.clear(); this.temperatures.clear() }
+      if (!status.measurements_fresh) { this.pack = null; this.hvVoltages = undefined; this.cells.clear(); this.temperatures.clear() }
       this.emitStatus()
       this.emitSnapshotIfComplete()
       return
     }
     if (type === messageType.pack) { const pack = decodePack(payload); if (pack) { this.pack = pack; this.emitSnapshotIfComplete() }; return }
+    if (type === messageType.hvVoltages) { const voltages = decodeHvVoltages(payload); if (voltages) { this.hvVoltages = voltages; this.emitSnapshotIfComplete() }; return }
     if (type === messageType.cell) { const cell = decodeCell(payload); if (cell) { this.cells.set(cell.slave_index, cell); this.emitSnapshotIfComplete() }; return }
     if (type === messageType.temperature) { const temperature = decodeTemperature(payload); if (temperature) { this.temperatures.set(temperature.slave_index, temperature); this.emitSnapshotIfComplete() }; return }
     if (type === messageType.event && payload.length === 5) { this.applyEvent(payload[0], readLe32(payload, 1)); return }
@@ -172,7 +175,7 @@ export class WebSerialTransport implements BmsTransport {
   private emitSnapshotIfComplete(): void {
     if (!this.status?.measurements_fresh || !this.pack || this.status.slave_count === 0) return
     for (let slave = 0; slave < this.status.slave_count; slave += 1) if (!this.cells.has(slave) || !this.temperatures.has(slave)) return
-    this.snapshotListeners.forEach(listener => listener({ status: { ...this.status! }, pack: { ...this.pack! }, cells: Array.from(this.cells.values()).sort((a, b) => a.slave_index - b.slave_index), temperatures: Array.from(this.temperatures.values()).sort((a, b) => a.slave_index - b.slave_index) }))
+    this.snapshotListeners.forEach(listener => listener({ status: { ...this.status! }, pack: { ...this.pack! }, ...(this.hvVoltages ? { hv_voltages: { ...this.hvVoltages } } : {}), cells: Array.from(this.cells.values()).sort((a, b) => a.slave_index - b.slave_index), temperatures: Array.from(this.temperatures.values()).sort((a, b) => a.slave_index - b.slave_index) }))
   }
 
   private completeTransportError(sequence: number): void { const pending = this.pending.get(sequence); if (!pending) return; this.pending.delete(sequence); window.clearTimeout(pending.timeout); pending.resolve({ request_id: '', service: pending.service, result: 'transport_error' }) }

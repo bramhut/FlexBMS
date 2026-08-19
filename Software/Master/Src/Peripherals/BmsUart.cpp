@@ -1,5 +1,6 @@
 #include "BmsUart.h"
 
+#include "BoardIO.h"
 #include "FirmwareVersion.h"
 #include "FaultManager.h"
 #include "FreeRTOS.h"
@@ -16,7 +17,9 @@
 #include "USBCOM.h"
 
 #include <array>
+#include <cmath>
 #include <cstring>
+#include <limits>
 
 // Defined by the generated USB-device implementation.  A configured device
 // means a USB host has enumerated the STM32 CDC interface.
@@ -37,6 +40,7 @@ namespace BmsUart
         constexpr uint32_t SNAPSHOT_PERIOD_MS = 500U;
         constexpr uint32_t GATEWAY_LOSS_MS = 1500U;
         constexpr uint32_t USB_COMPANION_LOSS_MS = 1500U;
+        constexpr uint32_t RX_RECOVERY_RETRY_MS = 1000U;
         constexpr uint32_t REGISTER_READ_TIMEOUT_MS = 500U;
         constexpr uint32_t TX_TIMEOUT_MS = 50U;
         constexpr uint32_t APP_FLASH_BYTES = 512U * 1024U;
@@ -49,6 +53,7 @@ namespace BmsUart
             PACK = 0x03U,
             CELL = 0x04U,
             TEMPERATURE = 0x05U,
+            HV_VOLTAGES = 0x06U,
             SERVICE_REQUEST = 0x10U,
             SERVICE_RESPONSE = 0x11U,
             EVENT = 0x12U,
@@ -151,6 +156,14 @@ namespace BmsUart
         volatile uint32_t lastValidGatewayFrameMs = 0U;
         volatile uint32_t uartStartedMs = 0U;
         volatile uint32_t lastValidUsbHeartbeatMs = 0U;
+        volatile bool rxRecoveryRequested = false;
+
+        // Retained for debugger inspection after a recovered UART incident.
+        volatile uint32_t rxErrorCount = 0U;
+        volatile uint32_t lastRxErrorCode = HAL_UART_ERROR_NONE;
+        volatile uint32_t rxArmFailureCount = 0U;
+        volatile uint32_t rxRecoveryCount = 0U;
+        uint32_t nextRxRecoveryAttemptMs = 0U;
 
         // CDC shares a port with the engineering text console. Hold only
         // bytes beginning a possible FB frame; every other byte continues to
@@ -223,11 +236,44 @@ namespace BmsUart
             }
         }
 
-        void armReceiveDma()
+        bool armReceiveDma()
         {
             if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rxDmaBuffer.data(), rxDmaBuffer.size()) == HAL_OK)
             {
                 __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+                return true;
+            }
+            ++rxArmFailureCount;
+            rxRecoveryRequested = true;
+            return false;
+        }
+
+        bool gatewayLinkLostAt(uint32_t now)
+        {
+            return now - uartStartedMs >= GATEWAY_LOSS_MS &&
+                   (!hasValidGatewayFrame || now - lastValidGatewayFrameMs >= GATEWAY_LOSS_MS);
+        }
+
+        void processReceiveRecovery(uint32_t now)
+        {
+            if (!rxRecoveryRequested && !gatewayLinkLostAt(now)) return;
+            if (static_cast<int32_t>(now - nextRxRecoveryAttemptMs) < 0) return;
+            nextRxRecoveryAttemptMs = now + RX_RECOVERY_RETRY_MS;
+
+            // Abort only reception so telemetry transmission remains active.
+            // Clear the request before the abort so an ISR-detected error that
+            // races this recovery schedules another bounded attempt.
+            rxRecoveryRequested = false;
+            if (HAL_UART_AbortReceive(&huart1) != HAL_OK)
+            {
+                rxRecoveryRequested = true;
+                return;
+            }
+
+            resetParser();
+            if (armReceiveDma())
+            {
+                ++rxRecoveryCount;
             }
         }
 
@@ -552,6 +598,34 @@ namespace BmsUart
             writeLe16(payload.data() + 20U, SlaveController::getMinICtemp());
             writeLe16(payload.data() + 22U, SlaveController::getMaxICtemp());
             broadcastFrame(PACK, 0U, payload.data(), payload.size());
+        }
+
+        uint32_t voltageToMicrovolts(double voltage)
+        {
+            if (!std::isfinite(voltage) || voltage <= 0.0)
+            {
+                return 0U;
+            }
+
+            const double microvolts = voltage * 1'000'000.0;
+            if (microvolts >= static_cast<double>(std::numeric_limits<uint32_t>::max()))
+            {
+                return std::numeric_limits<uint32_t>::max();
+            }
+            return static_cast<uint32_t>(microvolts + 0.5);
+        }
+
+        void sendHvVoltages()
+        {
+            const IO::HVVoltages voltages = IO::getHVVoltages();
+            std::array<uint8_t, 12U> payload = {};
+            if (voltages.valid)
+            {
+                payload[0] = 1U;
+                writeLe32(payload.data() + 4U, voltageToMicrovolts(voltages.batteryVoltage));
+                writeLe32(payload.data() + 8U, voltageToMicrovolts(voltages.loadVoltage));
+            }
+            broadcastFrame(HV_VOLTAGES, 0U, payload.data(), payload.size());
         }
 
         void sendCellsAndTemperatures()
@@ -968,7 +1042,7 @@ namespace BmsUart
 
         void task(void *)
         {
-            armReceiveDma();
+            (void)armReceiveDma();
             uint32_t lastHeartbeatMs = HAL_GetTick();
             uint32_t lastStatusMs = HAL_GetTick();
             uint32_t lastSnapshotMs = 0U;
@@ -985,6 +1059,7 @@ namespace BmsUart
                 publishChangedEvents();
 
                 const uint32_t now = HAL_GetTick();
+                processReceiveRecovery(now);
                 if (now - lastHeartbeatMs >= HEARTBEAT_PERIOD_MS)
                 {
                     broadcastFrame(HEARTBEAT, 0U, nullptr, 0U);
@@ -999,6 +1074,7 @@ namespace BmsUart
                     SlaveController::isNewDataAvailable(lastSeenMeasurement))
                 {
                     sendStatus();
+                    sendHvVoltages();
                     sendPack();
                     sendCellsAndTemperatures();
                     lastSnapshotMs = now;
@@ -1014,6 +1090,12 @@ namespace BmsUart
         lastValidGatewayFrameMs = HAL_GetTick();
         uartStartedMs = lastValidGatewayFrameMs;
         lastValidUsbHeartbeatMs = 0U;
+        rxRecoveryRequested = false;
+        rxErrorCount = 0U;
+        lastRxErrorCode = HAL_UART_ERROR_NONE;
+        rxArmFailureCount = 0U;
+        rxRecoveryCount = 0U;
+        nextRxRecoveryAttemptMs = 0U;
         resetUsbCandidate();
         rxQueue = xQueueCreateStatic(RX_QUEUE_DEPTH, sizeof(ReceivedFrame), rxQueueStorage.data(), &rxQueueControl);
         uartTaskHandle = osThreadNew(task, nullptr, &uartTaskAttributes);
@@ -1021,9 +1103,7 @@ namespace BmsUart
 
     bool isGatewayLinkLost()
     {
-        const uint32_t now = HAL_GetTick();
-        return now - uartStartedMs >= GATEWAY_LOSS_MS &&
-               (!hasValidGatewayFrame || now - lastValidGatewayFrameMs >= GATEWAY_LOSS_MS);
+        return gatewayLinkLostAt(HAL_GetTick());
     }
 
     void onRxEvent(const uint8_t *data, size_t length)
@@ -1050,14 +1130,16 @@ namespace BmsUart
 
     void onError()
     {
+        ++rxErrorCount;
+        lastRxErrorCode = HAL_UART_GetError(&huart1);
         resetParser();
-        armReceiveDma();
+        rxRecoveryRequested = true;
     }
 
     void onHalRxEvent(uint16_t size)
     {
         onRxEvent(rxDmaBuffer.data(), size);
-        armReceiveDma();
+        (void)armReceiveDma();
     }
 }
 

@@ -52,6 +52,7 @@ watch([() => props.connected, () => props.capabilities.get_device_info, () => pr
         <div><dt>ESP32 Gateway</dt><dd>{{ gatewayVersion }}</dd></div>
         <div><dt>STM32 BMS</dt><dd>{{ stm32VersionText }}</dd></div>
       </dl>
+      <p v-if="gateway?.gateway_partition" class="firmware-partition">Running Gateway partition: <b>{{ gateway.gateway_partition }}</b></p>
       <template v-if="canReadStm32Version">
       <button :disabled="!connected || !capabilities.get_device_info || reading" @click="refreshVersions">{{ reading ? 'Reading…' : 'Refresh versions' }}</button>
       </template>

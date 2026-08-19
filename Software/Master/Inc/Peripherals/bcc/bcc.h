@@ -375,13 +375,16 @@ public:
      * Note that the Coulomb counter is independent on the on-demand conversions.
      *
      * @param rShunt    Shunt resistance [Ohm].
+     * @param capacityAh Configured usable battery capacity [Ah].
      * @param amphour   Provide pointer to store: Ampere-hour left [Ah].
      * @param Iavg      Provide pointer to store: Average current [A].
      * @param forceRead If True will force an register read command. Else will use previously fetched value
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t meas_GetAmpHourAndIAvg(const double rShunt, const bool invertCurrent, double *const amphour, double *const Iavg, bool forceRead = false);
+    bcc_status_t meas_GetAmpHourAndIAvg(const double rShunt, const bool invertCurrent,
+                                        const double capacityAh, double *const amphour,
+                                        double *const Iavg, bool forceRead = false);
 
     /*!
      * @brief This function reads the ISENSE measurement and converts it to [A].

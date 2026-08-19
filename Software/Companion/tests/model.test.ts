@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { bmsStatusSummary, currentA, icCelsius, isFresh, ntcCelsius, socPercent, valueOrStale } from '../src/shared/model.ts'
+import { bmsStatusSummary, currentA, icCelsius, isFresh, ntcCelsius, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
 import { reconnectDelayMs } from '../src/shared/reconnect.ts'
 import { serviceResultLabel } from '../src/shared/service.ts'
 import { advancingUnixTime, advancingUptimeMs, formatUptime } from '../src/shared/time.ts'
@@ -15,6 +15,9 @@ test('raw UART v1 units convert in the presentation layer', () => {
 test('stale snapshots never render measurements as live zeroes', () => {
   assert.equal(isFresh(null), false)
   assert.equal(valueOrStale('0.000 V', false), 'Stale')
+})
+test('OFF-state voltage mismatch has an operator-facing warning label', () => {
+  assert.equal(warningDisplayNames[2], 'Pack-voltage mismatch (HV off)')
 })
 test('target capabilities disable unavailable functions', () => {
   const capabilities = unavailableCapabilities()

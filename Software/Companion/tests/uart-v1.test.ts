@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { crc32, decodeStatus, encodeFrame, FrameDecoder, messageType, serviceId } from '../src/shared/uartV1.ts'
+import { crc32, decodeHvVoltages, decodeStatus, encodeFrame, FrameDecoder, messageType, serviceId, writeLe32 } from '../src/shared/uartV1.ts'
 
 test('UART v1 browser codec matches the canonical heartbeat vector', () => {
   const heartbeat = encodeFrame({ type: messageType.heartbeat, sequence: 0, payload: new Uint8Array() })
@@ -17,6 +17,15 @@ test('UART v1 decoder handles fragmented frames and resynchronises after bad CRC
   const corrupt = request.slice(); corrupt[corrupt.length - 1] ^= 0xff
   assert.deepEqual(decoder.consume(corrupt), [])
   assert.deepEqual(decoder.consume(request), [{ type: messageType.serviceRequest, sequence: 42, payload: Uint8Array.of(serviceId.getStatus) }])
+})
+
+test('UART v1 decodes valid AMC3330 BAT+ and LOAD+ telemetry', () => {
+  const payload = new Uint8Array(12)
+  payload[0] = 1
+  writeLe32(payload, 4, 301_234_567)
+  writeLe32(payload, 8, 12_345)
+  assert.deepEqual(decodeHvVoltages(payload), { valid: true, bat_plus_uV: 301_234_567, load_plus_uV: 12_345 })
+  assert.equal(decodeHvVoltages(payload.slice(0, 11)), undefined)
 })
 
 test('UART v1 status exposes current sensing and SOC calibration validity', () => {

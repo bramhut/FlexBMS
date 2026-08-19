@@ -153,7 +153,7 @@ management. The battery management system remains the final authority for batter
   [#status("PLANNED", kind: "planned")],
   [Home Assistant],
   [Provides dashboards, automation, and a user-facing view of the installation.],
-  [#status("PLANNED", kind: "planned")],
+  [#status("CURRENT")],
 )
 
 == Energy and information flow
@@ -398,7 +398,7 @@ provisioning/station/recovery, and the local compiled Companion maintenance
 page. The Companion provides stale-status diagnostics, fresh BMS monitoring,
 CSV logging, register reads, Gateway NTP RTC synchronisation and device-time
 readback, fault clear, immediate run-request actions, and station-LAN firmware
-updates. MQTT and CAN observation remain separate planned increments. The Gateway uses isolated UART to the STM32 and
+updates. MQTT Home Assistant discovery is a current Gateway function; CAN observation remains a separate planned increment. The Gateway uses isolated UART to the STM32 and
 remains listen-only on shared BMS/GoodWe CAN. It is not a safety authority. The
 detailed transport, local-network, and recovery design is in
 `Documentation/architecture/home-bess-firmware-and-maintenance.md`.
@@ -410,6 +410,11 @@ service starts and a station address returns. If that cannot happen within one
 minute, the ESP-IDF bootloader returns to the previous slot. Companion compares
 a content-derived web bundle identity and reloads its non-cacheable HTML shell
 automatically when a new bundle responds.
+
+The local web service is intentionally bounded: it retains TCP capacity for
+MQTT and allows one queued telemetry frame per WebSocket. A browser that stops
+reading is retired after its first failed asynchronous send; a delayed callback
+from an old Companion socket cannot disturb its replacement connection.
 
 The 4 MiB ESP32-C3 partition table uses two 1.5 MiB OTA application slots,
 a 512 KiB `bms_update` staging partition, and 384 KiB LittleFS reserved for
@@ -480,6 +485,7 @@ service request uses a value from 1 through 255; the STM32 response echoes that 
   [`0x03`], [PACK], [STM32 to Gateway or USB Companion],
   [`0x04`], [CELL], [STM32 to Gateway or USB Companion],
   [`0x05`], [TEMPERATURE], [STM32 to Gateway or USB Companion],
+  [`0x06`], [HV_VOLTAGES], [STM32 to Gateway or USB Companion],
   [`0x10`], [SERVICE_REQUEST], [Gateway or USB Companion to STM32],
   [`0x11`], [SERVICE_RESPONSE], [STM32 to Gateway or USB Companion],
   [`0x12`], [EVENT], [STM32 to Gateway or USB Companion],
@@ -520,7 +526,9 @@ min_ntc_raw:u16 | max_ntc_raw:u16 | min_ic_raw:u16 | max_ic_raw:u16
 
 Voltage values are microvolts. Current is signed amperes times 64; positive current is charging.
 SoC uses the existing BCC raw range (`0 = -100%`, `65535 = 200%`), so percent is
-`100 * (soc_raw / 65535 * 3 - 1)`. NTC raw values convert as
+`100 * (soc_raw / 65535 * 3 - 1)`. The STM32 bounds its retained estimate and
+reported SoC to 0--100%, so the wider transport representation is not used in
+normal operation. NTC raw values convert as
 `raw / 65535 * 120 - 20` degrees C. IC raw values are centikelvin, so degrees C are
 `raw / 100 - 273.15`.
 
@@ -531,8 +539,22 @@ deliberately disabled in the single-slave development configuration, so current 
 there. Production enables it only on CID 1. Full-charge calibration requires fresh measurements with
 no active BMS error, every cell at or above 3.450 V, current from -0.100 A through C/50 (6.28 A for the
 314 Ah default), continuously for 300 s. Any failed condition restarts the timer; calibration sets SoC to
-100%. When valid UTC is available, the STM32 persists that instant in integrity-protected backup
+100%. Coulomb counting is bounded at 0% and 100%, allowing a subsequent discharge to lower SoC
+normally without retaining an out-of-range value. When valid UTC is available, the STM32 persists that instant in integrity-protected backup
 registers and reports it in `soc_last_calibration_unix_s`; it otherwise reports no calibration time.
+
+`HV_VOLTAGES` is 12 bytes:
+
+```text
+valid_flags:u8 | reserved:u8[3] | bat_plus_uV:u32 | load_plus_uV:u32
+```
+
+Bit 0 of `valid_flags` means both values came from one fresh, coherent STM32 ADC/DMA scan with
+a valid ADC reference. Bits 1--7 and the three reserved bytes are zero. The values are positive
+microvolts from the isolated AMC3330 battery-side (BAT+) and load-side (LOAD+) channels. When the
+valid bit is clear, consumers show the values as unavailable rather than treating the zero payload
+as a measurement. These diagnostic readings are sent with every normal fresh snapshot and do not
+change PCC thresholds, fault decisions, or STM32 safety ownership.
 
 `CELL` is 51 bytes, once per configured slave:
 
@@ -555,9 +577,9 @@ The four NTC values and one IC value are included together, making this packet f
 matches the installed four-NTC-per-slave configuration and must be enforced as a compile-time
 configuration check in both endpoint implementations.
 
-The STM32 sends STATUS and a complete PACK/CELL/TEMPERATURE snapshot when fresh measurement data
+The STM32 sends STATUS and a complete HV_VOLTAGES/PACK/CELL/TEMPERATURE snapshot when fresh measurement data
 is available, no more often than once every 500 ms. It sends EVENT immediately on a change.
-The Gateway must treat PACK, CELL, and TEMPERATURE data as invalid while STATUS says measurements
+The Gateway must treat HV_VOLTAGES, PACK, CELL, and TEMPERATURE data as invalid while STATUS says measurements
 are not fresh.
 
 ==== States, faults, and events
@@ -580,7 +602,10 @@ reserved and zero.
 
 `warnings` is non-latched. Bits are: 0 `WATCHDOG_RESET`, 1
 `STARTUP_DIAGNOSTICS_BYPASSED`, and 2 `BATTERY_VOLTAGE_MISMATCH_OFF`.
-Bits 3--31 are reserved and zero.
+Bits 3--31 are reserved and zero. `WATCHDOG_RESET` is a recorded warning that
+an accepted acknowledgement clears. `STARTUP_DIAGNOSTICS_BYPASSED` remains
+present while that build configuration is active; `BATTERY_VOLTAGE_MISMATCH_OFF`
+remains present while the measurements disagree.
 `WATCHDOG_RESET` is set when this STM32 boot followed an independent or window
 watchdog reset. Gateway liveness, CAN condition, near-limit indication, and an
 inactive balancing request are not BMS warnings in this release.
@@ -677,10 +702,12 @@ accepted and invoked the requested operation; STATUS and EVENT show the resultin
 `SET_RUN_REQUEST(0)` immediately removes the request through the STM32 PCC path. A request of 1
 does not guarantee an HV start: the STM32 alone decides whether BMS and HV checks permit the
 sequence. `ACKNOWLEDGE_FAULTS` is denied while any ERROR condition remains active or the BMS is
-`CRITICAL`. Accepted acknowledgement clears inactive BMS/HV ERROR latches and warnings, but
-deliberately preserves the run request; PCC can therefore restart from `OFF` immediately once the
-Fault Manager permits it. Neither the Gateway nor Home Assistant can bypass a fault, write BCC
-registers, or override the HV supervisor. `firmware_version` is packed as
+`CRITICAL`. It is also denied when no inactive BMS/HV ERROR latch or recorded `WATCHDOG_RESET`
+warning remains to clear. Accepted acknowledgement clears those states only, leaving live and
+configuration warnings visible until their underlying condition changes; it deliberately preserves
+the run request. PCC can therefore restart from `OFF` immediately once the Fault Manager permits
+it. Neither the Gateway nor Home Assistant can bypass a fault, write BCC registers, or override the
+HV supervisor. `firmware_version` is packed as
 `major | (minor << 8) | (patch << 16) | (build << 24)`.
 
 `SET_BALANCING_REQUEST` is an additional AND gate: a request of 1 does not guarantee
@@ -785,7 +812,7 @@ power, requested power, data freshness, and reason/status information.
 
 == Home Assistant integration
 
-#status("PLANNED", kind: "planned")
+#status("CURRENT")
 
 Home Assistant is the intended user-facing integration point for the installation. It can provide:
 
@@ -799,7 +826,17 @@ Home Assistant must not become a safety dependency. If Home Assistant is unavail
 continue to protect the battery and the EMS must remain within the last valid limits or stop requesting
 power.
 
-The entity model, discovery mechanism, command permissions, and dashboard design are still open.
+The Gateway publishes one retained MQTT Device Discovery record and retained compact BMS state below a
+MAC-derived `flexbms/flexbms_XXYYZZ` prefix. It exposes pack voltage/current/power, SoC when valid,
+cell and temperature extrema, BMS/HV state, active faults, freshness, UART health, and the STM32-owned
+run-request switch. Minimum and maximum cell voltage display in V with three decimals; cell delta displays
+as whole mV. It also exposes separate diagnostic uptime values for the ESP32 Gateway and STM32 BMS
+controller. `ON` and `OFF` requests share the existing single Gateway-to-STM32
+service slot; the next STM32 status is authoritative and never promises contactor closure. Broker settings
+(host, port, username, write-only password) are configured only through the trusted station-LAN Companion
+page. The binary freshness, run-state, fault, and UART-health entities publish canonical MQTT `ON`/`OFF`
+states. Fault acknowledgement, balancing, firmware upload, registers, raw diagnostics, and inverter/EMS
+power control remain outside Home Assistant MQTT v1.
 
 == Companion application
 
@@ -819,7 +856,7 @@ a raw terminal nor firmware-update UI; Gateway requests use an explicit allowlis
 
 `scripts/build-release.ps1` interactively confirms the release version, updates the Companion package
 version when a new one is entered, and builds the Companion, Gateway, and STM32 artifacts with checksums
-and one #code("FlexBMS_bundle.fbu") OTA package containing both targets, versions, byte lengths, and CRC-32 values.
+and one #raw("FlexBMS_bundle.fbu") OTA package containing both targets, versions, byte lengths, and CRC-32 values.
 `-Version` supports unattended use. Each release includes `flash-release.ps1`: ST-Link/SWD flashes the
 STM32 image, while a selected ESP32-C3 COM port flashes a complete Gateway factory image. Both actions
 start immediately after checksum verification. Repeating an existing version requires an explicit choice
@@ -887,7 +924,7 @@ must never be interpreted as a current permission to charge, discharge, or close
   [`Hardware/ModuleBoard`], [Battery module-board schematic, PCB, and production data.],
   [`Software/Master`], [STM32G491 firmware and platform configuration.],
   [`Software/Companion`], [Current FlexBMS BMS maintenance UI with direct USB, Gateway, and portable Windows package outputs.],
-  [`Software/Gateway`], [ESP32 UART v1, Wi-Fi provisioning/recovery, and compiled Companion serving; MQTT, OTA, and CAN work remain planned.],
+  [`Software/Gateway`], [ESP32 UART v1, Wi-Fi provisioning/recovery, compiled Companion serving, Home Assistant MQTT discovery, and OTA; CAN observation remains planned.],
   [`Documentation/protocol/uart-v1.md`], [Canonical framed BMS protocol for Gateway UART and direct USB CDC, including test vectors.],
   [`Simulations`], [Electrical simulation files used during hardware development.],
   [`Documentation`], [This system overview and its Typst build setup.],

@@ -204,6 +204,15 @@ namespace FlexBms::UartV1
         return true;
     }
 
+    bool decodeHvVoltages(const Frame &frame, HvVoltages &voltages)
+    {
+        if (!frameHasPayload(frame, MessageType::HvVoltages, 12U)) return false;
+        voltages.valid = (frame.payload[0] & 0x01U) != 0U;
+        voltages.batteryVoltageUv = readLe32(frame.payload.data() + 4U);
+        voltages.loadVoltageUv = readLe32(frame.payload.data() + 8U);
+        return true;
+    }
+
     bool decodeCell(const Frame &frame, Cell &cell)
     {
         if (!frameHasPayload(frame, MessageType::Cell, 51U)) return false;

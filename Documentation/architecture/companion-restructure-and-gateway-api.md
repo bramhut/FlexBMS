@@ -209,10 +209,17 @@ Actions show `Accepted`, `Denied`, `Invalid`, `Busy`, or `Transport error`.
 events remain authoritative for its effect. The UI does not invent a BMS
 rejection reason when UART v1 supplies only `DENIED`.
 
+Companion exposes fault acknowledgement only when the current STATUS contains
+an inactive BMS/HV error latch or a recorded watchdog-reset warning and no
+ERROR is active. Persistent live and configuration warnings remain visible and
+are not acknowledgeable; for example, an OFF-state pack-voltage mismatch clears
+only when the independent readings agree.
+
 The shared status is delivered independently from a complete snapshot, so the
 UI can explain a startup fault or stale-measurement state without displaying
 invented zero values. The shared snapshot stores the source units from UART v1: microvolts, current
-raw amperes times 64, BCC SoC raw, NTC raw, and IC raw. The BMS presentation
+raw amperes times 64, BCC SoC raw, NTC raw, and IC raw. Optional `hv_voltages`
+contains same-scan AMC3330 BAT+ and LOAD+ microvolt readings with an explicit valid flag. The BMS presentation
 layer alone converts them to V, A, percent, and degrees Celsius according to
 `uart-v1.md`. A snapshot with `measurements_fresh: false` is displayed as stale
 for every measurement value; it is not displayed as live zero data. Gateway
@@ -232,7 +239,7 @@ link state.
 The compact dashboard follows the maintained BMS Companion's card/table
 workflow without importing its vehicle, Electron, image, font, or raw-terminal
 features. It shows BMS/HV state, requested run state, pack voltage/current/
-SoC, active and latched BMS faults, active and latched HV reasons, minimum and
+SoC, AMC3330 BAT+ and LOAD+ values, active and latched BMS faults, active and latched HV reasons, minimum and
 maximum cell/temperature values, all slave cell voltages/balancing, and all
 slave temperatures. It includes browser-local CSV logging. The CSV column
 names use converted engineering values and retain the reported zero-based slave
@@ -304,6 +311,7 @@ defined below.
     "get_device_info": true,
     "read_register": true,
     "wifi_configuration": true,
+    "mqtt_configuration": true,
     "diagnostic_log_download": false,
     "raw_terminal": false,
     "firmware_update": false
@@ -318,11 +326,12 @@ The Gateway sends these server-to-browser messages:
 |---|---|---|
 | `hello` | `gateway_version`, `capabilities`, `gateway_status` | First message after connection and whenever capabilities change. |
 | `bms_status` | `status` | Current UART v1 `STATUS`, sent even while measurements are stale. |
-| `snapshot` | `status`, `pack`, `cells`, `temperatures` | Complete current source-unit BMS view. `status` includes `measurements_fresh`. |
+| `snapshot` | `status`, `pack`, optional `hv_voltages`, `cells`, `temperatures` | Complete current source-unit BMS view. `status` includes `measurements_fresh`. |
 | `event` | `event_id`, `value`, `gateway_uptime_ms` | Direct representation of a UART v1 event; informational only. |
-| `gateway_status` | `gateway_uptime_ms`, `gateway_partition`, `wifi_state`, optional `wifi_ssid`, `setup_ap`, `uart_state`, `mqtt_state`, `time_sync`, `diagnostic_log` | Local Gateway state, uptime, running OTA partition, setup AP details, NTP state, and diagnostic-log availability. |
+| `gateway_status` | `gateway_uptime_ms`, `gateway_partition`, `wifi_state`, optional `wifi_ssid`, `setup_ap`, `uart_state`, `mqtt_state`, `mqtt`, `time_sync`, `diagnostic_log` | Local Gateway state, uptime, running OTA partition, MQTT configuration/status, setup AP details, NTP state, and diagnostic-log availability. |
 | `service_result` | `request_id`, `service`, `result`, optional `data` | Result for exactly one browser service request. |
 | `wifi_configuration_result` | `request_id`, `result` | Accepted or failed local credential persistence/restart request. |
+| `mqtt_configuration_result` | `request_id`, `result` | Accepted or failed local MQTT credential persistence/reconnect request. |
 | `wifi_scan_result` | `request_id`, `result`, optional `networks` | Completion of an on-demand nearby-network scan. |
 
 `gateway_status.time_sync` is `{ "state": "waiting_for_network | waiting_for_ntp |
@@ -336,8 +345,16 @@ since the Gateway most recently booted. It is diagnostic telemetry only and
 returns to a small value after a Gateway restart. Companion may advance it
 locally between Gateway-status messages; direct USB mode has no Gateway value.
 
-`snapshot` has this exact shape. All numeric measurement fields preserve the
-source raw units and map directly to the identically named UART v1 fields.
+Companion keeps the latest twelve `event` messages in browser memory. The
+persistent Activity panel shows the newest three and its bottom `Show all`
+action opens a collapsed, newest-first recent-changes drawer. This is a
+per-browser-session aid; STATUS remains authoritative and no event history is
+stored on either controller.
+
+`snapshot` has this shape. `hv_voltages` is omitted when communicating with an
+older STM32 that does not publish `HV_VOLTAGES`. All numeric measurement fields
+preserve the source raw units and map directly to the identically named UART v1
+fields.
 
 ```json
 {
@@ -368,6 +385,11 @@ source raw units and map directly to the identically named UART v1 fields.
     "max_ntc_raw": 0,
     "min_ic_raw": 0,
     "max_ic_raw": 0
+  },
+  "hv_voltages": {
+    "valid": true,
+    "bat_plus_uV": 0,
+    "load_plus_uV": 0
   },
   "cells": [
     { "slave_index": 0, "balance_mask": 0, "cell_voltage_uV": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
@@ -400,6 +422,8 @@ snapshot. UART `STATUS` remains authoritative over missed `event` messages.
   `address` (`192.168.4.1`);
 - `uart_state`: `healthy`, `lost`, or `starting`;
 - `mqtt_state`: `unavailable`, `connecting`, `connected`, or `lost`; and
+- `mqtt`: `{ "configured": boolean }` and, when configured, its `host`,
+  `port`, and `username` (never its password); and
 - `diagnostic_log`: an object containing `available: boolean` and `bytes`.
 
 Diagnostic-log download is reserved but not implemented in the current
@@ -445,6 +469,25 @@ It requires exactly the fields shown. A valid request receives
 `wifi_configuration_result` with `result: "accepted"` before the Gateway
 restarts Wi-Fi; local persistence/scheduling failure returns `"error"`.
 
+MQTT configuration is also a Gateway-only request. It is accepted only on the
+trusted station LAN, never through the open setup/recovery AP, and its password
+is write-only:
+
+```json
+{
+  "v": 1,
+  "type": "mqtt_configure",
+  "request_id": "opaque client string up to 64 ASCII characters",
+  "host": "broker host or IP",
+  "port": 1883,
+  "username": "broker username",
+  "password": "write-only broker password"
+}
+```
+
+All text fields are 1--63 bytes and the port is 1--65535. The reply is
+`mqtt_configuration_result` with `accepted`, `error`, or `transport_error`.
+
 ```json
 { "v": 1, "type": "wifi_scan", "request_id": "opaque client string up to 64 ASCII characters" }
 ```
@@ -479,17 +522,23 @@ common service table.
 The `capabilities` object in `hello` has Boolean keys
 `monitor`, `csv_logging`, `set_run_request`, `set_balancing_request`, `acknowledge_faults`, `get_rtc`, `get_device_info`,
 `read_register`, `diagnostic_log_download`, `raw_terminal`, and
-`firmware_update`, plus `wifi_configuration`. In normal connected station mode
-the BMS-service keys, `wifi_configuration`, and `firmware_update` are true. In
-provisioning or recovery AP mode, `wifi_configuration` stays true but every
-BMS-service key and `firmware_update` are false. `raw_terminal` remains false;
-`diagnostic_log_download` is false until the bounded Gateway log exists.
+`firmware_update`, `wifi_configuration`, and `mqtt_configuration`. In normal
+connected station mode the BMS-service keys, `wifi_configuration`,
+`mqtt_configuration`, and `firmware_update` are true. In provisioning or
+recovery AP mode, `wifi_configuration` stays true but every BMS-service key,
+`mqtt_configuration`, and `firmware_update` are false. `raw_terminal` remains
+false; `diagnostic_log_download` is false until the bounded Gateway log exists.
 
 The Gateway build reconnects automatically after abnormal WebSocket closure,
 starting at one second and doubling to a maximum of ten seconds. It clears
 connection state while disconnected, sends no browser-originated recovery
 commands, and waits for a new `hello` followed by a `snapshot` before treating
-telemetry as current.
+telemetry as current. Each reconnect callback is bound to the WebSocket that
+created it: a delayed callback from an older socket cannot tear down a newer
+connection or create a second reconnect loop. The Gateway permits only one
+queued telemetry frame per WebSocket and retires a client after its first
+failed asynchronous send, so a suspended browser cannot exhaust TCP buffers
+needed by MQTT.
 
 ## Direct USB/Web Serial protocol parity
 

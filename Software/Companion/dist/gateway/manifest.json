@@ -1,23 +1,23 @@
 {
   "format": 1,
-  "companion_version": "0.1.21",
-  "build_id": "6b318611311d56f9",
+  "companion_version": "0.1.28",
+  "build_id": "4cd073a6686fe4ca",
   "files": [
     {
-      "path": "assets/index-Ce4wGch0.css",
-      "bytes": 12071,
-      "sha256": "4ed4f92dc95ed708504db7e4977d74647f0bc33c5011e3e9a952f36f2fc33c2f"
+      "path": "assets/index-BAfqBxMP.js",
+      "bytes": 104614,
+      "sha256": "ef56badcb5015452ca9f93e5c4ab3319570b93779d075428f9e5d35b1325bd25"
     },
     {
-      "path": "assets/index-HMOMt30z.js",
-      "bytes": 96914,
-      "sha256": "f9e8113dbe61795cc7ee1a5243eb2d6932ac1995b8daff70c279c2d9c7294a72"
+      "path": "assets/index-Dkm_9Qz_.css",
+      "bytes": 13520,
+      "sha256": "987c7a6d10ba3545423fd138392271419a0e876a3cd3b5b67203f38b7866885e"
     },
     {
       "path": "index.html",
       "bytes": 373,
-      "sha256": "133f1dd3d8c6d5399241c2dca3676f2dba268b80405d291b551f569e53696b09"
+      "sha256": "4a6d2bc1d0b37e7dcccc317cd0e34c9a455fd7521d37d4e6466279d0884884eb"
     }
   ],
-  "total_bytes": 109358
+  "total_bytes": 118507
 }
