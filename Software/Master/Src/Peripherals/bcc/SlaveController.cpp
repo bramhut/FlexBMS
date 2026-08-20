@@ -93,6 +93,16 @@ namespace SlaveController
 
         std::atomic<uint32_t> measurementSequence{0};
         bool completeMeasurementSetValid = false;
+        BatteryCanSnapshot latestBatteryCanSnapshot{};
+        std::atomic<bool> chargeTemperatureInhibit{false};
+
+        bool cellOverVoltageActive = false;
+        bool cellUnderVoltageActive = false;
+        bool overTemperatureActive = false;
+        bool underTemperatureActive = false;
+        bool overCurrentActive = false;
+        bool communicationFaultActive = false;
+        bool internalFaultActive = false;
 
         vector<uint16_t> ICtemperatures; // Vector of IC temperatures
         uint16_t minICtemperature = UINT16_MAX;
@@ -100,6 +110,8 @@ namespace SlaveController
         vector<vector<uint16_t>> NTCtemperatures; // 2D vector of NTC temperatures
         uint16_t minNTCtemperature = UINT16_MAX;
         uint16_t maxNTCtemperature = 0;
+        uint16_t averageNTCtemperature = 0;
+        uint32_t NTCtemperatureCount = 0;
 
         vector<vector<uint32_t>> cellVoltages; // 2D vector of cell voltages
         uint32_t minCellVoltage = UINT32_MAX;
@@ -131,6 +143,13 @@ namespace SlaveController
                 }
             }
             return true;
+        }
+
+        void invalidateBatteryCanSnapshot()
+        {
+            taskENTER_CRITICAL();
+            latestBatteryCanSnapshot = {};
+            taskEXIT_CRITICAL();
         }
 
         void updateFullSocCalibration(const double current)
@@ -186,6 +205,7 @@ namespace SlaveController
             if (state != RUNNING)
             {
                 completeMeasurementSetValid = false;
+                invalidateBatteryCanSnapshot();
             }
             currentState = state;
             switch (state)
@@ -451,15 +471,15 @@ namespace SlaveController
                 else
                 {
                     packCurrent = current;
-                    updateFault(
-                        OVERCURRENT_LIMIT,
-                        current < -settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT ||
-                            current > settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT);
+                    overCurrentActive = current < -settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT ||
+                                        current > settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT;
+                    updateFault(OVERCURRENT_LIMIT, overCurrentActive);
                 }
             }
             else
             {
                 packCurrent = 0.0;
+                overCurrentActive = false;
                 updateFault(OVERCURRENT_LIMIT, false);
             }
 
@@ -468,12 +488,31 @@ namespace SlaveController
                 return false;
             }
 
-            updateFault(OVERVOLTAGE_LIMIT, combinedFaults[BCC_FS_CELL_OV] != 0);
-            updateFault(UNDERVOLTAGE_LIMIT, combinedFaults[BCC_FS_CELL_UV] != 0);
-            updateFault(TEMPERATURE_LIMIT, combinedFaults[BCC_FS_AN_OT_UT] != 0);
-            updateFault(OPEN_SHORT_FAULT, combinedFaults[BCC_FS_CB_OPEN] != 0 || combinedFaults[BCC_FS_CB_SHORT] != 0 || combinedFaults[BCC_FS_GPIO_SHORT]);
-            updateFault(IC_TEMPERATURE, (combinedFaults[BCC_FS_FAULT2] & MC33771C_FAULT2_STATUS_IC_TSD_FLT_MASK) != 0);
-            updateFault(SYSTEM_FAULT, combinedFaults[BCC_FS_FAULT1] != 0 || combinedFaults[BCC_FS_FAULT2] != 0 || combinedFaults[BCC_FS_FAULT3] != 0);
+            cellOverVoltageActive = combinedFaults[BCC_FS_CELL_OV] != 0;
+            cellUnderVoltageActive = combinedFaults[BCC_FS_CELL_UV] != 0;
+            const uint16_t temperatureFaults = combinedFaults[BCC_FS_AN_OT_UT];
+            underTemperatureActive = (temperatureFaults & 0x007FU) != 0U;
+            overTemperatureActive = (temperatureFaults & 0x7F00U) != 0U;
+            chargeTemperatureInhibit.store(underTemperatureActive, std::memory_order_relaxed);
+
+            updateFault(OVERVOLTAGE_LIMIT, cellOverVoltageActive);
+            updateFault(UNDERVOLTAGE_LIMIT, cellUnderVoltageActive);
+            /* Low temperature is deliberately directional: it inhibits charge
+             * but does not make the pack unavailable for discharge. */
+            updateFault(TEMPERATURE_LIMIT, overTemperatureActive);
+
+            const bool openShortFault = combinedFaults[BCC_FS_CB_OPEN] != 0 ||
+                                        combinedFaults[BCC_FS_CB_SHORT] != 0 ||
+                                        combinedFaults[BCC_FS_GPIO_SHORT] != 0;
+            const bool icTemperatureFault =
+                (combinedFaults[BCC_FS_FAULT2] & MC33771C_FAULT2_STATUS_IC_TSD_FLT_MASK) != 0;
+            const bool systemFault = combinedFaults[BCC_FS_FAULT1] != 0 ||
+                                     combinedFaults[BCC_FS_FAULT2] != 0 ||
+                                     combinedFaults[BCC_FS_FAULT3] != 0;
+            internalFaultActive = openShortFault || icTemperatureFault || systemFault;
+            updateFault(OPEN_SHORT_FAULT, openShortFault);
+            updateFault(IC_TEMPERATURE, icTemperatureFault);
+            updateFault(SYSTEM_FAULT, systemFault);
             if (currentMeasurementConfigured)
             {
                 updateFullSocCalibration(packCurrent);
@@ -510,6 +549,9 @@ namespace SlaveController
             maxCellVoltage = 0;
             minNTCtemperature = UINT16_MAX;
             maxNTCtemperature = 0;
+            averageNTCtemperature = 0;
+            NTCtemperatureCount = 0;
+            uint32_t ntcTemperatureSum = 0U;
             minICtemperature = UINT16_MAX;
             maxICtemperature = 0;
             packVoltage = 0;
@@ -558,6 +600,8 @@ namespace SlaveController
                 // Update some NTC temperature stats
                 for (auto &NTCtemperature : NTCtemperatures[i])
                 {
+                    ntcTemperatureSum += NTCtemperature;
+                    NTCtemperatureCount++;
                     if (NTCtemperature < minNTCtemperature)
                     {
                         minNTCtemperature = NTCtemperature;
@@ -579,6 +623,10 @@ namespace SlaveController
                 }
             }
 
+            averageNTCtemperature = NTCtemperatureCount == 0U
+                                        ? 0U
+                                        : static_cast<uint16_t>(ntcTemperatureSum / NTCtemperatureCount);
+
             completeMeasurementSetValid = success;
             return success;
         }
@@ -593,7 +641,64 @@ namespace SlaveController
             }
 
             updateFault(COMMUNICATION_TIMEOUT, communicationFault);
+            communicationFaultActive = communicationFault;
             return communicationFault;
+        }
+
+        void publishBatteryCanSnapshot()
+        {
+            BatteryCanSnapshot snapshot{};
+
+            snapshot.measurementsFresh = measurementsAreFresh();
+            snapshot.socValid = currentMeasurementConfigured &&
+                                currentMeasurementSlaveIdx < mSlaves.size() &&
+                                mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid();
+            snapshot.currentSensingEnabled = currentMeasurementConfigured;
+            snapshot.valid = currentState == RUNNING &&
+                             completeMeasurementSetValid &&
+                             snapshot.measurementsFresh &&
+                             snapshot.socValid &&
+                             NTCtemperatureCount != 0U;
+
+            snapshot.commonSafe = currentState == RUNNING &&
+                                  FaultManager::canEnableHv() &&
+                                  snapshot.measurementsFresh;
+            snapshot.chargeAllowed = snapshot.commonSafe &&
+                                     !chargeTemperatureInhibit.load(std::memory_order_relaxed);
+            snapshot.dischargeAllowed = snapshot.commonSafe;
+
+            snapshot.cellOverVoltage = cellOverVoltageActive;
+            snapshot.cellUnderVoltage = cellUnderVoltageActive;
+            snapshot.overTemperature = overTemperatureActive;
+            snapshot.underTemperature = underTemperatureActive;
+            snapshot.overCurrent = overCurrentActive;
+            snapshot.communicationFault = communicationFaultActive;
+            snapshot.internalFault = internalFaultActive;
+
+            snapshot.packVoltageUv = packVoltage;
+            snapshot.packCurrentA = packCurrent;
+            snapshot.chargeVoltageV = settings.SAFETY_LIMITS.OVERVOLTAGE_LIMIT * getCellCount();
+            snapshot.dischargeVoltageV = settings.SAFETY_LIMITS.UNDERVOLTAGE_LIMIT * getCellCount();
+            snapshot.chargeCurrentA = settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT;
+            snapshot.dischargeCurrentA = settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT;
+            snapshot.averageTemperatureC = NTCtemperatureCount == 0U
+                                              ? 0.0
+                                              : BCC_TEMPRAW_TO_TEMP(averageNTCtemperature);
+            snapshot.cellCount = getCellCount();
+
+            if (snapshot.socValid)
+            {
+                const double socPercent =
+                    (static_cast<double>(getSoC()) / UINT16_MAX * 3.0 - 1.0) * 100.0;
+                snapshot.socPercent = static_cast<uint16_t>(std::clamp(socPercent, 0.0, 100.0));
+            }
+
+            /* Keep the externally visible snapshot coherent. The BMS task is
+             * the only writer; CAN consumers copy it under the same critical
+             * section. */
+            taskENTER_CRITICAL();
+            latestBatteryCanSnapshot = snapshot;
+            taskEXIT_CRITICAL();
         }
 
         // Balancing is allowed only with a healthy, fully running BMS.
@@ -775,6 +880,8 @@ namespace SlaveController
                 setState(DEVICE_INITIALIZATION);
                 initializationRetryNotBeforeMs = millis();
             }
+
+            publishBatteryCanSnapshot();
         }
 
         bcc_status_t globalSoftwareReset()
@@ -991,6 +1098,7 @@ namespace SlaveController
 
                         setState(RUNNING);
                         FaultManager::setStartupComplete(true);
+                        publishBatteryCanSnapshot();
                     }
                 }
 
@@ -1267,10 +1375,28 @@ namespace SlaveController
 
     bool isChargingAllowed()
     {
-        // Charging is always allowed if there are no faults and we are in the running state (RELAY closed)
+        // Low temperature is a charge-only restriction. All other common BMS
+        // and HV faults are handled by the shared HV permission.
+        return currentState == RUNNING &&
+               FaultManager::canEnableHv() &&
+               measurementsAreFresh() &&
+               !chargeTemperatureInhibit.load(std::memory_order_relaxed);
+    }
+
+    bool isDischargingAllowed()
+    {
         return currentState == RUNNING &&
                FaultManager::canEnableHv() &&
                measurementsAreFresh();
+    }
+
+    BatteryCanSnapshot getBatteryCanSnapshot()
+    {
+        BatteryCanSnapshot snapshot{};
+        taskENTER_CRITICAL();
+        snapshot = latestBatteryCanSnapshot;
+        taskEXIT_CRITICAL();
+        return snapshot;
     }
 
     void setBalancingRequest(bool requested)

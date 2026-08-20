@@ -10,6 +10,7 @@
 #include "FaultManager.h"
 #include "Watchdog.h"
 #include "StatusLed.h"
+#include "GoodweCan.h"
 #include "pcc.h" 
 // #include "WSEN_TIDS.h"
 
@@ -45,12 +46,16 @@ void mainTask(void *argument)
 	StatusLed::setup();
 	USBCOM::setup();
 	MX_USB_Device_Init();
-	can.setup();
+	const bool goodweCanReady = GoodweCan::setup(&can);
 	commands->setup();
 	PCC::setup();
 	SlaveController::setup(&can);
 	BmsUart::setup();
 	Watchdog::setup();
+	if (goodweCanReady && !GoodweCan::start())
+	{
+		PRINTF_ERR("[GW-CAN] Failed to start task\n");
+	}
 
 	while (1)
 	{

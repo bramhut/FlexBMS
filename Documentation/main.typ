@@ -102,7 +102,7 @@
     align: (left, left),
     stroke: none,
     inset: (x: 5pt, y: 4pt),
-    [*Document date*], [14 August 2026],
+    [*Document date*], [20 August 2026],
     [*System*], [96s LiFePO4 home BESS],
     [*Nominal capacity*], [314 Ah / approximately 96.5 kWh],
     [*Primary controller*], [STM32G491],
@@ -339,13 +339,243 @@ High priority:
 - Contactor handling. Including: economizing, failure checking using voltages (to be discussed)
 - USB VSENSE setup
 - Derating on temperature (mainly low temperature charging, high temperature is not that applicable)
-- Communication to Goodwe inverter. Exact protocol needs discussion and likely imperical data once we have the inverter ready.
+- GoodWe CAN communication. The current research and candidate protocols are
+  documented below; implementation and empirical validation remain pending.
 - User LED status language is specified in
   `Documentation/architecture/home-bess-firmware-and-maintenance.md`; firmware
   implementation remains pending.
 
 Medium priority:
 - Aux relay control (potentially useful for a future heating system).
+
+
+=== GoodWe inverter CAN protocol research
+
+#status("RESEARCH / NOT IMPLEMENTED", kind: "planned")
+
+This section records the GoodWe CAN findings available before implementation.
+It is deliberately an evidence-weighted candidate specification, not yet a
+confirmed contract for the GW12K-ET-20. The target inverter is the high-voltage
+ET-20 model. The present CAN implementation is not a compatibility constraint:
+the STM32 CAN peripheral, bitrate, identifiers, and payload handling can be
+changed as part of this work. The CAN bus is expected to contain only the STM32
+and the inverter. The ESP32 Gateway remains listen-only.
+
+#callout(
+  [Important distinction],
+  [
+    Two different families are being mixed in community material. A GoodWe
+    high-voltage candidate uses 250 kbit/s and identifiers in the `0x453`--
+    `0x460` range. A separate SMA/Pylontech-style profile uses 500 kbit/s and
+    identifiers such as `0x351`, `0x355`, `0x356`, and `0x359`. The latter is
+    not evidence that the former is used by the GW12K-ET-20.
+  ],
+)
+
+==== Evidence status
+
+#table(
+  columns: (38mm, 1fr, 33mm),
+  header-cell([Source]),
+  header-cell([Relevant finding]),
+  header-cell([Assessment]),
+  [
+    #link("https://www.studocu.com/es-ar/document/instituto-universitario-escuela-argentina-de-negocios/sociologia/can-protocol-hv1-310321/104486330")[GoodWe GW6000-EH HV1 document]
+  ],
+  [
+    Reverse-engineered, non-official document. It specifies 11-bit CAN at
+    250 kbit/s, one-second-class updates, `0x453`--`0x458`, and additional
+    `0x45A`/`0x460` frames. It also describes the inverter timeout frame
+    `0x420` containing `GWBATTHV`.
+  ],
+  [Strongest public HV lead, but different model and not official.],
+  [
+    #link("https://github.com/ai-republic/bms-to-inverter/discussions/19")[ai-republic discussion #19]
+  ],
+  [
+    A GW5000-ES-20 user reported that newer G2 firmware rejected DIY BMS
+    emulators. The author said a GoodWe HV specification worked for the
+    GW6000-EH, but initially had no binding. The discussion does not prove an
+    ET-20 frame map.
+  ],
+  [Important firmware/profile warning.],
+  [
+    #link("https://github.com/ai-republic/bms-to-inverter/blob/main/inverter-goodwe-can/src/main/java/com/airepublic/bmstoinverter/inverter/goodwe/can/GoodweInverterCANDescriptor.java")[Current ai-republic HV descriptor]
+    and
+    #link("https://github.com/ai-republic/bms-to-inverter/blob/main/inverter-goodwe-can/src/main/java/com/airepublic/bmstoinverter/inverter/goodwe/can/GoodweInverterCANProcessor.java")[processor]
+  ],
+  [
+    The current code selects 250 kbit/s and sends `0x453`, `0x455`, `0x456`,
+    `0x457`, and `0x458`. It does not parse an inbound request and does not
+    send the `0x45A` or `0x460` frames listed by the reverse-engineered
+    document.
+  ],
+  [Useful implementation lead; not target validation.],
+  [
+    #link("https://github.com/syssi/esphome-jk-bms/discussions/114")[syssi discussion #114]
+  ],
+  [
+    The working trace uses the SMA/Pylontech-style family: 500 kbit/s,
+    `0x359`, `0x351`, `0x355`, `0x356`, and `0x354`, with an inverter response
+    at `0x305`. A later report says stale charge-disable state made the
+    GoodWe unhappy.
+  ],
+  [Useful LV/SMA evidence, not HV ET evidence.],
+)
+
+No official GoodWe public document found so far provides the complete BMS CAN
+frame map for the GW12K-ET-20. The official battery compatibility information
+establishes product and battery compatibility, but does not settle the
+bitrate, identifiers, payload byte order, or firmware-specific handshake.
+
+==== Candidate A: GoodWe HV protocol, highest current probability
+
+This is the first protocol I would investigate for the GW12K-ET-20. The
+confidence is based on the model family, the independent HV document, and the
+current GoodWe HV sender implementation. It remains a candidate until the
+actual inverter traffic is captured or the inverter accepts it in a controlled
+test.
+
+#table(
+  columns: (16mm, 27mm, 1fr, 26mm),
+  header-cell([ID]),
+  header-cell([Direction]),
+  header-cell([Candidate payload]),
+  header-cell([Confidence]),
+  [`0x420`], [Inverter -> STM32],
+  [Timeout/no-BMS beacon. ASCII `GWBATTHV` is `47 57 42 41 54 54 48 56`. Approximately one-second-class timing is reported; one copy states 1.3 s.],
+  [Medium for HV family; unconfirmed for ET-20.],
+  [`0x425`], [Inverter -> STM32],
+  [Inverter-measured battery voltage and current. The public document says negative current means charging; the remaining bytes are not decoded.],
+  [Low/medium.],
+  [`0x453`], [STM32 -> inverter],
+  [Number of 48 V battery modules. The document proposes integer nominal pack voltage divided by 48; that would produce a candidate value of 6 for this approximately 307 V pack.],
+  [Medium.],
+  [`0x455`], [STM32 -> inverter],
+  [Two little-endian 16-bit bitmaps: BMS alarms followed by BMS warnings. Exact bit semantics remain provisional.],
+  [Medium.],
+  [`0x456`], [STM32 -> inverter],
+  [Four little-endian signed 16-bit values: charge-voltage limit, charge-current limit, maximum discharge current, and minimum discharge voltage. Voltage/current resolution is 0.1 V/0.1 A.],
+  [Medium/high.],
+  [`0x457`], [STM32 -> inverter],
+  [SoC and SoH as little-endian 16-bit values with 0.01% resolution, followed by four reserved bytes.],
+  [Medium/high.],
+  [`0x458`], [STM32 -> inverter],
+  [Actual pack voltage, battery current, and average battery temperature as little-endian 16-bit values with 0.1 V, 0.1 A, and 0.1 °C resolution, followed by two reserved bytes.],
+  [Medium/high.],
+  [`0x45A`], [STM32 -> inverter],
+  [Eight zero bytes in the reverse-engineered table. The document associates this frame with an inverter response at `0x425`.],
+  [Low/medium; validate before use.],
+  [`0x460`], [STM32 -> inverter],
+  [Request flags related to enabling battery charging/discharging. The public document does not decode the flags.],
+  [Low; validate before use.],
+)
+
+For this candidate, the actual-voltage field in `0x458` should use the
+measured pack voltage selected for FlexBMS, not a voltage inferred from SoC.
+The charge and discharge limits in `0x456` should be generated from fresh BMS
+limits. A loss of valid BMS data must never result in a larger permitted limit;
+the exact conservative fallback and whether a zero limit is accepted by this
+GoodWe firmware must be established during testing.
+
+The current ai-republic sender is useful because it confirms the field layout
+above in executable code, but it is not a complete specification. In
+particular, it omits `0x45A` and `0x460`, does not parse `0x425`, and its
+warning-building code should be reviewed before reuse.
+
+==== Candidate B: SMA/Pylontech-style CAN protocol, fallback only
+
+This is the protocol described by the ESPHome/JK-BMS community work. It is a
+credible alternative only if the ET-20 firmware is configured for that battery
+profile. It should not be called the GoodWe HV protocol without evidence.
+
+#table(
+  columns: (16mm, 27mm, 1fr),
+  header-cell([ID]),
+  header-cell([Direction]),
+  header-cell([Candidate payload]),
+  [`0x351`], [STM32 -> inverter], [Charge-voltage limit, charge-current limit, discharge-current limit, and discharge-voltage limit; the published SMA-style mapping uses 0.1 V/0.1 A values.],
+  [`0x355`], [STM32 -> inverter], [SoC, SoH, and optional high-resolution SoC.],
+  [`0x356`], [STM32 -> inverter], [Actual battery voltage, current, and average temperature. The current is signed in the usual mapping, with positive commonly representing discharge.],
+  [`0x359`], [STM32 -> inverter], [Alarm and warning/status information. Exact bit interpretation must follow the selected SMA/Pylontech profile.],
+  [`0x354`], [STM32 -> inverter], [Present in the community trace, but its exact payload is not part of the current FlexBMS candidate contract.],
+[`0x305`], [Inverter -> STM32], [Observed by the community implementation as an inverter response/ACK. This must not be assumed to be the HV handshake.],
+)
+
+The evidence for Candidate B points to 500 kbit/s and a different byte-level
+contract from Candidate A. It is retained as a fallback because GoodWe G2
+firmware and battery profiles may change the accepted protocol. It is not the
+first implementation target for the high-voltage ET-20 inverter.
+
+==== Implemented first software slice
+
+#status("IMPLEMENTED / NOT HARDWARE-VALIDATED")
+
+The STM32 now selects the protocol through
+`Software/Master/Inc/Peripherals/GoodweCanConfig.h`. Candidate A is the
+default and selects 250 kbit/s; Candidate B selects 500 kbit/s. The CubeMX
+default and generated FDCAN timing use Candidate A, while the startup code
+applies the selected timing before starting the shared CAN driver.
+
+The transmitter publishes the core frames once per second. Candidate A sends
+`0x453`, `0x455`, `0x456`, `0x457`, and `0x458`. Candidate B sends `0x351`,
+`0x355`, `0x356`, and `0x359`. Candidate A `0x45A`/`0x460` and Candidate B
+`0x354` are not enabled in the first build because their meanings or payloads
+are not sufficiently confirmed.
+
+The CAN receiver passively records standard frames `0x420`, `0x425`, and
+`0x305`, including counters, timestamps, and the last payload. These frames do
+not receive application-level replies. The CAN peripheral handles the normal
+link-layer acknowledgement automatically. The reverse-engineered Candidate A
+material describes `0x420` as a timeout/no-BMS indication, not as a confirmed
+request requiring a response. The Candidate B material describes `0x305` as an
+inverter-originated periodic frame; community testing also treated it as an ACK
+or keepalive rather than a BMS request.
+
+Application-level responses are guarded by
+`GOODWE_CAN_ENABLE_APPLICATION_RESPONSES`, which defaults to `0`. It must not
+be enabled until a capture from the actual inverter identifies a required
+response and its payload.
+
+CAN data is published only from a coherent BMS snapshot. Stale or invalid
+measurements stop transmission. A fresh snapshot with a common fault keeps the
+status frames alive but forces both directional current limits to zero. The
+configured under-temperature threshold is charge-only: it sets the charge
+current limit to zero while leaving discharge available if all common safety
+conditions remain healthy. Pack voltage uses the BCC cell-voltage sum. The
+Candidate A module count defaults to six and SoH defaults to 100% until a real
+SoH source exists.
+
+==== Open protocol questions
+
+- Does the GW12K-ET-20 accept the 250 kbit/s GoodWe HV profile, and does its
+  current ARM/inverter firmware require a particular battery profile?
+- Is `0x420` only a timeout indication, or does this firmware require an
+  additional response? The available HV document does not establish a reply
+  to `0x420`; the implemented receiver records it so this can be verified.
+- Are `0x45A` and `0x460` required for startup, or are they optional/status
+  frames? What values and timing do the approved batteries use?
+- Does the inverter emit `0x425` after receiving `0x45A`, and can that frame be
+  used for diagnostics without becoming a BMS safety input?
+- What are the exact signs, limits, alarm bits, and timeout intervals on this
+  model and firmware?
+- Does the inverter require all frames at a fixed one-second period, and does
+  it tolerate a burst of frames or require spacing between them?
+
+==== Validation boundary
+
+The implemented software is a protocol-specific STM32 transmitter with passive
+receive diagnostics. The STM32 remains the safety authority: inverter-facing
+CAN frames communicate measured state and permitted limits, but they do not
+replace BMS fault evaluation, contactor permission, or HV supervision. Home
+Assistant may request an operating point through the normal control path, but it
+must not write arbitrary CAN payloads.
+
+The next evidence needed is a passive CAN capture from the actual GW12K-ET-20
+and its installed battery/firmware, ideally covering startup, normal operation,
+charge permission removal, discharge permission removal, and an inverter
+timeout. Until that exists, Candidate A is the best starting hypothesis, while
+Candidate B remains a deliberately documented fallback.
 
 
 == HV supervisor

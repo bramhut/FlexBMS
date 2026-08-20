@@ -21,6 +21,36 @@ namespace SlaveController
         bcc_status_t status;
     };
 
+    /*! @brief Coherent battery data and directional permissions for inverter CAN. */
+    struct BatteryCanSnapshot
+    {
+        bool valid{};
+        bool measurementsFresh{};
+        bool commonSafe{};
+        bool chargeAllowed{};
+        bool dischargeAllowed{};
+        bool socValid{};
+        bool currentSensingEnabled{};
+
+        bool cellOverVoltage{};
+        bool cellUnderVoltage{};
+        bool overTemperature{};
+        bool underTemperature{};
+        bool overCurrent{};
+        bool communicationFault{};
+        bool internalFault{};
+
+        uint32_t packVoltageUv{};
+        double packCurrentA{};
+        double chargeVoltageV{};
+        double dischargeVoltageV{};
+        double chargeCurrentA{};
+        double dischargeCurrentA{};
+        double averageTemperatureC{};
+        uint16_t socPercent{};
+        size_t cellCount{};
+    };
+
     enum BMSFault
     {
         INVALID_CONFIG,
@@ -123,6 +153,12 @@ namespace SlaveController
     * @return true if charging is allowed
     */    
     bool isChargingAllowed();
+
+    /*! @brief Check whether discharging is currently allowed. */
+    bool isDischargingAllowed();
+
+    /*! @brief Return a coherent snapshot for inverter CAN publication. */
+    BatteryCanSnapshot getBatteryCanSnapshot();
 
     // Development-build default is false. This request is an additional gate;
     // it never overrides normal balancing safety conditions.
