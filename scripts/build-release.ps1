@@ -14,10 +14,31 @@ $masterDirectory = Join-Path $repositoryRoot 'Software\Master'
 $stm32VersionHeader = Join-Path $masterDirectory 'Inc\FirmwareVersion.h'
 $releaseScript = Join-Path $PSScriptRoot 'release\flash-release.ps1'
 $npm = 'C:\Program Files\nodejs\npm.cmd'
-$platformio = 'C:\Users\Bram\.platformio\penv\Scripts\platformio.exe'
+$platformioCoreDirectory = if ([string]::IsNullOrWhiteSpace($env:PLATFORMIO_CORE_DIR)) {
+    Join-Path $env:USERPROFILE '.platformio'
+} else {
+    $env:PLATFORMIO_CORE_DIR
+}
+$platformioPackagesDirectory = if ([string]::IsNullOrWhiteSpace($env:PLATFORMIO_PACKAGES_DIR)) {
+    Join-Path $platformioCoreDirectory 'packages'
+} else {
+    $env:PLATFORMIO_PACKAGES_DIR
+}
+$platformioCandidates = @(
+    (Join-Path $platformioCoreDirectory 'penv\Scripts\platformio.exe')
+    (Join-Path $platformioCoreDirectory 'penv\Scripts\pio.exe')
+)
+$platformioCommand = Get-Command platformio.exe -ErrorAction SilentlyContinue
+$platformio = if ($null -ne $platformioCommand) {
+    $platformioCommand.Source
+} else {
+    $platformioCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
 
 if (-not (Test-Path -LiteralPath $npm)) { throw "Node.js npm was not found at $npm." }
-if (-not (Test-Path -LiteralPath $platformio)) { throw "PlatformIO was not found at $platformio." }
+if ([string]::IsNullOrWhiteSpace($platformio)) {
+    throw "PlatformIO was not found. Checked: $($platformioCandidates -join ', ')."
+}
 if (-not (Test-Path -LiteralPath $releaseScript)) { throw "Release flash script was not found at $releaseScript." }
 
 function Assert-SemanticVersion([string]$Candidate) {
@@ -225,8 +246,8 @@ Copy-Item -LiteralPath $gatewayArtifact -Destination (Join-Path $releaseDirector
 Copy-Item -LiteralPath $stm32Artifact -Destination (Join-Path $releaseDirectory 'FlexBMS-STM32.bin')
 Copy-Item -LiteralPath $releaseScript -Destination (Join-Path $releaseDirectory 'flash-release.ps1')
 
-$esptool = Join-Path $env:USERPROFILE '.platformio\packages\tool-esptoolpy\esptool.py'
-$platformioPython = Join-Path $env:USERPROFILE '.platformio\penv\Scripts\python.exe'
+$esptool = Join-Path $platformioPackagesDirectory 'tool-esptoolpy\esptool.py'
+$platformioPython = Join-Path $platformioCoreDirectory 'penv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $esptool) -or -not (Test-Path -LiteralPath $platformioPython)) {
     throw 'PlatformIO esptool.py or its Python runtime was not found; cannot create the Gateway factory image.'
 }

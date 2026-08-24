@@ -42,7 +42,19 @@ def build_companion():
     npm = shutil.which("npm.cmd") or shutil.which("npm")
     if npm is None:
         raise RuntimeError(
-            "npm is required to build the Gateway Companion. Install Node.js, then run npm ci in Software/Companion."
+            "npm is required to build the Gateway Companion. Install Node.js and restart PlatformIO."
+        )
+
+    # Keep the frontend setup self-contained for fresh checkouts.  npm ci is
+    # intentionally only run when the locked dependency tree is absent; doing
+    # it on every firmware build would delete and reinstall node_modules.
+    vite_package = companion_dir / "node_modules" / "vite" / "package.json"
+    if not vite_package.exists():
+        print("Installing locked FlexBMS Companion npm dependencies")
+        subprocess.run(
+            [npm, "ci", "--no-audit", "--no-fund"],
+            cwd=companion_dir,
+            check=True,
         )
 
     print("Generating compiled FlexBMS Companion Gateway bundle")

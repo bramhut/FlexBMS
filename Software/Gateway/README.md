@@ -44,9 +44,9 @@ supplies ESP-IDF 5.5.0. The first build downloads the required toolchain and
 framework automatically. Before compiling ESP32 firmware, PlatformIO runs the
 in-tree Companion's `npm run build:gateway` command. It regenerates the hashed
 web assets, manifest, and compiled `GatewayAssets.cpp`, so the served UI is
-always part of the same firmware image. Run `npm ci` once in
-`Software/Companion` after a fresh clone; a Gateway build fails rather than
-embedding stale UI assets if npm or its dependencies are unavailable.
+always part of the same firmware image. The first Gateway build installs the
+locked Companion dependencies automatically. A Gateway build fails rather
+than embedding stale UI assets if Node.js/npm is unavailable.
 
 From a terminal with PlatformIO installed:
 

@@ -345,13 +345,21 @@ namespace FlexBms::Wifi
 
         bool startAccessPoint(bool recovery)
         {
-            if (!configureAccessPoint()) return false;
             // Scanning is a station-mode operation in ESP-IDF. Provisioning
             // retains an idle STA interface so the Companion can scan while
             // the setup AP remains available; no connection is attempted
             // until credentials exist.
             esp_err_t result = esp_wifi_set_mode(WIFI_MODE_APSTA);
-            if (result == ESP_OK && !wifiStarted)
+            if (result != ESP_OK)
+            {
+                logError("Selecting Wi-Fi setup AP mode", result);
+                return false;
+            }
+            // The AP interface must be enabled before its configuration can
+            // be applied. In STA mode esp_wifi_set_config(WIFI_IF_AP, ...)
+            // returns ESP_ERR_WIFI_MODE.
+            if (!configureAccessPoint()) return false;
+            if (!wifiStarted)
             {
                 result = esp_wifi_start();
                 wifiStarted = result == ESP_OK;

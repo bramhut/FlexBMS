@@ -1,7 +1,7 @@
 {
   "format": 1,
-  "companion_version": "0.1.28",
-  "build_id": "4cd073a6686fe4ca",
+  "companion_version": "0.1.29",
+  "build_id": "30776e0976077b14",
   "files": [
     {
       "path": "assets/index-BAfqBxMP.js",
@@ -15,9 +15,9 @@
     },
     {
       "path": "index.html",
-      "bytes": 373,
-      "sha256": "4a6d2bc1d0b37e7dcccc317cd0e34c9a455fd7521d37d4e6466279d0884884eb"
+      "bytes": 378,
+      "sha256": "421378a33d0ed3198ce2626873ff24b77fdaf2c53b7e412a6bc7ef6568b7858f"
     }
   ],
-  "total_bytes": 118507
+  "total_bytes": 118512
 }
