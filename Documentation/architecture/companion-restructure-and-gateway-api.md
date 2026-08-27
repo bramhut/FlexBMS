@@ -198,7 +198,7 @@ The common service names are:
 | Service | Arguments | Result data |
 |---|---|---|
 | `set_run_request` | `requested: boolean` | none |
-| `set_balancing_request` | `requested: boolean` | none |
+| `set_balancing_enabled` | `enabled: boolean` | none |
 | `acknowledge_faults` | none | none |
 | `get_rtc` | none | `unix_time_s` UTC integer |
 | `get_device_info` | none | `firmware_version_packed` little-endian `major.minor.patch.build` bytes |
@@ -305,7 +305,7 @@ defined below.
     "monitor": true,
     "csv_logging": true,
     "set_run_request": true,
-    "set_balancing_request": true,
+    "set_balancing_enabled": true,
     "acknowledge_faults": true,
     "get_rtc": true,
     "get_device_info": true,
@@ -373,7 +373,7 @@ fields.
     "uptime_ms": 0,
     "measurements_fresh": false,
     "run_request": false,
-    "balancing_request": false
+    "balancing_enabled": true
   },
   "pack": {
     "pack_voltage_uV": 0,
@@ -441,14 +441,14 @@ network command is accepted.
   "v": 1,
   "type": "service",
   "request_id": "opaque client string up to 64 ASCII characters",
-  "service": "set_run_request | set_balancing_request | acknowledge_faults | get_rtc | get_device_info | read_register",
+  "service": "set_run_request | set_balancing_enabled | acknowledge_faults | get_rtc | get_device_info | read_register",
   "arguments": {}
 }
 ```
 
 `arguments` must exactly match the common service table. Numbers are JSON
 integers: `slave_index` and `register` are 0--255. `set_run_request` and
-`set_balancing_request` require exactly `{ "requested": true | false }`; services
+`set_balancing_enabled` requires exactly `{ "enabled": true | false }`; services
 with no arguments require `{}`.
 When the open setup/recovery AP is active, valid BMS service requests receive
 `denied` locally and do not reach UART.
@@ -520,7 +520,7 @@ Gateway failure. `service_result.data` is present only for a successful
 common service table.
 
 The `capabilities` object in `hello` has Boolean keys
-`monitor`, `csv_logging`, `set_run_request`, `set_balancing_request`, `acknowledge_faults`, `get_rtc`, `get_device_info`,
+`monitor`, `csv_logging`, `set_run_request`, `set_balancing_enabled`, `acknowledge_faults`, `get_rtc`, `get_device_info`,
 `read_register`, `diagnostic_log_download`, `raw_terminal`, and
 `firmware_update`, `wifi_configuration`, and `mqtt_configuration`. In normal
 connected station mode the BMS-service keys, `wifi_configuration`,

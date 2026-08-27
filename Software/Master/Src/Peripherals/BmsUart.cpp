@@ -69,7 +69,7 @@ namespace BmsUart
             GET_DEVICE_INFO = 0x06U,
             PREPARE_STM32_BOOTLOADER = 0x07U,
             GET_RTC = 0x08U,
-            SET_BALANCING_REQUEST = 0x09U,
+            SET_BALANCING_ENABLED = 0x09U,
             COMMIT_STM32_BOOTLOADER = 0x0AU,
         };
 
@@ -559,7 +559,7 @@ namespace BmsUart
             if (PCC::isRunRequested()) flags |= 1U << 2U;
             if (measurementsFresh) flags |= 1U << 3U;
             if (hasValidGatewayFrame && HAL_GetTick() - lastValidGatewayFrameMs < GATEWAY_LOSS_MS) flags |= 1U << 4U;
-            if (SlaveController::isBalancingRequested()) flags |= 1U << 5U;
+            if (SlaveController::isBalancingEnabled()) flags |= 1U << 5U;
             if (SlaveController::isSoCValid()) flags |= 1U << 6U;
             if (SlaveController::isCurrentSensingEnabled()) flags |= 1U << 7U;
             uint32_t socCalibrationUnixTime = 0U;
@@ -929,13 +929,13 @@ namespace BmsUart
                 sendServiceResponse(frame.sequence, serviceId, OK);
                 return;
 
-            case SET_BALANCING_REQUEST:
+            case SET_BALANCING_ENABLED:
                 if (frame.length != 2U || frame.payload[1] > 1U)
                 {
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
                     return;
                 }
-                SlaveController::setBalancingRequest(frame.payload[1] != 0U);
+                SlaveController::setBalancingEnabled(frame.payload[1] != 0U);
                 sendServiceResponse(frame.sequence, serviceId, OK);
                 return;
 

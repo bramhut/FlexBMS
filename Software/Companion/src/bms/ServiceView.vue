@@ -5,11 +5,11 @@ import { registerFields } from '@/shared/registers'
 import { serviceResultLabel } from '@/shared/service'
 import { advancingUnixTime, advancingUptimeMs, formatUptime } from '@/shared/time'
 
-const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities; connected: boolean; runRequested: boolean; balancingRequested: boolean; acknowledgementPending: boolean; stm32UptimeMs?: number; gateway?: GatewayStatus }>()
+const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities; connected: boolean; runRequested: boolean; balancingEnabled: boolean; acknowledgementPending: boolean; stm32UptimeMs?: number; gateway?: GatewayStatus }>()
 const requested = ref(false)
 const changingRunRequest = ref(false)
-const balancingRequested = ref(false)
-const changingBalancingRequest = ref(false)
+const balancingEnabled = ref(false)
+const changingBalancingEnabled = ref(false)
 const slave = ref(0)
 const registerText = ref('03')
 const result = ref('')
@@ -74,13 +74,13 @@ async function setRunRequest(): Promise<void> {
   if (response.result !== 'ok') requested.value = props.runRequested
 }
 
-async function setBalancingRequest(): Promise<void> {
-  const requestedValue = balancingRequested.value
-  changingBalancingRequest.value = true
-  const response = await props.transport.request('set_balancing_request', { requested: requestedValue })
-  result.value = `Balancing request: ${describe(response)}`
-  changingBalancingRequest.value = false
-  if (response.result !== 'ok') balancingRequested.value = props.balancingRequested
+async function setBalancingEnabled(): Promise<void> {
+  const enabledValue = balancingEnabled.value
+  changingBalancingEnabled.value = true
+  const response = await props.transport.request('set_balancing_enabled', { enabled: enabledValue })
+  result.value = `Automatic balancing: ${describe(response)}`
+  changingBalancingEnabled.value = false
+  if (response.result !== 'ok') balancingEnabled.value = props.balancingEnabled
 }
 
 async function acknowledgeFaults(): Promise<void> {
@@ -114,7 +114,7 @@ async function readRegister(): Promise<void> {
 }
 
 watch(() => props.runRequested, value => { if (!changingRunRequest.value) requested.value = value }, { immediate: true })
-watch(() => props.balancingRequested, value => { if (!changingBalancingRequest.value) balancingRequested.value = value }, { immediate: true })
+watch(() => props.balancingEnabled, value => { if (!changingBalancingEnabled.value) balancingEnabled.value = value }, { immediate: true })
 watch([() => props.connected, () => props.capabilities.get_rtc], ([connected, supported]) => { if (connected && supported) void refreshDeviceTime(false) }, { immediate: true })
 watch(() => props.stm32UptimeMs, uptimeMs => {
   if (uptimeMs === undefined) return
@@ -140,7 +140,7 @@ onBeforeUnmount(() => { if (clockTimer !== undefined) window.clearInterval(clock
       <div class="control-section">
         <h3>Requests</h3>
         <div class="switch-row"><label class="ios-switch"><input v-model="requested" type="checkbox" role="switch" :disabled="!capabilities.set_run_request || changingRunRequest" @change="setRunRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Request BMS run</span></label><small v-if="!capabilities.set_run_request">{{ availability('set_run_request') }}</small></div>
-        <div class="switch-row"><label class="ios-switch"><input v-model="balancingRequested" type="checkbox" role="switch" :disabled="!capabilities.set_balancing_request || changingBalancingRequest" @change="setBalancingRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Request cell balancing</span></label><small v-if="!capabilities.set_balancing_request">{{ availability('set_balancing_request') }}</small></div>
+        <div class="switch-row"><label class="ios-switch"><input v-model="balancingEnabled" type="checkbox" role="switch" :disabled="!capabilities.set_balancing_enabled || changingBalancingEnabled" @change="setBalancingEnabled"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Automatic cell balancing</span></label><small v-if="!capabilities.set_balancing_enabled">{{ availability('set_balancing_enabled') }}</small></div>
       </div>
       <div v-if="acknowledgementPending" class="control-section recovery-section">
         <h3>Error recovery</h3>

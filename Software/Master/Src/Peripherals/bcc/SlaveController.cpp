@@ -75,9 +75,9 @@ namespace SlaveController
 
         uint16_t cBalancingTime = 0; // Time in [min] for a single cell balancing operation
 
-        // Deliberately false in this development build. Change only with the
-        // production balancing enablement decision documented in uart-v1.md.
-        std::atomic<bool> balancingRequested{false};
+        // Automatic balancing is enabled by default. This remains an additional
+        // user-controlled gate and never overrides normal safety conditions.
+        std::atomic<bool> balancingEnabled{true};
 
         uint8_t currentMeasurementSlaveIdx = 0; // Index of the slave responsible for current measurement
         bool currentMeasurementConfigured = false;
@@ -705,8 +705,10 @@ namespace SlaveController
         bool isBalancingAllowed()
         {
             const FaultManager::Snapshot snapshot = FaultManager::getSnapshot();
-            return balancingRequested.load(std::memory_order_relaxed) &&
+            return balancingEnabled.load(std::memory_order_relaxed) &&
                    currentState == RUNNING &&
+                   completeMeasurementSetValid &&
+                   measurementsAreFresh() &&
                    (snapshot.bmsActive | snapshot.bmsLatched |
                     snapshot.hvActive | snapshot.hvLatched) == 0U;
         }
@@ -1399,14 +1401,14 @@ namespace SlaveController
         return snapshot;
     }
 
-    void setBalancingRequest(bool requested)
+    void setBalancingEnabled(bool enabled)
     {
-        balancingRequested.store(requested, std::memory_order_relaxed);
+        balancingEnabled.store(enabled, std::memory_order_relaxed);
     }
 
-    bool isBalancingRequested()
+    bool isBalancingEnabled()
     {
-        return balancingRequested.load(std::memory_order_relaxed);
+        return balancingEnabled.load(std::memory_order_relaxed);
     }
 
     const vector<vector<uint16_t>> &getNTCtemps()

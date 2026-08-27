@@ -81,7 +81,7 @@ export class WebSerialTransport implements BmsTransport {
 
   private servicePayload<S extends ServiceName>(service: S, args: ServiceArguments[S]): Uint8Array {
     if (service === 'set_run_request') return Uint8Array.of(serviceId.setRunRequest, (args as ServiceArguments['set_run_request']).requested ? 1 : 0)
-    if (service === 'set_balancing_request') return Uint8Array.of(serviceId.setBalancingRequest, (args as ServiceArguments['set_balancing_request']).requested ? 1 : 0)
+    if (service === 'set_balancing_enabled') return Uint8Array.of(serviceId.setBalancingEnabled, (args as ServiceArguments['set_balancing_enabled']).enabled ? 1 : 0)
     if (service === 'acknowledge_faults') return Uint8Array.of(serviceId.acknowledgeFaults)
     if (service === 'get_rtc') return Uint8Array.of(serviceId.getRtc)
     if (service === 'get_device_info') return Uint8Array.of(serviceId.getDeviceInfo)

@@ -735,7 +735,7 @@ warnings:u32 | uptime_ms:u32 | soc_last_calibration_unix_s:u32
 ```
 
 Status flag bits are: 0 BMS HV-ready, 1 charging allowed, 2 run request asserted, 3 complete
-measurements fresh, 4 isolated-UART Gateway peer alive, and 5 balancing request. USB Companion
+measurements fresh, 4 isolated-UART Gateway peer alive, and 5 automatic balancing enabled. USB Companion
 heartbeats do not affect bit 4. Bit 6 is SoC valid, bit 7 current sensing enabled, and bit 8
 the SoC calibration UTC value valid; bits 9--15 are zero. `slave_count` comes from the configured
 BMS monitor chain and is variable between builds. A production module contains eight monitor slaves,
@@ -837,8 +837,8 @@ an accepted acknowledgement clears. `STARTUP_DIAGNOSTICS_BYPASSED` remains
 present while that build configuration is active; `BATTERY_VOLTAGE_MISMATCH_OFF`
 remains present while the measurements disagree.
 `WATCHDOG_RESET` is set when this STM32 boot followed an independent or window
-watchdog reset. Gateway liveness, CAN condition, near-limit indication, and an
-inactive balancing request are not BMS warnings in this release.
+watchdog reset. Gateway liveness, CAN condition, near-limit indication, and
+disabled automatic balancing are not BMS warnings in this release.
 
 The STM32 compares BAT+ and the slave-reported pack voltage continuously. A disagreement is an
 OFF-state warning while no run request is present; a run request promotes the same condition to
@@ -925,7 +925,7 @@ accepted and invoked the requested operation; STATUS and EVENT show the resultin
   [`0x06`], [GET_DEVICE_INFO], [none], [`firmware_version:u32`],
   [`0x07`], [PREPARE_STM32_BOOTLOADER], [`firmware_version:u32, image_length:u32, image_crc32:u32`], [none],
   [`0x08`], [GET_RTC], [none], [`unix_time_s:u32` UTC],
-  [`0x09`], [SET_BALANCING_REQUEST], [`requested:u8` (`0` or `1`)], [none],
+  [`0x09`], [SET_BALANCING_ENABLED], [`enabled:u8` (`0` or `1`)], [none],
   [`0x0A`], [COMMIT_STM32_BOOTLOADER], [none], [none (successful request enters ROM immediately)],
 )
 
@@ -940,11 +940,12 @@ it. Neither the Gateway nor Home Assistant can bypass a fault, write BCC registe
 HV supervisor. `firmware_version` is packed as
 `major | (minor << 8) | (patch << 16) | (build << 24)`.
 
-`SET_BALANCING_REQUEST` is an additional AND gate: a request of 1 does not guarantee
-balancing. The STM32 requires a running, fault-free BMS plus configured cell-voltage
-thresholds. A request of 0 disables the BCC balancing drivers on the next BCC loop. This
-development build defaults the volatile request to 0 after every reset; change and document
-that default explicitly for the production balancing enablement.
+`SET_BALANCING_ENABLED` controls the STM32-owned automatic balancing enable gate. An enabled
+value does not guarantee that any cell is balancing: the STM32 still requires a running,
+fault-free BMS, fresh measurements, and its configured cell-voltage thresholds. A disabled
+value inhibits the BCC balancing drivers on the next BCC loop. Automatic balancing is enabled
+by default after every STM32 reset; the setting remains volatile and is not changed by Gateway
+or Companion reconnects.
 
 `PREPARE_STM32_BOOTLOADER` and `COMMIT_STM32_BOOTLOADER` form the STM32-update handoff.
 The Gateway must already have staged and CRC-checked the image. The STM32 validates the prepare

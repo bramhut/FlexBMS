@@ -93,7 +93,7 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
             <span class="state-chip"><b>BMS</b>{{ status ? bmsStateName(status.bms_state) : 'Waiting' }}</span>
             <span class="state-chip" :class="{ ready: hvDisplay.ready }"><b>HV</b>{{ hvDisplay.detail }}</span>
             <span class="state-chip"><b>Run</b>{{ status?.run_request ? 'Requested' : 'Off' }}</span>
-            <span class="state-chip"><b>Balance</b>{{ status?.balancing_request ? 'Requested' : 'Off' }}</span>
+            <span class="state-chip"><b>Balance</b>{{ status?.balancing_enabled ? 'Enabled' : 'Disabled' }}</span>
           </div>
         </div>
         <div class="overview-section battery-overview">
@@ -131,6 +131,6 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
 
     <section class="panel logging-panel"><div class="panel-heading"><div><h2>CSV logging</h2></div><p>No data is sent to the Gateway or stored on the BMS.</p></div><div class="button-row"><button class="primary" :disabled="!fresh || logging" @click="startLogging">Start logging</button><button :disabled="!logging" @click="stopLogging">Stop logging</button><button :disabled="lines.length < 2" @click="downloadCsv(lines)">Download {{ Math.max(0, lines.length - 1) }} rows</button></div></section>
 
-    <ServiceView :transport="transport" :capabilities="capabilities" :connected="connected" :run-requested="status?.run_request ?? false" :balancing-requested="status?.balancing_request ?? false" :acknowledgement-pending="acknowledgementPending" :stm32-uptime-ms="status?.uptime_ms" :gateway="gateway" />
+    <ServiceView :transport="transport" :capabilities="capabilities" :connected="connected" :run-requested="status?.run_request ?? false" :balancing-enabled="status?.balancing_enabled ?? false" :acknowledgement-pending="acknowledgementPending" :stm32-uptime-ms="status?.uptime_ms" :gateway="gateway" />
   </main>
 </template>

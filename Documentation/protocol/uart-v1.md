@@ -75,7 +75,7 @@ warnings:u32 | uptime_ms:u32 | soc_last_calibration_unix_s:u32
 
 `flags`: bit 0 BMS HV-ready; bit 1 charging allowed; bit 2 run request;
 bit 3 complete measurements fresh; bit 4 isolated-UART Gateway peer alive;
-bit 5 balancing request; bit 6 SOC valid; bit 7 current sensing enabled; bit 8
+bit 5 automatic balancing enabled; bit 6 SOC valid; bit 7 current sensing enabled; bit 8
 `soc_last_calibration_unix_s` valid. Bits 9--15 are zero. USB heartbeats never
 change bit 4.
 
@@ -203,8 +203,8 @@ an accepted acknowledgement clears. `STARTUP_DIAGNOSTICS_BYPASSED` remains
 present while that build configuration is active; `BATTERY_VOLTAGE_MISMATCH_OFF`
 remains present while the measurements disagree.
 `WATCHDOG_RESET` is set when this STM32 boot followed an independent or window
-watchdog reset. Gateway liveness, CAN condition, near-limit indication, and an
-inactive balancing request are not BMS warnings in this release.
+watchdog reset. Gateway liveness, CAN condition, near-limit indication, and
+disabled automatic balancing are not BMS warnings in this release.
 
 The STM32 compares BAT+ and the slave-reported pack voltage continuously. A
 disagreement is an OFF-state warning while no run request is present; a run
@@ -298,7 +298,7 @@ reads, to the link and sequence that originated them.
 | `0x06` | `GET_DEVICE_INFO` | None | `firmware_version:u32` |
 | `0x07` | `PREPARE_STM32_BOOTLOADER` | `firmware_version:u32, image_length:u32, image_crc32:u32` | None |
 | `0x08` | `GET_RTC` | None | `unix_time_s:u32` UTC |
-| `0x09` | `SET_BALANCING_REQUEST` | `requested:u8` (`0` or `1`) | None |
+| `0x09` | `SET_BALANCING_ENABLED` | `enabled:u8` (`0` or `1`) | None |
 | `0x0A` | `COMMIT_STM32_BOOTLOADER` | None | None (successful request enters ROM immediately) |
 
 The STM32 calendar stores UTC only. It accepts `SET_RTC` only for 2000--2099
@@ -318,12 +318,13 @@ therefore restart from `OFF` immediately once the Fault Manager permits it.
 The Gateway and Home Assistant cannot bypass a fault, write BCC registers, or
 override the HV supervisor.
 
-`SET_BALANCING_REQUEST` is an additional AND gate: a request of 1 does not
-guarantee balancing. The STM32 requires a running, fault-free BMS plus its
-configured cell-voltage thresholds. A request of 0 disables the BCC balancing
-drivers on the next BCC loop. This development build defaults the volatile
-request to 0 after every reset; change and document that default explicitly for
-the production balancing enablement.
+`SET_BALANCING_ENABLED` controls the STM32-owned automatic balancing enable
+gate. An enabled value does not guarantee that any cell is balancing: the STM32
+still requires a running, fault-free BMS, fresh measurements, and its configured
+cell-voltage thresholds. A disabled value inhibits the BCC balancing drivers on
+the next BCC loop. Automatic balancing is enabled by default after every STM32
+reset; the setting remains volatile and is not changed by Gateway or Companion
+reconnects.
 
 `firmware_version` packs `major | (minor << 8) | (patch << 16) |
 (build << 24)`.

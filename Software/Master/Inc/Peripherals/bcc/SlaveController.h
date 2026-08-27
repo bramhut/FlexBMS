@@ -160,10 +160,10 @@ namespace SlaveController
     /*! @brief Return a coherent snapshot for inverter CAN publication. */
     BatteryCanSnapshot getBatteryCanSnapshot();
 
-    // Development-build default is false. This request is an additional gate;
-    // it never overrides normal balancing safety conditions.
-    void setBalancingRequest(bool requested);
-    bool isBalancingRequested();
+    // Automatic balancing is enabled by default. This setting is an additional
+    // gate and never overrides normal balancing safety conditions.
+    void setBalancingEnabled(bool enabled);
+    bool isBalancingEnabled();
 
     /*!
      * @brief Get the cell voltages per slave [uV]

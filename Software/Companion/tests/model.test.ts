@@ -41,5 +41,5 @@ test('displayed controller uptime advances locally and stays compact', () => {
   assert.equal(formatUptime(97_322_000), '1 d 3 h 2 min')
 })
 test('stale BMS status identifies the state and active fault', () => {
-  assert.equal(bmsStatusSummary({ bms_state: 3, hv_state: 0, flags: 0x10, slave_count: 1, bms_active_errors: 0x0002, bms_latched_errors: 0, hv_active_errors: 0, hv_latched_errors: 0, warnings: 0, uptime_ms: 0, measurements_fresh: false, run_request: false, balancing_request: false, soc_valid: false, current_sensing_enabled: false }), 'Error: measurements are not fresh (SLAVE_UNAVAILABLE).')
+  assert.equal(bmsStatusSummary({ bms_state: 3, hv_state: 0, flags: 0x10, slave_count: 1, bms_active_errors: 0x0002, bms_latched_errors: 0, hv_active_errors: 0, hv_latched_errors: 0, warnings: 0, uptime_ms: 0, measurements_fresh: false, run_request: false, balancing_enabled: false, soc_valid: false, current_sensing_enabled: false }), 'Error: measurements are not fresh (SLAVE_UNAVAILABLE).')
 })

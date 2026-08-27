@@ -14,7 +14,7 @@ export const messageType = {
   event: 0x12,
 } as const
 
-export const serviceId = { getStatus: 0x01, setRunRequest: 0x02, acknowledgeFaults: 0x03, readRegister: 0x04, setRtc: 0x05, getDeviceInfo: 0x06, enterStm32Bootloader: 0x07, getRtc: 0x08, setBalancingRequest: 0x09 } as const
+export const serviceId = { getStatus: 0x01, setRunRequest: 0x02, acknowledgeFaults: 0x03, readRegister: 0x04, setRtc: 0x05, getDeviceInfo: 0x06, enterStm32Bootloader: 0x07, getRtc: 0x08, setBalancingEnabled: 0x09 } as const
 
 export type UartV1Frame = { type: number; sequence: number; payload: Uint8Array }
 
@@ -70,7 +70,7 @@ export class FrameDecoder {
 export function decodeStatus(payload: Uint8Array): Status | undefined {
   if (payload.length !== 33) return undefined
   const flags = readLe16(payload, 2)
-  return { bms_state: payload[0], hv_state: payload[1], flags, slave_count: payload[4], bms_active_errors: readLe32(payload, 5), bms_latched_errors: readLe32(payload, 9), hv_active_errors: readLe32(payload, 13), hv_latched_errors: readLe32(payload, 17), warnings: readLe32(payload, 21), uptime_ms: readLe32(payload, 25), measurements_fresh: (flags & (1 << 3)) !== 0, run_request: (flags & (1 << 2)) !== 0, balancing_request: (flags & (1 << 5)) !== 0, soc_valid: (flags & (1 << 6)) !== 0, current_sensing_enabled: (flags & (1 << 7)) !== 0, soc_last_calibration_unix_s: (flags & (1 << 8)) !== 0 ? readLe32(payload, 29) : undefined }
+  return { bms_state: payload[0], hv_state: payload[1], flags, slave_count: payload[4], bms_active_errors: readLe32(payload, 5), bms_latched_errors: readLe32(payload, 9), hv_active_errors: readLe32(payload, 13), hv_latched_errors: readLe32(payload, 17), warnings: readLe32(payload, 21), uptime_ms: readLe32(payload, 25), measurements_fresh: (flags & (1 << 3)) !== 0, run_request: (flags & (1 << 2)) !== 0, balancing_enabled: (flags & (1 << 5)) !== 0, soc_valid: (flags & (1 << 6)) !== 0, current_sensing_enabled: (flags & (1 << 7)) !== 0, soc_last_calibration_unix_s: (flags & (1 << 8)) !== 0 ? readLe32(payload, 29) : undefined }
 }
 
 export function decodePack(payload: Uint8Array): Snapshot['pack'] | undefined {

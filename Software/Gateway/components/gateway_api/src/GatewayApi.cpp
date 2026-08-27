@@ -82,7 +82,7 @@ namespace FlexBms::GatewayApi
             switch (service)
             {
             case Service::SetRunRequest: return "set_run_request";
-            case Service::SetBalancingRequest: return "set_balancing_request";
+            case Service::SetBalancingEnabled: return "set_balancing_enabled";
             case Service::AcknowledgeFaults: return "acknowledge_faults";
             case Service::SetRtc: return "set_rtc";
             case Service::GetRtc: return "get_rtc";
@@ -349,7 +349,7 @@ namespace FlexBms::GatewayApi
             cJSON_AddBoolToObject(caps, "monitor", true);
             cJSON_AddBoolToObject(caps, "csv_logging", true);
             cJSON_AddBoolToObject(caps, "set_run_request", bmsServices);
-            cJSON_AddBoolToObject(caps, "set_balancing_request", bmsServices);
+            cJSON_AddBoolToObject(caps, "set_balancing_enabled", bmsServices);
             cJSON_AddBoolToObject(caps, "acknowledge_faults", bmsServices);
             cJSON_AddBoolToObject(caps, "get_rtc", bmsServices);
             cJSON_AddBoolToObject(caps, "get_device_info", bmsServices);
@@ -388,7 +388,7 @@ namespace FlexBms::GatewayApi
             cJSON_AddNumberToObject(root, "uptime_ms", status.uptimeMs);
             cJSON_AddBoolToObject(root, "measurements_fresh", (status.flags & (1U << 3U)) != 0U);
             cJSON_AddBoolToObject(root, "run_request", (status.flags & (1U << 2U)) != 0U);
-            cJSON_AddBoolToObject(root, "balancing_request", (status.flags & (1U << 5U)) != 0U);
+            cJSON_AddBoolToObject(root, "balancing_enabled", (status.flags & (1U << 5U)) != 0U);
             cJSON_AddBoolToObject(root, "soc_valid", (status.flags & (1U << 6U)) != 0U);
             cJSON_AddBoolToObject(root, "current_sensing_enabled", (status.flags & (1U << 7U)) != 0U);
             if ((status.flags & (1U << 8U)) != 0U) cJSON_AddNumberToObject(root, "soc_last_calibration_unix_s", status.socLastCalibrationUnixS);
@@ -504,12 +504,12 @@ namespace FlexBms::GatewayApi
                 argumentLength = 1U;
                 return true;
             }
-            if (std::strcmp(name->valuestring, "set_balancing_request") == 0)
+            if (std::strcmp(name->valuestring, "set_balancing_enabled") == 0)
             {
-                cJSON *requested = cJSON_GetObjectItemCaseSensitive(args, "requested");
-                if (!objectHasExactly(args, {"requested"}) || !cJSON_IsBool(requested)) return false;
-                service = Service::SetBalancingRequest;
-                arguments[0] = cJSON_IsTrue(requested) ? 1U : 0U;
+                cJSON *enabled = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+                if (!objectHasExactly(args, {"enabled"}) || !cJSON_IsBool(enabled)) return false;
+                service = Service::SetBalancingEnabled;
+                arguments[0] = cJSON_IsTrue(enabled) ? 1U : 0U;
                 argumentLength = 1U;
                 return true;
             }

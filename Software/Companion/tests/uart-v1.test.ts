@@ -33,7 +33,7 @@ test('UART v1 status exposes current sensing and SOC calibration validity', () =
   payload.set([3, 4, 0xfc, 0x01, 1, 0x04, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 1, 0, 0, 0, 0x80, 0x51, 0x37, 0x66])
   const status = decodeStatus(payload)
   assert.equal(status?.run_request, true)
-  assert.equal(status?.balancing_request, true)
+  assert.equal(status?.balancing_enabled, true)
   assert.equal(status?.measurements_fresh, true)
   assert.equal(status?.soc_valid, true)
   assert.equal(status?.current_sensing_enabled, true)
