@@ -4,12 +4,19 @@ import ServiceView from './ServiceView.vue'
 import RecentChangesList from './RecentChangesList.vue'
 import { bmsFaultNames, bmsStateName, cellVoltageV, currentA, hvReasonNames, hvStateName, icCelsius, ntcCelsius, setBits, socPercent, warningDisplayNames } from '@/shared/model'
 import { csvHeader, csvRow, downloadCsv } from '@/shared/csv'
-import type { BmsTransport, Capabilities, GatewayStatus, RecordedControllerEvent, Snapshot, Status } from '@/transports/Transport'
+import { serviceResultLabel } from '@/shared/service'
+import type { BmsTransport, Capabilities, GatewayStatus, RecordedControllerEvent, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
 
 const props = defineProps<{ snapshot: Snapshot | null; status: Status | null; transport: BmsTransport; capabilities: Capabilities; connected: boolean; gateway?: GatewayStatus; recentEvents: RecordedControllerEvent[] }>()
 const emit = defineEmits<{ showAll: [] }>()
 const lines = ref<string[]>([])
 const logging = ref(false)
+const requested = ref(false)
+const changingRunRequest = ref(false)
+const balancingEnabled = ref(false)
+const changingBalancingEnabled = ref(false)
+const runResult = ref('')
+const balanceResult = ref('')
 const fresh = computed(() => Boolean(props.snapshot && props.status?.measurements_fresh))
 const measurement = (value: string) => fresh.value ? value : '—'
 type AttentionItem = { label: string; domain: 'BMS' | 'HV' | 'System'; state: 'live' | 'pending' | 'warning' }
@@ -73,6 +80,24 @@ const socCalibration = computed(() => {
   const age = ageSeconds < 3600 ? `${Math.floor(ageSeconds / 60)} min ago` : ageSeconds < 86400 ? `${Math.floor(ageSeconds / 3600)} h ago` : `${Math.floor(ageSeconds / 86400)} d ago`
   return `${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(unixTime * 1000))} (${age})`
 })
+const controlAvailability = (capability: keyof Capabilities) => props.capabilities[capability] ? '' : 'Unavailable in the current Gateway state.'
+function describeControlResponse(response: ServiceResponse): string { return serviceResultLabel(response.result) }
+async function setRunRequest(): Promise<void> {
+  const requestedValue = requested.value
+  changingRunRequest.value = true
+  const response = await props.transport.request('set_run_request', { requested: requestedValue })
+  runResult.value = `Run: ${describeControlResponse(response)}`
+  changingRunRequest.value = false
+  if (response.result !== 'ok') requested.value = props.status?.run_request ?? false
+}
+async function setBalancingEnabled(): Promise<void> {
+  const enabledValue = balancingEnabled.value
+  changingBalancingEnabled.value = true
+  const response = await props.transport.request('set_balancing_enabled', { enabled: enabledValue })
+  balanceResult.value = `Balance: ${describeControlResponse(response)}`
+  changingBalancingEnabled.value = false
+  if (response.result !== 'ok') balancingEnabled.value = props.status?.balancing_enabled ?? false
+}
 function appendSnapshot(snapshot: Snapshot): void {
   if (!snapshot.status.measurements_fresh) return
   if (lines.value.length === 0) lines.value = [csvHeader(snapshot).join(',')]
@@ -81,6 +106,8 @@ function appendSnapshot(snapshot: Snapshot): void {
 function startLogging(): void { if (props.snapshot && fresh.value) { lines.value = []; appendSnapshot(props.snapshot); logging.value = true } }
 function stopLogging(): void { logging.value = false }
 watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendSnapshot(snapshot) })
+watch(() => props.status?.run_request, value => { if (!changingRunRequest.value) requested.value = value ?? false }, { immediate: true })
+watch(() => props.status?.balancing_enabled, value => { if (!changingBalancingEnabled.value) balancingEnabled.value = value ?? false }, { immediate: true })
 </script>
 
 <template>
@@ -89,12 +116,18 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
       <section class="panel overview">
         <div class="overview-section">
           <span class="section-label">Operating</span>
-          <div class="state-chips">
-            <span class="state-chip"><b>BMS</b>{{ status ? bmsStateName(status.bms_state) : 'Waiting' }}</span>
-            <span class="state-chip" :class="{ ready: hvDisplay.ready }"><b>HV</b>{{ hvDisplay.detail }}</span>
-            <span class="state-chip"><b>Run</b>{{ status?.run_request ? 'Requested' : 'Off' }}</span>
-            <span class="state-chip"><b>Balance</b>{{ status?.balancing_enabled ? 'Enabled' : 'Disabled' }}</span>
+          <div class="operating-row">
+            <div class="state-chips">
+              <span class="state-chip"><b>BMS</b>{{ status ? bmsStateName(status.bms_state) : 'Waiting' }}</span>
+              <span class="state-chip" :class="{ ready: hvDisplay.ready }"><b>HV</b>{{ hvDisplay.detail }}</span>
+            </div>
+            <div class="context-control">
+              <label class="ios-switch"><input v-model="requested" type="checkbox" role="switch" :disabled="!capabilities.set_run_request || changingRunRequest" @change="setRunRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Run</span></label>
+              <small v-if="!capabilities.set_run_request">{{ controlAvailability('set_run_request') }}</small>
+              <p v-if="runResult" class="action-result inline-action-result">{{ runResult }}</p>
+            </div>
           </div>
+          <small class="context-note">Named requests only; the STM32 remains the safety authority.</small>
         </div>
         <div class="overview-section battery-overview">
           <div class="primary-metrics">
@@ -125,12 +158,12 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
       </section>
     </section>
 
-    <section class="panel"><div class="panel-heading"><div><h2>Cell voltages and balancing</h2></div><p v-if="!fresh">Values remain hidden until a complete fresh snapshot arrives.</p></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th v-for="index in 12" :key="index">C{{ index }}</th></tr></thead><tbody><tr v-for="cell in snapshot.cells" :key="cell.slave_index"><th>Slave {{ cell.slave_index }}</th><td v-for="(value, index) in cell.cell_voltage_uV" :key="index" :class="{ balancing: (cell.balance_mask & (1 << index)) !== 0 }">{{ cellVoltageV(value).toFixed(3) }} V<span v-if="(cell.balance_mask & (1 << index)) !== 0"> balancing</span></td></tr></tbody></table></div></section>
+    <section class="panel"><div class="panel-heading cell-panel-heading"><div><h2>Cell voltages and balancing</h2></div><div class="context-control"><label class="ios-switch"><input v-model="balancingEnabled" type="checkbox" role="switch" :disabled="!capabilities.set_balancing_enabled || changingBalancingEnabled" @change="setBalancingEnabled"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Balance</span></label><small v-if="!capabilities.set_balancing_enabled">{{ controlAvailability('set_balancing_enabled') }}</small><p v-if="balanceResult" class="action-result inline-action-result">{{ balanceResult }}</p><p v-if="!fresh">Values remain hidden until a complete fresh snapshot arrives.</p></div></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th v-for="index in 12" :key="index">C{{ index }}</th></tr></thead><tbody><tr v-for="cell in snapshot.cells" :key="cell.slave_index"><th>Slave {{ cell.slave_index }}</th><td v-for="(value, index) in cell.cell_voltage_uV" :key="index" :class="{ balancing: (cell.balance_mask & (1 << index)) !== 0 }">{{ cellVoltageV(value).toFixed(3) }} V<span v-if="(cell.balance_mask & (1 << index)) !== 0"> balancing</span></td></tr></tbody></table></div></section>
 
     <section class="panel"><div class="panel-heading"><div><h2>Temperatures</h2></div></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th>NTC 0</th><th>NTC 1</th><th>NTC 2</th><th>NTC 3</th><th>IC</th></tr></thead><tbody><tr v-for="temperature in snapshot.temperatures" :key="temperature.slave_index"><th>Slave {{ temperature.slave_index }}</th><td v-for="(value, index) in temperature.ntc_raw" :key="index">{{ ntcCelsius(value).toFixed(1) }} °C</td><td>{{ icCelsius(temperature.ic_temp_raw).toFixed(1) }} °C</td></tr></tbody></table></div></section>
 
     <section class="panel logging-panel"><div class="panel-heading"><div><h2>CSV logging</h2></div><p>No data is sent to the Gateway or stored on the BMS.</p></div><div class="button-row"><button class="primary" :disabled="!fresh || logging" @click="startLogging">Start logging</button><button :disabled="!logging" @click="stopLogging">Stop logging</button><button :disabled="lines.length < 2" @click="downloadCsv(lines)">Download {{ Math.max(0, lines.length - 1) }} rows</button></div></section>
 
-    <ServiceView :transport="transport" :capabilities="capabilities" :connected="connected" :run-requested="status?.run_request ?? false" :balancing-enabled="status?.balancing_enabled ?? false" :acknowledgement-pending="acknowledgementPending" :stm32-uptime-ms="status?.uptime_ms" :gateway="gateway" />
+    <ServiceView :transport="transport" :capabilities="capabilities" :connected="connected" :acknowledgement-pending="acknowledgementPending" :stm32-uptime-ms="status?.uptime_ms" :gateway="gateway" />
   </main>
 </template>
