@@ -1,7 +1,7 @@
 {
   "name": "flexbms-companion",
   "private": true,
-  "version": "0.1.30",
+  "version": "0.1.31",
   "type": "module",
   "description": "FlexBMS monitoring and service Companion",
   "scripts": {
