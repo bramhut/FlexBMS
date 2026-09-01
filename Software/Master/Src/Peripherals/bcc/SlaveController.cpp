@@ -79,6 +79,9 @@ namespace SlaveController
         // Automatic balancing is enabled by default. This remains an additional
         // user-controlled gate and never overrides normal safety conditions.
         std::atomic<bool> balancingEnabled{true};
+        bool startupDiagnosticsEnabled = true;
+        std::array<DiagnosticReport, RuntimeConfiguration::MAX_SLAVES> diagnosticReports{};
+        size_t diagnosticReportCount = 0U;
 
         uint8_t currentMeasurementSlaveIdx = 0; // Index of the slave responsible for current measurement
         bool currentMeasurementConfigured = false;
@@ -787,25 +790,60 @@ namespace SlaveController
             updateFault(CELL_BALANCING_FAULT, !commandSuccessful);
         }
 
+        uint16_t diagnosticFailureMask(const BCC_Diagnostics::diags_t &result)
+        {
+            return static_cast<uint16_t>(
+                (result.ADC1VER ? (1U << BCC_Diagnostics::ADC1VER) : 0U) |
+                (result.OVUVVER ? (1U << BCC_Diagnostics::OVUVVER) : 0U) |
+                (result.OVUVDET ? (1U << BCC_Diagnostics::OVUVDET) : 0U) |
+                (result.CTXOPEN ? (1U << BCC_Diagnostics::CTXOPEN) : 0U) |
+                (result.CELLVOLT ? (1U << BCC_Diagnostics::CELLVOLT) : 0U) |
+                (result.CONNRES ? (1U << BCC_Diagnostics::CONNRES) : 0U) |
+                (result.CTXLEAK ? (1U << BCC_Diagnostics::CTXLEAK) : 0U) |
+                (result.CURRMEAS ? (1U << BCC_Diagnostics::CURRMEAS) : 0U) |
+                (result.SHUNTNOTCONN ? (1U << BCC_Diagnostics::SHUNTNOTCONN) : 0U) |
+                (result.GPIOXOTUT ? (1U << BCC_Diagnostics::GPIOXOTUT) : 0U) |
+                (result.GPIOXOPEN ? (1U << BCC_Diagnostics::GPIOXOPEN) : 0U) |
+                (result.CBXOPEN ? (1U << BCC_Diagnostics::CBXOPEN) : 0U));
+        }
+
         bool diagnostics()
         {
-            BCC_Diagnostics::diags_t result;
+            const size_t reportCount = std::min(mSlaves.size(), diagnosticReports.size());
+            taskENTER_CRITICAL();
+            diagnosticReportCount = 0U;
+            taskEXIT_CRITICAL();
             bool succes = true;
             // Start measuring the time it takes to perform the diagnostics
             uint32_t startMicros = micros();
-            for (auto &slave : mSlaves)
+            for (size_t index = 0U; index < reportCount; ++index)
             {
+                auto &slave = mSlaves[index];
+                BCC_Diagnostics::diags_t result{};
+                uint8_t failedDiagnostic = BCC_Diagnostics::DIAGNOSTIC_NONE;
                 // If a generic issue arrises during a diagnostic, set succes to false
-                if (BCC_Diagnostics::runStartupChecks(&slave, settings.SAFETY_LIMITS, &result) != BCC_STATUS_SUCCESS)
+                const bcc_status_t diagnosticStatus = BCC_Diagnostics::runStartupChecks(
+                    &slave, settings.SAFETY_LIMITS, &result, &failedDiagnostic);
+                const uint16_t failedChecks = diagnosticFailureMask(result);
+                taskENTER_CRITICAL();
+                diagnosticReports[index] = {
+                        .cid = slave.getCID(),
+                        .failedChecks = failedChecks,
+                        .status = static_cast<uint8_t>(diagnosticStatus),
+                        .failedDiagnostic = failedDiagnostic,
+                    };
+                diagnosticReportCount = index + 1U;
+                taskEXIT_CRITICAL();
+                if (diagnosticStatus != BCC_STATUS_SUCCESS)
                 {
                     succes = false;
                 }
 
                 // Check if the result is not 0
-                if (*(reinterpret_cast<uint16_t *>(&result)))
+                if (failedChecks != 0U)
                 {
                     succes = false;
-                    PRINTF_INFO("[SC] Some diagnostics failed on CID %u: %04X\n", slave.getCID(), *(reinterpret_cast<uint16_t *>(&result)));
+                    PRINTF_INFO("[SC] Some diagnostics failed on CID %u: %04X\n", slave.getCID(), failedChecks);
                     PRINTF_INFO("  ADC1VER: %s\n", result.ADC1VER ? "FAIL" : "OK");
                     PRINTF_INFO("  OVUVVER: %s\n", result.OVUVVER ? "FAIL" : "OK");
                     PRINTF_INFO("  OVUVDET: %s\n", result.OVUVDET ? "FAIL" : "OK");
@@ -1064,7 +1102,7 @@ namespace SlaveController
                 {
                     // 5. Diagnostics
                     bool diagnosticsSuccessful = true;
-                    if (BMS_RUN_STARTUP_DIAGNOSTICS != 0U)
+                    if (startupDiagnosticsEnabled)
                     {
                         diagnosticsSuccessful = diagnostics();
                     }
@@ -1158,6 +1196,7 @@ namespace SlaveController
             settings.BATTERY_AMPHOURS = persisted.values.batteryCapacityMilliAh / 1'000.0;
             settings.INVERT_CURRENT = persisted.values.invertCurrent;
             balancingEnabled.store(persisted.values.balanceEnabled, std::memory_order_relaxed);
+            startupDiagnosticsEnabled = persisted.values.startupDiagnostics;
             currentMeasurementConfigured = false;
 
             for (const BCC::Config_t &config : settings.SLAVE_CONFIG)
@@ -1267,7 +1306,7 @@ namespace SlaveController
         }
 
         FaultManager::setWarning(FaultManager::Warning::StartupDiagnosticsBypassed,
-                                 BMS_RUN_STARTUP_DIAGNOSTICS == 0U);
+                                 !startupDiagnosticsEnabled);
 
         BCC_Communication::setup(settings.TPL_TX_TIMEOUT_MS, settings.TPL_RX_TIMEOUT_MS);
 
@@ -1448,6 +1487,15 @@ namespace SlaveController
     bool isBalancingEnabled()
     {
         return balancingEnabled.load(std::memory_order_relaxed);
+    }
+
+    bool getDiagnosticReport(uint8_t slaveIndex, DiagnosticReport &report)
+    {
+        taskENTER_CRITICAL();
+        const bool available = slaveIndex < diagnosticReportCount;
+        if (available) report = diagnosticReports[slaveIndex];
+        taskEXIT_CRITICAL();
+        return available;
     }
 
     const vector<vector<uint16_t>> &getNTCtemps()

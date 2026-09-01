@@ -91,6 +91,7 @@ namespace FlexBms::GatewayApi
             case Service::ReadRegister: return "read_register";
             case Service::GetConfig: return "get_config";
             case Service::SetConfig: return "set_config";
+            case Service::GetDiagnosticReport: return "get_diagnostic_report";
             }
             return "";
         }
@@ -357,6 +358,7 @@ namespace FlexBms::GatewayApi
             cJSON_AddBoolToObject(caps, "get_rtc", bmsServices);
             cJSON_AddBoolToObject(caps, "get_device_info", bmsServices);
             cJSON_AddBoolToObject(caps, "read_register", bmsServices);
+            cJSON_AddBoolToObject(caps, "get_diagnostic_report", bmsServices);
             cJSON_AddBoolToObject(caps, "runtime_configuration", bmsServices);
             cJSON_AddBoolToObject(caps, "wifi_configuration", Wifi::getState() != Wifi::State::Unavailable);
             cJSON_AddBoolToObject(caps, "mqtt_configuration", Wifi::allowsBmsServices());
@@ -546,6 +548,16 @@ namespace FlexBms::GatewayApi
                 argumentLength = 0U;
                 return true;
             }
+            if (std::strcmp(name->valuestring, "get_diagnostic_report") == 0)
+            {
+                uint32_t slaveIndex = 0U;
+                if (!objectHasExactly(args, {"slave_index"}) ||
+                    !jsonInteger(cJSON_GetObjectItemCaseSensitive(args, "slave_index"), 31U, slaveIndex)) return false;
+                service = Service::GetDiagnosticReport;
+                arguments[0] = static_cast<uint8_t>(slaveIndex);
+                argumentLength = 1U;
+                return true;
+            }
             if (std::strcmp(name->valuestring, "set_config") == 0)
             {
                 uint32_t slaveCount = 0U;
@@ -553,7 +565,7 @@ namespace FlexBms::GatewayApi
                 uint32_t shuntResistance = 0U;
                 uint32_t batteryCapacity = 0U;
                 cJSON *invertCurrent = cJSON_GetObjectItemCaseSensitive(args, "invert_current");
-                if (!objectHasExactly(args, {"slave_count", "current_sense_slave", "shunt_resistance_uohm", "battery_capacity_mah", "invert_current", "balance_enabled"}) ||
+                if (!objectHasExactly(args, {"slave_count", "current_sense_slave", "shunt_resistance_uohm", "battery_capacity_mah", "invert_current", "balance_enabled", "startup_diagnostics"}) ||
                     !jsonInteger(cJSON_GetObjectItemCaseSensitive(args, "slave_count"), 32U, slaveCount) ||
                     !jsonInteger(cJSON_GetObjectItemCaseSensitive(args, "current_sense_slave"), 32U, currentSenseSlave) ||
                     !jsonInteger(cJSON_GetObjectItemCaseSensitive(args, "shunt_resistance_uohm"), UINT32_MAX, shuntResistance) ||
@@ -574,7 +586,10 @@ namespace FlexBms::GatewayApi
                 cJSON *balanceEnabled = cJSON_GetObjectItemCaseSensitive(args, "balance_enabled");
                 if (!cJSON_IsBool(balanceEnabled)) return false;
                 arguments[11] = cJSON_IsTrue(balanceEnabled) ? 1U : 0U;
-                argumentLength = 12U;
+                cJSON *startupDiagnostics = cJSON_GetObjectItemCaseSensitive(args, "startup_diagnostics");
+                if (!cJSON_IsBool(startupDiagnostics)) return false;
+                arguments[12] = cJSON_IsTrue(startupDiagnostics) ? 1U : 0U;
+                argumentLength = 13U;
                 return true;
             }
             if (std::strcmp(name->valuestring, "read_register") == 0)
@@ -1076,7 +1091,7 @@ namespace FlexBms::GatewayApi
                                                                      (static_cast<uint32_t>(data[2]) << 16U) |
                                                                      (static_cast<uint32_t>(data[3]) << 24U));
         }
-        else if (result == ServiceResult::Ok && pendingService == Service::GetConfig && dataLength == 17U)
+        else if (result == ServiceResult::Ok && pendingService == Service::GetConfig && dataLength == 18U)
         {
             cJSON *value = cJSON_AddObjectToObject(root, "data");
             const char *reason = data[0] == 0U ? "valid" : data[0] == 1U ? "blank" : data[0] == 2U ? "version_mismatch" : "corrupt";
@@ -1091,6 +1106,16 @@ namespace FlexBms::GatewayApi
                                                                       (static_cast<uint32_t>(data[13]) << 16U) | (static_cast<uint32_t>(data[14]) << 24U));
             cJSON_AddBoolToObject(value, "invert_current", data[15] != 0U);
             cJSON_AddBoolToObject(value, "balance_enabled", data[16] != 0U);
+            cJSON_AddBoolToObject(value, "startup_diagnostics", data[17] != 0U);
+        }
+        else if (result == ServiceResult::Ok && pendingService == Service::GetDiagnosticReport && dataLength == 6U)
+        {
+            cJSON *value = cJSON_AddObjectToObject(root, "data");
+            cJSON_AddNumberToObject(value, "slave_index", data[0]);
+            cJSON_AddNumberToObject(value, "cid", data[1]);
+            cJSON_AddNumberToObject(value, "failed_checks", static_cast<uint16_t>(data[2]) | (static_cast<uint16_t>(data[3]) << 8U));
+            cJSON_AddNumberToObject(value, "status_code", data[4]);
+            cJSON_AddNumberToObject(value, "failed_diagnostic", data[5]);
         }
         (void)sendJsonTo(pendingServiceSocket, root);
         serviceInFlight = false;
@@ -1138,8 +1163,11 @@ namespace FlexBms::GatewayApi
         cJSON *getConfig = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"get_config\",\"arguments\":{}}" );
         const bool getConfigAccepted = parseService(getConfig, service, arguments, length) && service == Service::GetConfig && length == 0U;
         cJSON_Delete(getConfig);
-        cJSON *setConfig = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"set_config\",\"arguments\":{\"slave_count\":1,\"current_sense_slave\":1,\"shunt_resistance_uohm\":10000,\"battery_capacity_mah\":314000,\"invert_current\":false,\"balance_enabled\":true}}" );
-        const bool setConfigAccepted = parseService(setConfig, service, arguments, length) && service == Service::SetConfig && length == 12U && arguments[0] == 1U && arguments[1] == 1U && arguments[11] == 1U;
+        cJSON *getDiagnosticReport = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"get_diagnostic_report\",\"arguments\":{\"slave_index\":0}}");
+        const bool getDiagnosticReportAccepted = parseService(getDiagnosticReport, service, arguments, length) && service == Service::GetDiagnosticReport && length == 1U && arguments[0] == 0U;
+        cJSON_Delete(getDiagnosticReport);
+        cJSON *setConfig = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"set_config\",\"arguments\":{\"slave_count\":1,\"current_sense_slave\":1,\"shunt_resistance_uohm\":10000,\"battery_capacity_mah\":314000,\"invert_current\":false,\"balance_enabled\":true,\"startup_diagnostics\":true}}" );
+        const bool setConfigAccepted = parseService(setConfig, service, arguments, length) && service == Service::SetConfig && length == 13U && arguments[0] == 1U && arguments[1] == 1U && arguments[11] == 1U && arguments[12] == 1U;
         cJSON_Delete(setConfig);
         cJSON *invalidCredentials = cJSON_Parse("{\"v\":1,\"type\":\"wifi_configure\",\"request_id\":\"x\",\"ssid\":\"\",\"password\":\"x\"}");
         const char *ssid = nullptr;
@@ -1155,6 +1183,6 @@ namespace FlexBms::GatewayApi
         const bool statusMessageValid = cJSON_IsString(messageType) && std::strcmp(messageType->valuestring, "bms_status") == 0 &&
                                         cJSON_IsObject(messageStatus) && cJSON_HasObjectItem(messageStatus, "measurements_fresh");
         cJSON_Delete(statusMessage);
-        return serviceRejected && getRtcAccepted && deviceInfoAccepted && getConfigAccepted && setConfigAccepted && credentialsRejected && scanAccepted && statusMessageValid;
+        return serviceRejected && getRtcAccepted && deviceInfoAccepted && getConfigAccepted && getDiagnosticReportAccepted && setConfigAccepted && credentialsRejected && scanAccepted && statusMessageValid;
     }
 }

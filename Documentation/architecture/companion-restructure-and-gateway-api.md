@@ -205,6 +205,7 @@ The common service names are:
 | `read_register` | `slave_index: number`, `register: number` | `slave_index`, `register`, `value` |
 | `get_config` | none | persisted runtime configuration |
 | `set_config` | complete runtime configuration | none; STM32 reboots after saving |
+| `get_diagnostic_report` | `slave_index: number` | latest BCC diagnostic report for that slave |
 
 Actions show `Accepted`, `Denied`, `Invalid`, `Busy`, or `Transport error`.
 `Accepted` means the STM32 has invoked the request; the following snapshot and
@@ -446,7 +447,7 @@ network command is accepted.
   "v": 1,
   "type": "service",
   "request_id": "opaque client string up to 64 ASCII characters",
-  "service": "set_run_request | set_balancing_enabled | acknowledge_faults | get_rtc | get_device_info | read_register | get_config | set_config",
+  "service": "set_run_request | set_balancing_enabled | acknowledge_faults | get_rtc | get_device_info | read_register | get_config | set_config | get_diagnostic_report",
   "arguments": {}
 }
 ```
@@ -455,7 +456,11 @@ network command is accepted.
 integers: `slave_index` and `register` are 0--255. `set_run_request` and
 `set_balancing_enabled` require exactly `{ "enabled": true | false }`; services
 with no arguments require `{}`. `set_config` requires the complete runtime
-configuration, including `balance_enabled`.
+configuration, including `balance_enabled` and `startup_diagnostics`.
+`get_diagnostic_report` returns the BCC/CID, failed-check bitmask, low-level
+status code, and the diagnostic that was executing when a driver failure
+occurred. The report is held in STM32 RAM until the next startup diagnostic
+run.
 When the open setup/recovery AP is active, valid BMS service requests receive
 `denied` locally and do not reach UART.
 

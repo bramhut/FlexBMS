@@ -1,24 +1,54 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ServiceView from './ServiceView.vue'
 import RecentChangesList from './RecentChangesList.vue'
-import { bmsFaultNames, bmsStateName, cellVoltageV, currentA, hvReasonNames, hvStateName, icCelsius, ntcCelsius, setBits, socPercent, warningDisplayNames } from '@/shared/model'
-import { csvHeader, csvRow, downloadCsv } from '@/shared/csv'
+import { bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, hvReasonNames, hvStateName, icCelsius, ntcCelsius, setBits, socPercent, warningDisplayNames } from '@/shared/model'
 import { serviceResultLabel } from '@/shared/service'
-import type { BmsTransport, Capabilities, GatewayStatus, RecordedControllerEvent, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
+import { advancingUnixTime, advancingUptimeMs, formatUptime } from '@/shared/time'
+import type { BccDiagnosticReport, BmsTransport, Capabilities, GatewayStatus, RecordedControllerEvent, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
 
-const props = defineProps<{ snapshot: Snapshot | null; status: Status | null; transport: BmsTransport; capabilities: Capabilities; connected: boolean; gateway?: GatewayStatus; recentEvents: RecordedControllerEvent[] }>()
+const props = defineProps<{ snapshot: Snapshot | null; status: Status | null; transport: BmsTransport; capabilities: Capabilities; connected: boolean; gateway?: GatewayStatus; recentEvents: RecordedControllerEvent[]; diagnosticReports: BccDiagnosticReport[]; deviceTimeUnixS: number | null; deviceTimeSampledAt: number }>()
 const emit = defineEmits<{ showAll: [] }>()
-const lines = ref<string[]>([])
-const logging = ref(false)
 const requested = ref(false)
 const changingRunRequest = ref(false)
 const runResult = ref('')
+const clockNow = ref(Date.now())
+const stm32UptimeSampledAt = ref(0)
+const gatewayUptimeSampledAt = ref(0)
+const previousStm32UptimeMs = ref<number>()
+const previousGatewayUptimeMs = ref<number>()
+const stm32Restarted = ref(false)
+const gatewayRestarted = ref(false)
+const formattedDeviceTime = computed(() => {
+  if (props.deviceTimeUnixS === null) return props.connected ? 'Waiting for device time.' : 'Connect to read device time.'
+  const unixTime = advancingUnixTime(props.deviceTimeUnixS, props.deviceTimeSampledAt, clockNow.value)
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(unixTime * 1000))
+})
+const formattedStm32Uptime = computed(() => {
+  if (!props.connected) return 'Not connected.'
+  if (props.status?.uptime_ms === undefined) return 'Waiting for BMS status.'
+  return formatUptime(advancingUptimeMs(props.status.uptime_ms, stm32UptimeSampledAt.value, clockNow.value))
+})
+const formattedGatewayUptime = computed(() => {
+  if (!props.gateway) return 'Gateway only.'
+  if (!props.connected) return 'Not connected.'
+  if (props.gateway.gateway_uptime_ms === undefined) return 'Waiting for Gateway status.'
+  return formatUptime(advancingUptimeMs(props.gateway.gateway_uptime_ms, gatewayUptimeSampledAt.value, clockNow.value))
+})
 const fresh = computed(() => Boolean(props.snapshot && props.status?.measurements_fresh))
 const measurement = (value: string) => fresh.value ? value : '—'
-type AttentionItem = { label: string; domain: 'BMS' | 'HV' | 'System'; state: 'live' | 'pending' | 'warning' }
+type AttentionItem = { label: string; domain: 'BMS' | 'HV' | 'System'; state: 'live' | 'pending' | 'warning'; detail?: string }
 
 const friendlyName = (name: string) => name.toLowerCase().replace(/_/g, ' ').replace(/\b[a-z]/g, (letter: string) => letter.toUpperCase())
+const diagnosticReportSummary = computed(() => {
+  if (props.diagnosticReports.length === 0) return 'Detailed report unavailable; open Diagnostics after the BMS reconnects.'
+  return props.diagnosticReports.map(report => {
+    const checks = bccDiagnosticNames.filter((_, bit) => (report.failed_checks & (1 << bit)) !== 0)
+    const status = report.status_code === 0 ? '' : `${bccDiagnosticStatusNames[report.status_code] ?? `BCC status ${report.status_code}`} during ${bccDiagnosticNames[report.failed_diagnostic] ?? 'diagnostic execution'}`
+    const detail = [...checks, status].filter(Boolean).join('; ')
+    return `Slave ${report.slave_index + 1}: ${detail || 'no failed check recorded'}`
+  }).join(' · ')
+})
 const attentionItems = computed<AttentionItem[]>(() => {
   const status = props.status
   if (!status) return []
@@ -26,8 +56,8 @@ const attentionItems = computed<AttentionItem[]>(() => {
   const addErrors = (active: number, latched: number, names: string[], domain: 'BMS' | 'HV') => {
     names.forEach((name, bit) => {
       const bitMask = 1 << bit
-      if ((active & bitMask) !== 0) items.push({ label: friendlyName(name), domain, state: 'live' })
-      else if ((latched & bitMask) !== 0) items.push({ label: friendlyName(name), domain, state: 'pending' })
+      if ((active & bitMask) !== 0) items.push({ label: friendlyName(name), domain, state: 'live', ...(name === 'BCC_DIAGNOSTICS' ? { detail: diagnosticReportSummary.value } : {}) })
+      else if ((latched & bitMask) !== 0) items.push({ label: friendlyName(name), domain, state: 'pending', ...(name === 'BCC_DIAGNOSTICS' ? { detail: diagnosticReportSummary.value } : {}) })
     })
   }
   addErrors(status.bms_active_errors, status.bms_latched_errors, bmsFaultNames, 'BMS')
@@ -87,15 +117,22 @@ async function setRunRequest(): Promise<void> {
   changingRunRequest.value = false
   if (response.result !== 'ok') requested.value = props.status?.run_request ?? false
 }
-function appendSnapshot(snapshot: Snapshot): void {
-  if (!snapshot.status.measurements_fresh) return
-  if (lines.value.length === 0) lines.value = [csvHeader(snapshot).join(',')]
-  lines.value.push(csvRow(snapshot).join(','))
-}
-function startLogging(): void { if (props.snapshot && fresh.value) { lines.value = []; appendSnapshot(props.snapshot); logging.value = true } }
-function stopLogging(): void { logging.value = false }
-watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendSnapshot(snapshot) })
 watch(() => props.status?.run_request, value => { if (!changingRunRequest.value) requested.value = value ?? false }, { immediate: true })
+watch(() => props.status?.uptime_ms, uptimeMs => {
+  if (uptimeMs === undefined) return
+  if (previousStm32UptimeMs.value !== undefined && uptimeMs < previousStm32UptimeMs.value &&
+      !(previousStm32UptimeMs.value > 0xf0000000 && uptimeMs < 0x0fffffff)) stm32Restarted.value = true
+  previousStm32UptimeMs.value = uptimeMs
+  stm32UptimeSampledAt.value = Date.now()
+}, { immediate: true })
+watch(() => props.gateway?.gateway_uptime_ms, uptimeMs => {
+  if (uptimeMs === undefined) return
+  if (previousGatewayUptimeMs.value !== undefined && uptimeMs < previousGatewayUptimeMs.value) gatewayRestarted.value = true
+  previousGatewayUptimeMs.value = uptimeMs
+  gatewayUptimeSampledAt.value = Date.now()
+}, { immediate: true })
+const clockTimer = window.setInterval(() => { clockNow.value = Date.now() }, 1000)
+onBeforeUnmount(() => { window.clearInterval(clockTimer) })
 </script>
 
 <template>
@@ -129,12 +166,16 @@ watch(() => props.status?.run_request, value => { if (!changingRunRequest.value)
           </div>
           <div class="cell-summary"><span>Cells</span><b>{{ snapshot ? measurement(`${cellVoltageV(snapshot.pack.min_cell_uV).toFixed(3)}–${cellVoltageV(snapshot.pack.max_cell_uV).toFixed(3)} V`) : '—' }}</b><small>{{ snapshot ? measurement(`Δ ${cellDeltaMv.toFixed(1)} mV`) : '—' }} · {{ snapshot ? measurement(`NTC ${ntcCelsius(snapshot.pack.min_ntc_raw).toFixed(1)}–${ntcCelsius(snapshot.pack.max_ntc_raw).toFixed(1)} °C`) : '—' }} · {{ snapshot ? measurement(`IC ${icCelsius(snapshot.pack.min_ic_raw).toFixed(1)}–${icCelsius(snapshot.pack.max_ic_raw).toFixed(1)} °C`) : '—' }}</small></div>
         </div>
+        <div class="overview-section device-status-section">
+          <span class="section-label">Device status</span>
+          <dl class="clock-details"><div><dt>Device time</dt><dd>{{ formattedDeviceTime }}</dd></div><div><dt>BMS uptime</dt><dd>{{ formattedStm32Uptime }}</dd><small v-if="stm32Restarted">Restart detected in this Companion session.</small></div><div><dt>Gateway uptime</dt><dd>{{ formattedGatewayUptime }}</dd><small v-if="gatewayRestarted">Restart detected in this Companion session.</small></div></dl>
+        </div>
       </section>
       <section class="panel attention">
         <div class="panel-heading"><div><h2>Status</h2></div><p v-if="status && attentionItems.length">{{ liveIssueCount ? `${liveIssueCount} live issue${liveIssueCount === 1 ? '' : 's'}` : '' }}{{ liveIssueCount && (pendingIssueCount || warningCount) ? ' · ' : '' }}{{ pendingIssueCount ? `${pendingIssueCount} acknowledgement pending` : '' }}{{ pendingIssueCount && warningCount ? ' · ' : '' }}{{ warningCount ? `${warningCount} warning${warningCount === 1 ? '' : 's'}` : '' }}</p></div>
         <p v-if="!status" class="attention-waiting">Waiting for BMS status.</p>
         <div v-else-if="attentionItems.length === 0" class="attention-ok"><span aria-hidden="true">✓</span><div><strong>System OK</strong><small>No active errors, acknowledgement pending, or warnings.</small></div></div>
-        <div v-else class="attention-list"><article v-for="item in attentionItems" :key="`${item.domain}-${item.label}`" class="attention-item" :data-state="item.state"><span class="attention-icon" aria-hidden="true">{{ item.state === 'warning' ? '▲' : '!' }}</span><div><strong>{{ item.label }}</strong><small>{{ item.state === 'live' ? 'Live error' : item.state === 'pending' ? 'Acknowledgement pending' : 'Warning' }} · {{ item.domain }}</small></div></article></div>
+        <div v-else class="attention-list"><article v-for="item in attentionItems" :key="`${item.domain}-${item.label}`" class="attention-item" :data-state="item.state"><span class="attention-icon" aria-hidden="true">{{ item.state === 'warning' ? '▲' : '!' }}</span><div><strong>{{ item.label }}</strong><small>{{ item.detail ?? `${item.state === 'live' ? 'Live error' : item.state === 'pending' ? 'Acknowledgement pending' : 'Warning'} · ${item.domain}` }}</small></div></article></div>
       </section>
       <section class="panel activity">
         <div class="panel-heading"><div><h2>Activity</h2></div><p>This Companion session</p></div>
@@ -150,8 +191,6 @@ watch(() => props.status?.run_request, value => { if (!changingRunRequest.value)
 
     <section class="panel"><div class="panel-heading"><div><h2>Temperatures</h2></div></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th>NTC 0</th><th>NTC 1</th><th>NTC 2</th><th>NTC 3</th><th>IC</th></tr></thead><tbody><tr v-for="temperature in snapshot.temperatures" :key="temperature.slave_index"><th>Slave {{ temperature.slave_index }}</th><td v-for="(value, index) in temperature.ntc_raw" :key="index">{{ ntcCelsius(value).toFixed(1) }} °C</td><td>{{ icCelsius(temperature.ic_temp_raw).toFixed(1) }} °C</td></tr></tbody></table></div></section>
 
-    <section class="panel logging-panel"><div class="panel-heading"><div><h2>CSV logging</h2></div><p>No data is sent to the Gateway or stored on the BMS.</p></div><div class="button-row"><button class="primary" :disabled="!fresh || logging" @click="startLogging">Start logging</button><button :disabled="!logging" @click="stopLogging">Stop logging</button><button :disabled="lines.length < 2" @click="downloadCsv(lines)">Download {{ Math.max(0, lines.length - 1) }} rows</button></div></section>
-
-    <ServiceView :transport="transport" :capabilities="capabilities" :connected="connected" :acknowledgement-pending="acknowledgementPending" :stm32-uptime-ms="status?.uptime_ms" :gateway="gateway" />
+    <ServiceView :transport="transport" :capabilities="capabilities" :connected="connected" :acknowledgement-pending="acknowledgementPending" />
   </main>
 </template>

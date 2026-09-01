@@ -74,19 +74,20 @@ test('direct USB encodes and decodes runtime configuration', async () => {
     const request = writes.flatMap(frame => decoder.consume(frame)).find(frame => frame.type === messageType.serviceRequest)
     assert.ok(request)
     assert.deepEqual(Array.from(request!.payload), [serviceId.getConfig])
-    const data = new Uint8Array(17)
+    const data = new Uint8Array(18)
     data[0] = 0
-    writeLe16(data, 1, 2)
-    writeLe16(data, 3, 2)
+    writeLe16(data, 1, 3)
+    writeLe16(data, 3, 3)
     data[5] = 1
     data[6] = 1
     writeLe32(data, 7, 10000)
     writeLe32(data, 11, 314000)
     data[16] = 1
+    data[17] = 1
     reader.enqueue(encodeFrame({ type: messageType.serviceResponse, sequence: request!.sequence, payload: Uint8Array.of(serviceId.getConfig, 0, ...data) }))
     const response = await responsePromise
     assert.equal(response.result, 'ok')
-    assert.deepEqual(response.data, { reason: 'valid', expected_version: 2, stored_version: 2, slave_count: 1, current_sense_slave: 1, shunt_resistance_uohm: 10000, battery_capacity_mah: 314000, invert_current: false, balance_enabled: true })
+    assert.deepEqual(response.data, { reason: 'valid', expected_version: 3, stored_version: 3, slave_count: 1, current_sense_slave: 1, shunt_resistance_uohm: 10000, battery_capacity_mah: 314000, invert_current: false, balance_enabled: true, startup_diagnostics: true })
     transport.disconnect()
   })
 })
@@ -95,14 +96,30 @@ test('direct USB encodes balance-enabled runtime configuration', async () => {
   await withSerial(async ({ reader, writes }) => {
     const transport = new WebSerialTransport()
     await transport.connect()
-    const responsePromise = transport.request('set_config', { slave_count: 1, current_sense_slave: 1, shunt_resistance_uohm: 10000, battery_capacity_mah: 314000, invert_current: false, balance_enabled: false })
+    const responsePromise = transport.request('set_config', { slave_count: 1, current_sense_slave: 1, shunt_resistance_uohm: 10000, battery_capacity_mah: 314000, invert_current: false, balance_enabled: false, startup_diagnostics: true })
     await new Promise(resolve => setTimeout(resolve, 0))
     const decoder = new FrameDecoder()
     const request = writes.flatMap(frame => decoder.consume(frame)).find(frame => frame.type === messageType.serviceRequest)
     assert.ok(request)
-    assert.deepEqual(Array.from(request!.payload), [serviceId.setConfig, 1, 1, 0x10, 0x27, 0, 0, 0x90, 0xca, 4, 0, 0, 0])
+    assert.deepEqual(Array.from(request!.payload), [serviceId.setConfig, 1, 1, 0x10, 0x27, 0, 0, 0x90, 0xca, 4, 0, 0, 0, 1])
     reader.enqueue(encodeFrame({ type: messageType.serviceResponse, sequence: request!.sequence, payload: Uint8Array.of(serviceId.setConfig, 0) }))
     assert.equal((await responsePromise).result, 'ok')
+    transport.disconnect()
+  })
+})
+
+test('direct USB decodes a per-slave BCC diagnostic report', async () => {
+  await withSerial(async ({ reader, writes }) => {
+    const transport = new WebSerialTransport()
+    await transport.connect()
+    const responsePromise = transport.request('get_diagnostic_report', { slave_index: 0 })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const decoder = new FrameDecoder()
+    const request = writes.flatMap(frame => decoder.consume(frame)).find(frame => frame.type === messageType.serviceRequest)
+    assert.ok(request)
+    assert.deepEqual(Array.from(request!.payload), [serviceId.getDiagnosticReport, 0])
+    reader.enqueue(encodeFrame({ type: messageType.serviceResponse, sequence: request!.sequence, payload: Uint8Array.of(serviceId.getDiagnosticReport, 0, 0, 1, 0x10, 0, 3, 2) }))
+    assert.deepEqual((await responsePromise).data, { slave_index: 0, cid: 1, failed_checks: 0x10, status_code: 3, failed_diagnostic: 2 })
     transport.disconnect()
   })
 })

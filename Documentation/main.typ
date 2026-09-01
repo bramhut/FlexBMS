@@ -834,7 +834,7 @@ reserved and zero.
 `STARTUP_DIAGNOSTICS_BYPASSED`, and 2 `BATTERY_VOLTAGE_MISMATCH_OFF`.
 Bits 3--31 are reserved and zero. `WATCHDOG_RESET` is a recorded warning that
 an accepted acknowledgement clears. `STARTUP_DIAGNOSTICS_BYPASSED` remains
-present while that build configuration is active; `BATTERY_VOLTAGE_MISMATCH_OFF`
+present while startup diagnostics are disabled in runtime configuration; `BATTERY_VOLTAGE_MISMATCH_OFF`
 remains present while the measurements disagree.
 `WATCHDOG_RESET` is set when this STM32 boot followed an independent or window
 watchdog reset. Gateway liveness, CAN condition, near-limit indication, and
@@ -927,8 +927,9 @@ accepted and invoked the requested operation; STATUS and EVENT show the resultin
   [`0x08`], [GET_RTC], [none], [`unix_time_s:u32` UTC],
   [`0x09`], [SET_BALANCING_ENABLED], [`enabled:u8` (`0` or `1`)], [none],
   [`0x0A`], [COMMIT_STM32_BOOTLOADER], [none], [none (successful request enters ROM immediately)],
-  [`0x0B`], [GET_CONFIG], [none], [17-byte runtime configuration status and values],
-  [`0x0C`], [SET_CONFIG], [`slave_count:u8, current_sense_slave:u8, shunt_resistance_uohm:u32, battery_capacity_mah:u32, invert_current:u8, balance_enabled:u8`], [none; the STM32 resets after responding `OK`],
+  [`0x0B`], [GET_CONFIG], [none], [18-byte runtime configuration status and values],
+  [`0x0C`], [SET_CONFIG], [`slave_count:u8, current_sense_slave:u8, shunt_resistance_uohm:u32, battery_capacity_mah:u32, invert_current:u8, balance_enabled:u8, startup_diagnostics:u8`], [none; the STM32 resets after responding `OK`],
+  [`0x0D`], [GET_DIAGNOSTIC_REPORT], [`slave_index:u8`], [latest startup diagnostic result for that BCC],
 )
 
 `SET_RUN_REQUEST(0)` immediately removes the request through the STM32 PCC path. A request of 1
@@ -947,8 +948,16 @@ the value in runtime configuration. It applies immediately after the flash write
 does not reboot the STM32. An enabled value does not guarantee that any cell is balancing: the
 STM32 still requires a running, fault-free BMS, fresh measurements, and its configured
 cell-voltage thresholds. A disabled value inhibits the BCC balancing drivers on the next BCC
-loop. New configuration defaults enable balancing. The configuration schema version is 2;
-version-1 records are not migrated and require resubmission through `SET_CONFIG`.
+loop. New configuration defaults enable balancing. The configuration schema version is 3.
+Version-2 records are accepted with startup diagnostics enabled as the safe legacy default and
+are upgraded to version 3 when next saved through `SET_CONFIG`. `startup_diagnostics` defaults
+to 1; setting it to 0 skips only the startup BCC diagnostics routine for debugging or bench
+testing, while all other measurement, fault, balancing, and HV safety checks remain active.
+
+`GET_DIAGNOSTIC_REPORT` returns the slave index, BCC CID, failed-check bitmask,
+low-level status code, and the diagnostic that was executing when a driver
+failure occurred. The latest report is held in STM32 RAM until the next
+startup diagnostic run.
 
 `PREPARE_STM32_BOOTLOADER` and `COMMIT_STM32_BOOTLOADER` form the STM32-update handoff.
 The Gateway must already have staged and CRC-checked the image. The STM32 validates the prepare

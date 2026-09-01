@@ -18,6 +18,11 @@ namespace RuntimeConfiguration
         constexpr uint32_t RECORD_MAGIC = 0x46424331UL; // "FBC1"
         constexpr uint32_t MICROOHMS_PER_OHM = 1'000'000U;
 
+        bool isSupportedVersion(uint16_t version)
+        {
+            return version == CONFIG_VERSION || version == LEGACY_CONFIG_VERSION;
+        }
+
         struct Record
         {
             uint32_t magic;
@@ -43,6 +48,7 @@ namespace RuntimeConfiguration
             .batteryCapacityMilliAh = 314'000U,
             .invertCurrent = false,
             .balanceEnabled = true,
+            .startupDiagnostics = true,
         };
 
         uint32_t crc32(const uint8_t *data, size_t length)
@@ -86,6 +92,9 @@ namespace RuntimeConfiguration
                 .batteryCapacityMilliAh = record.batteryCapacityMilliAh,
                 .invertCurrent = record.invertCurrent != 0U,
                 .balanceEnabled = record.balanceEnabled != 0U,
+                // Version 2 had no persisted startup-diagnostics field. Treat
+                // legacy records as the safe, enabled configuration.
+                .startupDiagnostics = record.version == LEGACY_CONFIG_VERSION || (record.reservedData & 1U) != 0U,
             };
         }
 
@@ -101,6 +110,7 @@ namespace RuntimeConfiguration
             record.shuntResistanceMicroOhms = values.shuntResistanceMicroOhms;
             record.batteryCapacityMilliAh = values.batteryCapacityMilliAh;
             record.balanceEnabled = values.balanceEnabled ? 1U : 0U;
+            record.reservedData = values.startupDiagnostics ? 1U : 0U;
             record.crc = crc32(reinterpret_cast<const uint8_t *>(&record), offsetof(Record, crc));
             return record;
         }
@@ -172,8 +182,8 @@ namespace RuntimeConfiguration
         const uint32_t secondAddress = CONFIG_BASE_ADDRESS + SLOT_BYTES;
         const Record &first = recordAt(firstAddress);
         const Record &second = recordAt(secondAddress);
-        const bool firstValid = isRecordValid(first) && first.version == CONFIG_VERSION && validate(valuesFromRecord(first));
-        const bool secondValid = isRecordValid(second) && second.version == CONFIG_VERSION && validate(valuesFromRecord(second));
+        const bool firstValid = isRecordValid(first) && isSupportedVersion(first.version) && validate(valuesFromRecord(first));
+        const bool secondValid = isRecordValid(second) && isSupportedVersion(second.version) && validate(valuesFromRecord(second));
 
         if (firstValid || secondValid)
         {
@@ -192,7 +202,7 @@ namespace RuntimeConfiguration
         const Record *metadata = nullptr;
         if (!firstBlank && isRecordValid(first)) metadata = &first;
         if (!secondBlank && isRecordValid(second) && (metadata == nullptr || second.generation >= metadata->generation)) metadata = &second;
-        if (metadata != nullptr && metadata->version != CONFIG_VERSION)
+        if (metadata != nullptr && !isSupportedVersion(metadata->version))
         {
             return {LoadStatus::VersionMismatch, metadata->version, {}};
         }
@@ -208,8 +218,8 @@ namespace RuntimeConfiguration
         const uint32_t secondAddress = CONFIG_BASE_ADDRESS + SLOT_BYTES;
         const Record &first = recordAt(firstAddress);
         const Record &second = recordAt(secondAddress);
-        const bool firstValid = isRecordValid(first) && first.version == CONFIG_VERSION && validate(valuesFromRecord(first));
-        const bool secondValid = isRecordValid(second) && second.version == CONFIG_VERSION && validate(valuesFromRecord(second));
+        const bool firstValid = isRecordValid(first) && isSupportedVersion(first.version) && validate(valuesFromRecord(first));
+        const bool secondValid = isRecordValid(second) && isSupportedVersion(second.version) && validate(valuesFromRecord(second));
         const uint32_t generation = (firstValid && secondValid) ? (first.generation >= second.generation ? first.generation : second.generation) + 1U :
                                      (firstValid ? first.generation + 1U : (secondValid ? second.generation + 1U : 1U));
         const uint32_t targetAddress = firstValid && (!secondValid || first.generation >= second.generation) ? secondAddress :

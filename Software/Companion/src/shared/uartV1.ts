@@ -14,7 +14,7 @@ export const messageType = {
   event: 0x12,
 } as const
 
-export const serviceId = { getStatus: 0x01, setRunRequest: 0x02, acknowledgeFaults: 0x03, readRegister: 0x04, setRtc: 0x05, getDeviceInfo: 0x06, enterStm32Bootloader: 0x07, getRtc: 0x08, setBalancingEnabled: 0x09, getConfig: 0x0b, setConfig: 0x0c } as const
+export const serviceId = { getStatus: 0x01, setRunRequest: 0x02, acknowledgeFaults: 0x03, readRegister: 0x04, setRtc: 0x05, getDeviceInfo: 0x06, enterStm32Bootloader: 0x07, getRtc: 0x08, setBalancingEnabled: 0x09, getConfig: 0x0b, setConfig: 0x0c, getDiagnosticReport: 0x0d } as const
 
 export type UartV1Frame = { type: number; sequence: number; payload: Uint8Array }
 

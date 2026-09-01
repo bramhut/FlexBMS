@@ -22,6 +22,14 @@ namespace SlaveController
         bcc_status_t status;
     };
 
+    struct DiagnosticReport
+    {
+        uint8_t cid{};
+        uint16_t failedChecks{};
+        uint8_t status{};
+        uint8_t failedDiagnostic{0xFFU};
+    };
+
     /*! @brief Coherent battery data and directional permissions for inverter CAN. */
     struct BatteryCanSnapshot
     {
@@ -166,6 +174,9 @@ namespace SlaveController
     // gate and never overrides normal balancing safety conditions.
     void setBalancingEnabled(bool enabled);
     bool isBalancingEnabled();
+
+    /*! @brief Return the most recent startup diagnostic result for one slave. */
+    bool getDiagnosticReport(uint8_t slaveIndex, DiagnosticReport &report);
 
     /*!
      * @brief Get the cell voltages per slave [uV]

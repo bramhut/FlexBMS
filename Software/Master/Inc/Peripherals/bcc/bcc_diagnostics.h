@@ -106,6 +106,24 @@
 namespace BCC_Diagnostics
 {
 
+    enum DiagnosticId : uint8_t
+    {
+        ADC1VER = 0U,
+        OVUVVER,
+        OVUVDET,
+        CTXOPEN,
+        CELLVOLT,
+        CONNRES,
+        CTXLEAK,
+        CURRMEAS,
+        SHUNTNOTCONN,
+        GPIOXOTUT,
+        GPIOXOPEN,
+        CBXOPEN,
+        DIAGNOSTIC_COUNT,
+        DIAGNOSTIC_NONE = 0xFFU,
+    };
+
     /* Enum types definition. */
     /*!
      * @addtogroup enum_group
@@ -579,7 +597,8 @@ namespace BCC_Diagnostics
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t runChecks(BCC *bcc, diags_t funcs, SafetyLimits_t safetyLimits, diags_t *result);
+    bcc_status_t runChecks(BCC *bcc, diags_t funcs, SafetyLimits_t safetyLimits, diags_t *result,
+                           uint8_t *failedDiagnostic = nullptr);
 
     /*!
      * @brief This function runs the startup diagnostics.
@@ -591,5 +610,6 @@ namespace BCC_Diagnostics
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t runStartupChecks(BCC *bcc, SafetyLimits_t safetyLimits, diags_t *result);
+    bcc_status_t runStartupChecks(BCC *bcc, SafetyLimits_t safetyLimits, diags_t *result,
+                                  uint8_t *failedDiagnostic = nullptr);
 }

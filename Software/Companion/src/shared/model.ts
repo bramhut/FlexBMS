@@ -11,6 +11,8 @@ export const valueOrStale = (value: string, fresh: boolean) => fresh ? value : '
 export const bmsStateName = (value: number) => ['Starting', 'Ready', 'Running', 'Error', 'Critical'][value] ?? `Unknown (${value})`
 export const hvStateName = (value: number) => ['Off', 'Self-test', 'Precharge', 'Contactor close', 'Run'][value] ?? `Unknown (${value})`
 export const bmsFaultNames = ['CONFIGURATION_INVALID', 'SLAVE_UNAVAILABLE', 'BCC_DIAGNOSTICS', 'CELL_VOLTAGE_LIMIT', 'THERMAL_LIMIT', 'CURRENT_LIMIT', 'BCC_INTEGRITY', 'ADC_FAULT', 'BALANCING_HARDWARE_FAULT', 'BCC_COMMUNICATION', 'NO_CONFIG']
+export const bccDiagnosticNames = ['ADC1 channel verification', 'OV/UV functional verification', 'OV/UV detection', 'Cell-terminal open/short detection', 'Cell-voltage channel verification', 'Cell contact resistance', 'Cell-terminal leakage', 'Current measurement', 'Shunt connection', 'GPIO over/under-temperature', 'GPIO open-terminal detection', 'Cell-balancing open-load detection']
+export const bccDiagnosticStatusNames = ['Success', 'Parameter out of range', 'SPI communication failure', 'Communication timeout', 'Communication echo mismatch', 'Communication CRC error', 'Communication message-counter error', 'Empty communication response', 'Cannot enter diagnostic mode', 'Conversion data not ready']
 export const hvReasonNames = ['HV_SENSOR_DIAGNOSTIC', 'BATTERY_VOLTAGE_MISMATCH', 'LOAD_SIDE_ENERGISED', 'PRECHARGE_TIMEOUT', 'PRECHARGE_VOLTAGE_LOST', 'CONTACTOR_VOLTAGE_LOST']
 export const warningNames = ['WATCHDOG_RESET', 'STARTUP_DIAGNOSTICS_BYPASSED', 'BATTERY_VOLTAGE_MISMATCH_OFF']
 export const warningDisplayNames = ['Watchdog reset', 'Startup diagnostics bypassed', 'Pack-voltage mismatch (HV off)']

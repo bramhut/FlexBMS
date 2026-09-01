@@ -74,6 +74,7 @@ namespace BmsUart
             COMMIT_STM32_BOOTLOADER = 0x0AU,
             GET_CONFIG = 0x0BU,
             SET_CONFIG = 0x0CU,
+            GET_DIAGNOSTIC_REPORT = 0x0DU,
         };
 
         enum ServiceResult : uint8_t
@@ -706,7 +707,7 @@ namespace BmsUart
         bool sendServiceResponse(Link link, uint8_t sequence, uint8_t serviceId, ServiceResult result,
                                  const uint8_t *data = nullptr, uint16_t dataLength = 0U)
         {
-            std::array<uint8_t, 19U> payload = {};
+            std::array<uint8_t, 20U> payload = {};
             if (dataLength > payload.size() - 2U || (dataLength != 0U && data == nullptr)) return false;
             payload[0] = serviceId;
             payload[1] = static_cast<uint8_t>(result);
@@ -749,6 +750,7 @@ namespace BmsUart
             writeLe32(data + 11U, values.batteryCapacityMilliAh);
             data[15] = values.invertCurrent ? 1U : 0U;
             data[16] = values.balanceEnabled ? 1U : 0U;
+            data[17] = values.startupDiagnostics ? 1U : 0U;
         }
 
         bool configurationWriteAllowed()
@@ -1053,15 +1055,40 @@ namespace BmsUart
                     return;
                 }
                 const RuntimeConfiguration::LoadResult configuration = RuntimeConfiguration::load();
-                std::array<uint8_t, 17U> response = {};
+                std::array<uint8_t, 18U> response = {};
                 writeConfigurationResponse(response.data(), configuration);
+                sendServiceResponse(frame.link, frame.sequence, serviceId, OK, response.data(), response.size());
+                return;
+            }
+
+            case GET_DIAGNOSTIC_REPORT:
+            {
+                if (frame.length != 2U || frame.payload[1] >= SlaveController::getNumOfSlaves())
+                {
+                    sendServiceResponse(frame.sequence, serviceId, INVALID);
+                    return;
+                }
+                SlaveController::DiagnosticReport report{};
+                if (!SlaveController::getDiagnosticReport(frame.payload[1], report))
+                {
+                    sendServiceResponse(frame.sequence, serviceId, DENIED);
+                    return;
+                }
+                std::array<uint8_t, 6U> response = {
+                    frame.payload[1],
+                    report.cid,
+                    static_cast<uint8_t>(report.failedChecks),
+                    static_cast<uint8_t>(report.failedChecks >> 8U),
+                    report.status,
+                    report.failedDiagnostic,
+                };
                 sendServiceResponse(frame.link, frame.sequence, serviceId, OK, response.data(), response.size());
                 return;
             }
 
             case SET_CONFIG:
             {
-                if (frame.length != 13U || frame.payload[11] > 1U || frame.payload[12] > 1U)
+                if (frame.length != 14U || frame.payload[11] > 1U || frame.payload[12] > 1U || frame.payload[13] > 1U)
                 {
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
                     return;
@@ -1073,6 +1100,7 @@ namespace BmsUart
                     .batteryCapacityMilliAh = readLe32(frame.payload.data() + 7U),
                     .invertCurrent = frame.payload[11] != 0U,
                     .balanceEnabled = frame.payload[12] != 0U,
+                    .startupDiagnostics = frame.payload[13] != 0U,
                 };
                 if (!SlaveController::validateRuntimeConfiguration(values))
                 {

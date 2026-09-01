@@ -4,7 +4,8 @@
 
 namespace RuntimeConfiguration
 {
-    constexpr uint16_t CONFIG_VERSION = 2U;
+    constexpr uint16_t LEGACY_CONFIG_VERSION = 2U;
+    constexpr uint16_t CONFIG_VERSION = 3U;
     constexpr uint8_t MAX_SLAVES = 32U;
     constexpr uint8_t CURRENT_SENSE_NONE = 0U;
     constexpr uint32_t APPLICATION_FLASH_BYTES = 508U * 1024U;
@@ -17,6 +18,7 @@ namespace RuntimeConfiguration
         uint32_t batteryCapacityMilliAh{};
         bool invertCurrent{};
         bool balanceEnabled{};
+        bool startupDiagnostics{};
     };
 
     enum class LoadStatus : uint8_t

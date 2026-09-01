@@ -5,15 +5,6 @@
 #include "bcc/bcc_utils.h"
 #include <vector>
 
-// Bench-test override. Restore to 1U before using the BMS in service.
-#ifndef BMS_RUN_STARTUP_DIAGNOSTICS
-#define BMS_RUN_STARTUP_DIAGNOSTICS 0U
-#endif
-
-#if BMS_RUN_STARTUP_DIAGNOSTICS > 1U
-#error "BMS_RUN_STARTUP_DIAGNOSTICS must be 0 or 1"
-#endif
-
 struct SafetyLimits_t
 {
     double OVERVOLTAGE_LIMIT;

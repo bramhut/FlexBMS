@@ -2340,17 +2340,21 @@ namespace BCC_Diagnostics
      * Description   : This function performs basic startup checks on the BCC device.
      *
      *END**************************************************************************/
-    bcc_status_t runChecks(BCC *bcc, diags_t funcs, SafetyLimits_t safetyLimits, diags_t *result)
+    bcc_status_t runChecks(BCC *bcc, diags_t funcs, SafetyLimits_t safetyLimits, diags_t *result,
+                           uint8_t *failedDiagnostic)
     {
         bcc_status_t status;
 
         BCC_MCU_Assert(bcc != NULL);
         BCC_MCU_Assert(result != NULL);
 
+        if (failedDiagnostic != nullptr) *failedDiagnostic = DIAGNOSTIC_NONE;
+
         // For every diagnostic function, check if it is enabled and run it. Save the possible error in the result struct.
         if (funcs.ADC1VER)
         {
             adc1x_res_t res;
+            if (failedDiagnostic != nullptr) *failedDiagnostic = ADC1VER;
             status = diag_ADC1(bcc, &res);
             if (status != BCC_STATUS_SUCCESS)
             {
@@ -2362,6 +2366,7 @@ namespace BCC_Diagnostics
         if (funcs.OVUVVER)
         {
             ov_uv_ver_res_t res;
+            if (failedDiagnostic != nullptr) *failedDiagnostic = OVUVVER;
             status = diag_OvUvVer(bcc, safetyLimits, &res);
             if (status != BCC_STATUS_SUCCESS)
             {
@@ -2373,6 +2378,7 @@ namespace BCC_Diagnostics
         if (funcs.OVUVDET)
         {
             ov_uv_det_res_t res;
+            if (failedDiagnostic != nullptr) *failedDiagnostic = OVUVDET;
             status = diag_OvUvDet(bcc, safetyLimits, &res);
             if (status != BCC_STATUS_SUCCESS)
             {
@@ -2384,6 +2390,7 @@ namespace BCC_Diagnostics
         if (funcs.CTXOPEN)
         {
             ctx_open_res_t res;
+            if (failedDiagnostic != nullptr) *failedDiagnostic = CTXOPEN;
             status = diag_CTxOpen(bcc, safetyLimits, &res);
             if (status != BCC_STATUS_SUCCESS)
             {
@@ -2395,6 +2402,7 @@ namespace BCC_Diagnostics
         if (funcs.CELLVOLT)
         {
             cell_volt_res_t res;
+            if (failedDiagnostic != nullptr) *failedDiagnostic = CELLVOLT;
             status = diag_CellVolt(bcc, &res);
             if (status != BCC_STATUS_SUCCESS)
             {
@@ -2406,6 +2414,7 @@ namespace BCC_Diagnostics
         if (funcs.CONNRES)
         {
             conn_res_res_t res;
+            if (failedDiagnostic != nullptr) *failedDiagnostic = CONNRES;
             status = diag_ConnResistance(bcc, &res);
             if (status != BCC_STATUS_SUCCESS)
             {
@@ -2417,6 +2426,7 @@ namespace BCC_Diagnostics
         if (funcs.CTXLEAK)
         {
             ctx_leak_res_t res;
+            if (failedDiagnostic != nullptr) *failedDiagnostic = CTXLEAK;
             status = diag_CTxLeak(bcc, &res);
             if (status != BCC_STATUS_SUCCESS)
             {
@@ -2433,6 +2443,7 @@ namespace BCC_Diagnostics
             {
                 int32_t current;
                 bool fault;
+                if (failedDiagnostic != nullptr) *failedDiagnostic = CURRMEAS;
                 status = diag_CurrentMeas(bcc, BCC_DCM_PGA_SHORTED, &current, &fault);
                 if (status != BCC_STATUS_SUCCESS)
                 {
@@ -2453,6 +2464,7 @@ namespace BCC_Diagnostics
             if (funcs.SHUNTNOTCONN)
             {
                 bool shuntConn;
+                if (failedDiagnostic != nullptr) *failedDiagnostic = SHUNTNOTCONN;
                 status = diag_ShuntConn(bcc, &shuntConn);
                 if (status != BCC_STATUS_SUCCESS)
                 {
@@ -2470,6 +2482,7 @@ namespace BCC_Diagnostics
         if (funcs.GPIOXOTUT)
         {
             gpiox_otut_res_t res;
+            if (failedDiagnostic != nullptr) *failedDiagnostic = GPIOXOTUT;
             status = diag_GPIOxOtUt(bcc, &res);
             if (status != BCC_STATUS_SUCCESS)
             {
@@ -2481,6 +2494,7 @@ namespace BCC_Diagnostics
         if (funcs.GPIOXOPEN)
         {
             uint16_t openStatus;
+            if (failedDiagnostic != nullptr) *failedDiagnostic = GPIOXOPEN;
             status = diag_GPIOxOpen(bcc, &openStatus);
             if (status != BCC_STATUS_SUCCESS)
             {
@@ -2492,6 +2506,7 @@ namespace BCC_Diagnostics
         if (funcs.CBXOPEN)
         {
             cbx_open_res_t res;
+            if (failedDiagnostic != nullptr) *failedDiagnostic = CBXOPEN;
             status = diag_CBxOpen(bcc, &res);
             if (status != BCC_STATUS_SUCCESS)
             {
@@ -2503,7 +2518,8 @@ namespace BCC_Diagnostics
         return BCC_STATUS_SUCCESS;
     }
 
-    bcc_status_t runStartupChecks(BCC *bcc, SafetyLimits_t safetyLimits, diags_t *result)
+    bcc_status_t runStartupChecks(BCC *bcc, SafetyLimits_t safetyLimits, diags_t *result,
+                                  uint8_t *failedDiagnostic)
     {
         // List of all diagnostic functions that should be run during startup checks.
         // TBD
@@ -2522,6 +2538,6 @@ namespace BCC_Diagnostics
             .CBXOPEN = true
         };
 
-        return runChecks(bcc, funcs, safetyLimits, result);
+        return runChecks(bcc, funcs, safetyLimits, result, failedDiagnostic);
     }
 }

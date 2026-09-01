@@ -202,7 +202,7 @@ reserved and zero.
 `STARTUP_DIAGNOSTICS_BYPASSED`, and 2 `BATTERY_VOLTAGE_MISMATCH_OFF`.
 Bits 3--31 are reserved and zero. `WATCHDOG_RESET` is a recorded warning that
 an accepted acknowledgement clears. `STARTUP_DIAGNOSTICS_BYPASSED` remains
-present while that build configuration is active; `BATTERY_VOLTAGE_MISMATCH_OFF`
+present while startup diagnostics are disabled in runtime configuration; `BATTERY_VOLTAGE_MISMATCH_OFF`
 remains present while the measurements disagree.
 `WATCHDOG_RESET` is set when this STM32 boot followed an independent or window
 watchdog reset. Gateway liveness, CAN condition, near-limit indication, and
@@ -302,8 +302,9 @@ reads, to the link and sequence that originated them.
 | `0x08` | `GET_RTC` | None | `unix_time_s:u32` UTC |
 | `0x09` | `SET_BALANCING_ENABLED` | `enabled:u8` (`0` or `1`) | None |
 | `0x0A` | `COMMIT_STM32_BOOTLOADER` | None | None (successful request enters ROM immediately) |
-| `0x0B` | `GET_CONFIG` | None | 17-byte runtime configuration status and values |
-| `0x0C` | `SET_CONFIG` | `slave_count:u8, current_sense_slave:u8, shunt_resistance_uohm:u32, battery_capacity_mah:u32, invert_current:u8, balance_enabled:u8` | None; the STM32 resets after responding `OK` |
+| `0x0B` | `GET_CONFIG` | None | 18-byte runtime configuration status and values |
+| `0x0C` | `SET_CONFIG` | `slave_count:u8, current_sense_slave:u8, shunt_resistance_uohm:u32, battery_capacity_mah:u32, invert_current:u8, balance_enabled:u8, startup_diagnostics:u8` | None; the STM32 resets after responding `OK` |
+| `0x0D` | `GET_DIAGNOSTIC_REPORT` | `slave_index:u8` | Latest startup diagnostic result for that BCC |
 
 The STM32 calendar stores UTC only. It accepts `SET_RTC` only for 2000--2099
 and returns `INVALID` for another timestamp or `DENIED` if the hardware write
@@ -334,12 +335,26 @@ BCC loop. New configuration defaults enable balancing.
 `3` corrupt), `expected_version:u16`, `stored_version:u16`, followed by
 `slave_count:u8`, `current_sense_slave:u8` (`0` means none),
 `shunt_resistance_uohm:u32`, `battery_capacity_mah:u32`, and
-`invert_current:u8`, and `balance_enabled:u8`. When no usable record exists, the value fields contain
+`invert_current:u8`, `balance_enabled:u8`, and `startup_diagnostics:u8`. When no usable record exists, the value fields contain
 the compile-time factory defaults for editing and resubmission. The STM32
 accepts 1--32 slaves. The wire format remains milliamp-hours; Companion
 displays and edits this value in amp-hours with 0.001 Ah precision. The
-configuration schema version is currently 2; version-1 records are not
-migrated and require resubmission through `SET_CONFIG`.
+configuration schema version is currently 3. Version-2 records are accepted
+with startup diagnostics enabled as the safe legacy default and are upgraded
+to version 3 when next saved through `SET_CONFIG`.
+
+`startup_diagnostics` defaults to 1. Setting it to 0 skips only the startup
+BCC diagnostics routine for debugging or bench testing; the STM32 continues
+to enforce all other measurement, fault, balancing, and HV safety checks.
+
+`GET_DIAGNOSTIC_REPORT` returns `slave_index:u8`, `cid:u8`,
+`failed_checks:u16`, `status_code:u8`, and `failed_diagnostic:u8`. The twelve
+`failed_checks` bits correspond, in order, to `ADC1VER`, `OVUVVER`, `OVUVDET`,
+`CTXOPEN`, `CELLVOLT`, `CONNRES`, `CTXLEAK`, `CURRMEAS`, `SHUNTNOTCONN`,
+`GPIOXOTUT`, `GPIOXOPEN`, and `CBXOPEN`. A non-zero `status_code` identifies a
+BCC communication or diagnostic-driver failure; `failed_diagnostic` identifies
+the check that was executing when it occurred. The report is held in RAM until
+the next startup diagnostic run.
 
 `SET_CONFIG` is accepted only while the HV system is safely off. The STM32
 validates the complete candidate, stores it in its reserved dual-slot FLASH
