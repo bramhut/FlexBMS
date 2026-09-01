@@ -1,6 +1,7 @@
 #pragma once
 #include "bcc/bcc.h"
 #include "CAN.h"
+#include "RuntimeConfiguration.h"
 #include <vector>
 
 /*******************************************************************************
@@ -67,6 +68,7 @@ namespace SlaveController
         OPEN_SHORT_FAULT, // A pin (can be CB or GPIO) is detected short or open
         SYSTEM_FAULT,
         COMMUNICATION_TIMEOUT,
+        NO_CONFIG,
     };
 
     enum BMSState
@@ -256,6 +258,9 @@ namespace SlaveController
 
     /*! @brief True when a configured BCC supplies pack-current measurements. */
     bool isCurrentSensingEnabled();
+
+    /*! @brief Validate a complete runtime configuration before persisting it. */
+    bool validateRuntimeConfiguration(const RuntimeConfiguration::Values &values);
 
     /*! @brief Return the UTC instant of the last automatic full-SOC calibration. */
     bool getLastSoCCalibrationUnixTime(uint32_t &unixTime);

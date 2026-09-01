@@ -45,7 +45,9 @@ function Find-EspTool {
 function Invoke-Stm32Flash {
     $image = Join-Path $releaseDirectory 'FlexBMS-STM32.bin'
     $programmer = Find-Stm32Programmer
+    if ((Get-Item -LiteralPath $image).Length -gt (508 * 1024)) { throw 'STM32 image exceeds the 508 KiB application area; refusing to flash it.' }
     Write-Host 'Flashing STM32 application through ST-Link/SWD.'
+    # Do not add a full-chip erase here: the final 4 KiB contains runtime configuration.
     & $programmer -c port=SWD mode=UR -w $image 0x08000000 -v -rst
     if ($LASTEXITCODE -ne 0) { throw 'STM32 flash or verification failed.' }
 }

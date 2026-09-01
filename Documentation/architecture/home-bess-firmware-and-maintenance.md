@@ -164,8 +164,12 @@ Named Gateway service actions in the first release are:
 - configure or scan local Wi-Fi through the Gateway when its Wi-Fi capability
   is available.
 
-Configuration writes are out of scope. A single deliberate button press
-is sufficient for a permitted local action; the STM32 remains responsible for
+Full runtime configuration writes are permitted only through the local
+Companion service path while the HV system is safely off. The STM32 validates
+and stores the complete candidate in its reserved FLASH area, applies it after reset, and
+enters a blocking `NO_CONFIG`/safe-off state when the area is blank or its
+schema version is incompatible. A single deliberate button press is
+sufficient for a permitted local action; the STM32 remains responsible for
 validating every requested state change. Wi-Fi, browser, MQTT, and Home
 Assistant loss have no BMS safety effect in this stage.
 

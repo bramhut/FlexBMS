@@ -13,10 +13,7 @@ const lines = ref<string[]>([])
 const logging = ref(false)
 const requested = ref(false)
 const changingRunRequest = ref(false)
-const balancingEnabled = ref(false)
-const changingBalancingEnabled = ref(false)
 const runResult = ref('')
-const balanceResult = ref('')
 const fresh = computed(() => Boolean(props.snapshot && props.status?.measurements_fresh))
 const measurement = (value: string) => fresh.value ? value : '—'
 type AttentionItem = { label: string; domain: 'BMS' | 'HV' | 'System'; state: 'live' | 'pending' | 'warning' }
@@ -90,14 +87,6 @@ async function setRunRequest(): Promise<void> {
   changingRunRequest.value = false
   if (response.result !== 'ok') requested.value = props.status?.run_request ?? false
 }
-async function setBalancingEnabled(): Promise<void> {
-  const enabledValue = balancingEnabled.value
-  changingBalancingEnabled.value = true
-  const response = await props.transport.request('set_balancing_enabled', { enabled: enabledValue })
-  balanceResult.value = `Balance: ${describeControlResponse(response)}`
-  changingBalancingEnabled.value = false
-  if (response.result !== 'ok') balancingEnabled.value = props.status?.balancing_enabled ?? false
-}
 function appendSnapshot(snapshot: Snapshot): void {
   if (!snapshot.status.measurements_fresh) return
   if (lines.value.length === 0) lines.value = [csvHeader(snapshot).join(',')]
@@ -107,7 +96,6 @@ function startLogging(): void { if (props.snapshot && fresh.value) { lines.value
 function stopLogging(): void { logging.value = false }
 watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendSnapshot(snapshot) })
 watch(() => props.status?.run_request, value => { if (!changingRunRequest.value) requested.value = value ?? false }, { immediate: true })
-watch(() => props.status?.balancing_enabled, value => { if (!changingBalancingEnabled.value) balancingEnabled.value = value ?? false }, { immediate: true })
 </script>
 
 <template>
@@ -158,7 +146,7 @@ watch(() => props.status?.balancing_enabled, value => { if (!changingBalancingEn
       </section>
     </section>
 
-    <section class="panel"><div class="panel-heading cell-panel-heading"><div><h2>Cell voltages and balancing</h2></div><div class="context-control"><label class="ios-switch"><input v-model="balancingEnabled" type="checkbox" role="switch" :disabled="!capabilities.set_balancing_enabled || changingBalancingEnabled" @change="setBalancingEnabled"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Balance</span></label><small v-if="!capabilities.set_balancing_enabled">{{ controlAvailability('set_balancing_enabled') }}</small><p v-if="balanceResult" class="action-result inline-action-result">{{ balanceResult }}</p><p v-if="!fresh">Values remain hidden until a complete fresh snapshot arrives.</p></div></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th v-for="index in 12" :key="index">C{{ index }}</th></tr></thead><tbody><tr v-for="cell in snapshot.cells" :key="cell.slave_index"><th>Slave {{ cell.slave_index }}</th><td v-for="(value, index) in cell.cell_voltage_uV" :key="index" :class="{ balancing: (cell.balance_mask & (1 << index)) !== 0 }">{{ cellVoltageV(value).toFixed(3) }} V<span v-if="(cell.balance_mask & (1 << index)) !== 0"> balancing</span></td></tr></tbody></table></div></section>
+    <section class="panel"><div class="panel-heading cell-panel-heading"><div><h2>Cell voltages and balancing</h2></div><div class="context-control"><p v-if="!fresh">Values remain hidden until a complete fresh snapshot arrives.</p></div></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th v-for="index in 12" :key="index">C{{ index }}</th></tr></thead><tbody><tr v-for="cell in snapshot.cells" :key="cell.slave_index"><th>Slave {{ cell.slave_index }}</th><td v-for="(value, index) in cell.cell_voltage_uV" :key="index" :class="{ balancing: (cell.balance_mask & (1 << index)) !== 0 }">{{ cellVoltageV(value).toFixed(3) }} V<span v-if="(cell.balance_mask & (1 << index)) !== 0"> balancing</span></td></tr></tbody></table></div></section>
 
     <section class="panel"><div class="panel-heading"><div><h2>Temperatures</h2></div></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th>NTC 0</th><th>NTC 1</th><th>NTC 2</th><th>NTC 3</th><th>IC</th></tr></thead><tbody><tr v-for="temperature in snapshot.temperatures" :key="temperature.slave_index"><th>Slave {{ temperature.slave_index }}</th><td v-for="(value, index) in temperature.ntc_raw" :key="index">{{ ntcCelsius(value).toFixed(1) }} °C</td><td>{{ icCelsius(temperature.ic_temp_raw).toFixed(1) }} °C</td></tr></tbody></table></div></section>
 

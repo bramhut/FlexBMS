@@ -239,6 +239,7 @@ $stm32Artifact = Join-Path $masterDirectory '.pio\build\default\firmware.bin'
 foreach ($artifact in @($desktopArtifact, $gatewayArtifact, $gatewayBootloader, $gatewayPartitions, $stm32Artifact)) {
     if (-not (Test-Path -LiteralPath $artifact)) { throw "Expected release artifact was not produced: $artifact" }
 }
+if ((Get-Item -LiteralPath $stm32Artifact).Length -gt (508 * 1024)) { throw 'STM32 application image exceeds the 508 KiB area reserved by the runtime configuration layout.' }
 
 New-Item -ItemType Directory -Path $releaseDirectory | Out-Null
 Copy-Item -LiteralPath $desktopArtifact -Destination (Join-Path $releaseDirectory 'FlexBMS-Companion.exe')

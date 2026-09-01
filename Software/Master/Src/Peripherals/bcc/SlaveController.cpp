@@ -17,6 +17,7 @@
 #include "bcc/SlaveController.h"
 #include "bcc/bcc_diagnostics.h"
 #include "bcc/UserSettings.h"
+#include "RuntimeConfiguration.h"
 #include "USBCOM.h"
 #include "FreeRTOS.h"
 #include <algorithm>
@@ -64,7 +65,7 @@ namespace SlaveController
         uint8_t diagnosticsFailureCount = 0U;
         uint8_t tplInitializationFailureCount = 0U;
 		uint32_t initializationRetryNotBeforeMs = 0U;
-        std::array<bool, static_cast<size_t>(COMMUNICATION_TIMEOUT) + 1U> bmsFaultInputs{};
+        std::array<bool, static_cast<size_t>(NO_CONFIG) + 1U> bmsFaultInputs{};
 
         BMSState currentState = DEVICE_INITIALIZATION; // Current state of the BMS
 
@@ -255,6 +256,8 @@ namespace SlaveController
                 return FaultManager::BmsFault::BccIntegrity;
             case COMMUNICATION_TIMEOUT:
                 return FaultManager::BmsFault::BccCommunication;
+            case NO_CONFIG:
+                return FaultManager::BmsFault::NoConfig;
             }
             return FaultManager::BmsFault::BccIntegrity;
         }
@@ -1125,8 +1128,36 @@ namespace SlaveController
          */
         bool loadConfig()
         {
-            // For now always use the default settings. Later on we can add a way to load settings from flash
+            const RuntimeConfiguration::LoadResult persisted = RuntimeConfiguration::load();
+            if (persisted.status != RuntimeConfiguration::LoadStatus::Valid)
+            {
+                PRINTF_ERR("[SC] No usable runtime configuration in FLASH (status %u, stored version %u, expected %u)\n",
+                           static_cast<unsigned>(persisted.status), persisted.storedVersion,
+                           RuntimeConfiguration::CONFIG_VERSION);
+                return false;
+            }
+
             settings = DEFAULT_SETTINGS;
+            if (!validateRuntimeConfiguration(persisted.values) || settings.SLAVE_CONFIG.empty())
+            {
+                return false;
+            }
+
+            const BCC::Config_t defaultSlaveConfig = settings.SLAVE_CONFIG.front();
+            settings.SLAVE_CONFIG.assign(persisted.values.slaveCount, defaultSlaveConfig);
+            for (size_t index = 0U; index < settings.SLAVE_CONFIG.size(); ++index)
+            {
+                settings.SLAVE_CONFIG[index].CURRENT_SENSING_ENABLED =
+                    persisted.values.currentSenseSlave == static_cast<uint8_t>(index + 1U);
+                if (!settings.SLAVE_CONFIG[index].CURRENT_SENSING_ENABLED)
+                {
+                    settings.SLAVE_CONFIG[index].AMPHOUR_BACKUP_REG = 0U;
+                }
+            }
+            settings.SHUNT_RESISTANCE = persisted.values.shuntResistanceMicroOhms / 1'000'000.0;
+            settings.BATTERY_AMPHOURS = persisted.values.batteryCapacityMilliAh / 1'000.0;
+            settings.INVERT_CURRENT = persisted.values.invertCurrent;
+            balancingEnabled.store(persisted.values.balanceEnabled, std::memory_order_relaxed);
             currentMeasurementConfigured = false;
 
             for (const BCC::Config_t &config : settings.SLAVE_CONFIG)
@@ -1220,7 +1251,15 @@ namespace SlaveController
 
         if (!loadConfig())
         {
-            updateFault(INVALID_CONFIG, true);
+            const RuntimeConfiguration::LoadStatus status = RuntimeConfiguration::load().status;
+            if (status == RuntimeConfiguration::LoadStatus::Blank || status == RuntimeConfiguration::LoadStatus::VersionMismatch)
+            {
+                updateFault(NO_CONFIG, true);
+            }
+            else
+            {
+                updateFault(INVALID_CONFIG, true);
+            }
             FaultManager::enterCritical();
             setState(CRITICAL);
 			bmsTaskHandle = osThreadNew(task, NULL, &bmsTask_attributes);
@@ -1464,6 +1503,15 @@ namespace SlaveController
     bool isCurrentSensingEnabled()
     {
         return currentMeasurementConfigured;
+    }
+
+    bool validateRuntimeConfiguration(const RuntimeConfiguration::Values &values)
+    {
+        if (!RuntimeConfiguration::validate(values)) return false;
+        const double shuntResistance = values.shuntResistanceMicroOhms / 1'000'000.0;
+        const double maxCurrentForShunt = 0.15 / shuntResistance;
+        return DEFAULT_SETTINGS.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT <= maxCurrentForShunt &&
+               DEFAULT_SETTINGS.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT <= maxCurrentForShunt;
     }
 
     bool getLastSoCCalibrationUnixTime(uint32_t &unixTime)

@@ -24,7 +24,8 @@ namespace FlexBms::FirmwareUpdate
         // The STM32 ROM GET ID command reports the device product ID, not the
         // bootloader revision. STM32G491 reports PID 0x0479.
         constexpr uint16_t kStm32ProductId = 0x0479U;
-        constexpr uint32_t kStm32MaxBytes = 512U * 1024U;
+        constexpr uint32_t kStm32MaxBytes = 508U * 1024U;
+        constexpr uint16_t kStm32ApplicationPages = 254U;
         constexpr int kShortTimeoutMs = 500;
         constexpr int kEraseTimeoutMs = 20'000;
         constexpr int64_t kStm32HandoffTimeoutUs = 3'000'000;
@@ -211,8 +212,22 @@ namespace FlexBms::FirmwareUpdate
         bool eraseStm32()
         {
             if (!command(0x44U)) return false;
-            const uint8_t globalErase[] = {0xFFU, 0xFFU, 0x00U};
-            return writeBytes(globalErase, sizeof(globalErase)) && expectAck(kEraseTimeoutMs);
+            // Extended erase takes N - 1 followed by N page numbers.  The
+            // final two 2 KiB pages are reserved for runtime configuration.
+            std::array<uint8_t, 2U + 2U * kStm32ApplicationPages + 1U> pages{};
+            const uint16_t countMinusOne = kStm32ApplicationPages - 1U;
+            pages[0] = static_cast<uint8_t>(countMinusOne >> 8U);
+            pages[1] = static_cast<uint8_t>(countMinusOne);
+            uint8_t checksum = pages[0] ^ pages[1];
+            for (uint16_t page = 0U; page < kStm32ApplicationPages; ++page)
+            {
+                const size_t offset = 2U + static_cast<size_t>(page) * 2U;
+                pages[offset] = static_cast<uint8_t>(page >> 8U);
+                pages[offset + 1U] = static_cast<uint8_t>(page);
+                checksum ^= pages[offset] ^ pages[offset + 1U];
+            }
+            pages.back() = checksum;
+            return writeBytes(pages.data(), pages.size()) && expectAck(kEraseTimeoutMs);
         }
 
         bool writeStm32Block(uint32_t addressValue, const uint8_t *data, size_t length)

@@ -52,7 +52,7 @@ namespace
 
     bool sendService(FlexBms::GatewayApi::Service service, const uint8_t *arguments, uint8_t argumentLength, uint8_t sequence)
     {
-        if (argumentLength > 4U)
+        if (argumentLength > FlexBms::UartV1::kMaxPayloadBytes - 1U)
         {
             return false;
         }

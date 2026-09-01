@@ -64,6 +64,49 @@ test('direct USB resolves pending services when the port disconnects', async () 
   })
 })
 
+test('direct USB encodes and decodes runtime configuration', async () => {
+  await withSerial(async ({ reader, writes }) => {
+    const transport = new WebSerialTransport()
+    await transport.connect()
+    const responsePromise = transport.request('get_config', {})
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const decoder = new FrameDecoder()
+    const request = writes.flatMap(frame => decoder.consume(frame)).find(frame => frame.type === messageType.serviceRequest)
+    assert.ok(request)
+    assert.deepEqual(Array.from(request!.payload), [serviceId.getConfig])
+    const data = new Uint8Array(17)
+    data[0] = 0
+    writeLe16(data, 1, 2)
+    writeLe16(data, 3, 2)
+    data[5] = 1
+    data[6] = 1
+    writeLe32(data, 7, 10000)
+    writeLe32(data, 11, 314000)
+    data[16] = 1
+    reader.enqueue(encodeFrame({ type: messageType.serviceResponse, sequence: request!.sequence, payload: Uint8Array.of(serviceId.getConfig, 0, ...data) }))
+    const response = await responsePromise
+    assert.equal(response.result, 'ok')
+    assert.deepEqual(response.data, { reason: 'valid', expected_version: 2, stored_version: 2, slave_count: 1, current_sense_slave: 1, shunt_resistance_uohm: 10000, battery_capacity_mah: 314000, invert_current: false, balance_enabled: true })
+    transport.disconnect()
+  })
+})
+
+test('direct USB encodes balance-enabled runtime configuration', async () => {
+  await withSerial(async ({ reader, writes }) => {
+    const transport = new WebSerialTransport()
+    await transport.connect()
+    const responsePromise = transport.request('set_config', { slave_count: 1, current_sense_slave: 1, shunt_resistance_uohm: 10000, battery_capacity_mah: 314000, invert_current: false, balance_enabled: false })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const decoder = new FrameDecoder()
+    const request = writes.flatMap(frame => decoder.consume(frame)).find(frame => frame.type === messageType.serviceRequest)
+    assert.ok(request)
+    assert.deepEqual(Array.from(request!.payload), [serviceId.setConfig, 1, 1, 0x10, 0x27, 0, 0, 0x90, 0xca, 4, 0, 0, 0])
+    reader.enqueue(encodeFrame({ type: messageType.serviceResponse, sequence: request!.sequence, payload: Uint8Array.of(serviceId.setConfig, 0) }))
+    assert.equal((await responsePromise).result, 'ok')
+    transport.disconnect()
+  })
+})
+
 test('direct USB includes AMC3330 BAT+ and LOAD+ telemetry in a complete snapshot', async () => {
   await withSerial(async ({ reader }) => {
     const transport = new WebSerialTransport()

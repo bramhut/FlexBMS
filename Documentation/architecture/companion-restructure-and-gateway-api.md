@@ -203,11 +203,16 @@ The common service names are:
 | `get_rtc` | none | `unix_time_s` UTC integer |
 | `get_device_info` | none | `firmware_version_packed` little-endian `major.minor.patch.build` bytes |
 | `read_register` | `slave_index: number`, `register: number` | `slave_index`, `register`, `value` |
+| `get_config` | none | persisted runtime configuration |
+| `set_config` | complete runtime configuration | none; STM32 reboots after saving |
 
 Actions show `Accepted`, `Denied`, `Invalid`, `Busy`, or `Transport error`.
 `Accepted` means the STM32 has invoked the request; the following snapshot and
 events remain authoritative for its effect. The UI does not invent a BMS
 rejection reason when UART v1 supplies only `DENIED`.
+`set_balancing_enabled` also persists the gate and applies it immediately after
+the flash write succeeds. `set_config` persists the complete configuration and
+reboots the STM32 to apply hardware-related values.
 
 Companion exposes fault acknowledgement only when the current STATUS contains
 an inactive BMS/HV error latch or a recorded watchdog-reset warning and no
@@ -441,15 +446,16 @@ network command is accepted.
   "v": 1,
   "type": "service",
   "request_id": "opaque client string up to 64 ASCII characters",
-  "service": "set_run_request | set_balancing_enabled | acknowledge_faults | get_rtc | get_device_info | read_register",
+  "service": "set_run_request | set_balancing_enabled | acknowledge_faults | get_rtc | get_device_info | read_register | get_config | set_config",
   "arguments": {}
 }
 ```
 
 `arguments` must exactly match the common service table. Numbers are JSON
 integers: `slave_index` and `register` are 0--255. `set_run_request` and
-`set_balancing_enabled` requires exactly `{ "enabled": true | false }`; services
-with no arguments require `{}`.
+`set_balancing_enabled` require exactly `{ "enabled": true | false }`; services
+with no arguments require `{}`. `set_config` requires the complete runtime
+configuration, including `balance_enabled`.
 When the open setup/recovery AP is active, valid BMS service requests receive
 `denied` locally and do not reach UART.
 

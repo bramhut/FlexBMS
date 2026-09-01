@@ -8,6 +8,7 @@
 #include "cmsis_os.h"
 #include "bcc/SlaveController.h"
 #include "bcc/bcc_utils.h"
+#include "RuntimeConfiguration.h"
 #include "main.h"
 #include "pcc.h"
 #include "queue.h"
@@ -43,7 +44,7 @@ namespace BmsUart
         constexpr uint32_t RX_RECOVERY_RETRY_MS = 1000U;
         constexpr uint32_t REGISTER_READ_TIMEOUT_MS = 500U;
         constexpr uint32_t TX_TIMEOUT_MS = 50U;
-        constexpr uint32_t APP_FLASH_BYTES = 512U * 1024U;
+        constexpr uint32_t APP_FLASH_BYTES = RuntimeConfiguration::APPLICATION_FLASH_BYTES;
         constexpr uintptr_t SYSTEM_MEMORY_BASE = 0x1FFF0000UL;
 
         enum MessageType : uint8_t
@@ -71,6 +72,8 @@ namespace BmsUart
             GET_RTC = 0x08U,
             SET_BALANCING_ENABLED = 0x09U,
             COMMIT_STM32_BOOTLOADER = 0x0AU,
+            GET_CONFIG = 0x0BU,
+            SET_CONFIG = 0x0CU,
         };
 
         enum ServiceResult : uint8_t
@@ -704,6 +707,7 @@ namespace BmsUart
                                  const uint8_t *data = nullptr, uint16_t dataLength = 0U)
         {
             std::array<uint8_t, 19U> payload = {};
+            if (dataLength > payload.size() - 2U || (dataLength != 0U && data == nullptr)) return false;
             payload[0] = serviceId;
             payload[1] = static_cast<uint8_t>(result);
             if (dataLength != 0U)
@@ -717,6 +721,43 @@ namespace BmsUart
                                  const uint8_t *data = nullptr, uint16_t dataLength = 0U)
         {
             return sendServiceResponse(currentResponseLink, sequence, serviceId, result, data, dataLength);
+        }
+
+        uint8_t configurationReason(RuntimeConfiguration::LoadStatus status)
+        {
+            switch (status)
+            {
+            case RuntimeConfiguration::LoadStatus::Valid: return 0U;
+            case RuntimeConfiguration::LoadStatus::Blank: return 1U;
+            case RuntimeConfiguration::LoadStatus::VersionMismatch: return 2U;
+            case RuntimeConfiguration::LoadStatus::Corrupt: return 3U;
+            }
+            return 3U;
+        }
+
+        void writeConfigurationResponse(uint8_t *data, const RuntimeConfiguration::LoadResult &result)
+        {
+            const RuntimeConfiguration::Values &values = result.status == RuntimeConfiguration::LoadStatus::Valid
+                                                              ? result.values
+                                                              : RuntimeConfiguration::defaults();
+            data[0] = configurationReason(result.status);
+            writeLe16(data + 1U, RuntimeConfiguration::CONFIG_VERSION);
+            writeLe16(data + 3U, result.storedVersion);
+            data[5] = values.slaveCount;
+            data[6] = values.currentSenseSlave;
+            writeLe32(data + 7U, values.shuntResistanceMicroOhms);
+            writeLe32(data + 11U, values.batteryCapacityMilliAh);
+            data[15] = values.invertCurrent ? 1U : 0U;
+            data[16] = values.balanceEnabled ? 1U : 0U;
+        }
+
+        bool configurationWriteAllowed()
+        {
+            const FaultManager::Snapshot faults = FaultManager::getSnapshot();
+            return PCC::getPCCState() == PCC::OFF &&
+                   !PCC::isFirmwareUpdatePrepared() &&
+                   !PCC::isFirmwareUpdateLocked() &&
+                   (!PCC::isRunRequested() || faults.bmsState == FaultManager::BmsState::Critical);
         }
 
         [[noreturn]] void enterSystemBootloader()
@@ -935,6 +976,11 @@ namespace BmsUart
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
                     return;
                 }
+                if (!RuntimeConfiguration::updateBalanceEnabled(frame.payload[1] != 0U))
+                {
+                    sendServiceResponse(frame.sequence, serviceId, DENIED);
+                    return;
+                }
                 SlaveController::setBalancingEnabled(frame.payload[1] != 0U);
                 sendServiceResponse(frame.sequence, serviceId, OK);
                 return;
@@ -996,6 +1042,59 @@ namespace BmsUart
                 // after it receives this response; otherwise PCC expires the
                 // prepared safe-off state and returns to normal operation.
                 sendServiceResponse(frame.sequence, serviceId, OK);
+                return;
+            }
+
+            case GET_CONFIG:
+            {
+                if (frame.length != 1U)
+                {
+                    sendServiceResponse(frame.sequence, serviceId, INVALID);
+                    return;
+                }
+                const RuntimeConfiguration::LoadResult configuration = RuntimeConfiguration::load();
+                std::array<uint8_t, 17U> response = {};
+                writeConfigurationResponse(response.data(), configuration);
+                sendServiceResponse(frame.link, frame.sequence, serviceId, OK, response.data(), response.size());
+                return;
+            }
+
+            case SET_CONFIG:
+            {
+                if (frame.length != 13U || frame.payload[11] > 1U || frame.payload[12] > 1U)
+                {
+                    sendServiceResponse(frame.sequence, serviceId, INVALID);
+                    return;
+                }
+                RuntimeConfiguration::Values values = {
+                    .slaveCount = frame.payload[1],
+                    .currentSenseSlave = frame.payload[2],
+                    .shuntResistanceMicroOhms = readLe32(frame.payload.data() + 3U),
+                    .batteryCapacityMilliAh = readLe32(frame.payload.data() + 7U),
+                    .invertCurrent = frame.payload[11] != 0U,
+                    .balanceEnabled = frame.payload[12] != 0U,
+                };
+                if (!SlaveController::validateRuntimeConfiguration(values))
+                {
+                    sendServiceResponse(frame.sequence, serviceId, INVALID);
+                    return;
+                }
+                if (!configurationWriteAllowed())
+                {
+                    sendServiceResponse(frame.sequence, serviceId, DENIED);
+                    return;
+                }
+                if (!RuntimeConfiguration::save(values))
+                {
+                    sendServiceResponse(frame.sequence, serviceId, DENIED);
+                    return;
+                }
+                (void)sendServiceResponse(frame.sequence, serviceId, OK);
+                // USB writes are queued for the CDC transmit task. Give that
+                // task time to drain the success response before resetting;
+                // the UART path is already blocking until transmission ends.
+                osDelay(100U);
+                NVIC_SystemReset();
                 return;
             }
 

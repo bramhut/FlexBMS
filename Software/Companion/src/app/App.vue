@@ -4,13 +4,14 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
   import RecentChangesDrawer from '@/bms/RecentChangesDrawer.vue'
 import DashboardView from '@/bms/DashboardView.vue'
 import FirmwareView from '@/bms/FirmwareView.vue'
+import ConfigurationView from '@/bms/ConfigurationView.vue'
 import WifiSettings from './WifiSettings.vue'
 import { GatewayTransport } from '@/transports/GatewayTransport'
 import { WebSerialTransport } from '@/transports/WebSerialTransport'
 import type { BmsTransport, ConnectionState, GatewayStatus, RecordedControllerEvent, Snapshot, Status } from '@/transports/Transport'
 const gatewayTarget = __FLEXBMS_TARGET__ === 'gateway'
 const transport: BmsTransport = gatewayTarget ? new GatewayTransport() : new WebSerialTransport()
-const active = ref<'dashboard' | 'wifi' | 'firmware'>('dashboard'); const state = ref<ConnectionState>('disconnected'); const snapshot = ref<Snapshot | null>(null); const bmsStatus = ref<Status | null>(null); const gateway = ref<GatewayStatus>(); const recentEvents = ref<RecordedControllerEvent[]>([]); const recentChangesOpen = ref(false)
+const active = ref<'dashboard' | 'configuration' | 'wifi' | 'firmware'>('dashboard'); const state = ref<ConnectionState>('disconnected'); const snapshot = ref<Snapshot | null>(null); const bmsStatus = ref<Status | null>(null); const gateway = ref<GatewayStatus>(); const recentEvents = ref<RecordedControllerEvent[]>([]); const recentChangesOpen = ref(false)
 const capabilities = ref(transport.getCapabilities()); const fresh = computed(() => Boolean(bmsStatus.value?.measurements_fresh) && (!gateway.value || gateway.value.uart_state === 'healthy'))
 const connectionTone = computed<'healthy' | 'waiting' | 'problem'>(() => {
   if (state.value === 'disconnected' || gateway.value?.uart_state === 'lost' || gateway.value?.uart_state === 'starting') return 'problem'
@@ -31,10 +32,12 @@ onBeforeUnmount(() => { offBmsStatus(); offSnapshot(); offEvent(); offState(); t
   <ConnectionHeader :label="transport.label" :message="connectionMessage" :tone="connectionTone" :allow-manual-connect="!gatewayTarget && state === 'disconnected'" @connect="connect" />
   <nav>
     <button :class="{ active: active === 'dashboard' }" @click="active = 'dashboard'">BMS dashboard</button>
+    <button v-if="capabilities.runtime_configuration" :class="{ active: active === 'configuration' }" @click="active = 'configuration'; recentChangesOpen = false">Configuration</button>
     <button v-if="capabilities.wifi_configuration" :class="{ active: active === 'wifi' }" @click="active = 'wifi'; recentChangesOpen = false">Wi-Fi setup</button>
     <button :class="{ active: active === 'firmware' }" @click="active = 'firmware'; recentChangesOpen = false">Firmware</button>
   </nav>
   <DashboardView v-if="active === 'dashboard'" :snapshot="snapshot" :status="bmsStatus" :transport="transport" :capabilities="capabilities" :connected="state === 'connected'" :gateway="gateway" :recent-events="recentEvents" @show-all="recentChangesOpen = true" />
+  <ConfigurationView v-else-if="active === 'configuration'" :transport="transport" :capabilities="capabilities" :connected="state === 'connected'" />
   <WifiSettings v-else-if="active === 'wifi'" :transport="transport" :capabilities="capabilities" :gateway="gateway" />
   <FirmwareView v-else :transport="transport" :capabilities="capabilities" :connected="state === 'connected'" :gateway="gateway" />
   <RecentChangesDrawer :events="recentEvents" :open="recentChangesOpen" @close="recentChangesOpen = false" />

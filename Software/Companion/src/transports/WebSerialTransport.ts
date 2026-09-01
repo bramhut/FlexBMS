@@ -85,6 +85,19 @@ export class WebSerialTransport implements BmsTransport {
     if (service === 'acknowledge_faults') return Uint8Array.of(serviceId.acknowledgeFaults)
     if (service === 'get_rtc') return Uint8Array.of(serviceId.getRtc)
     if (service === 'get_device_info') return Uint8Array.of(serviceId.getDeviceInfo)
+    if (service === 'get_config') return Uint8Array.of(serviceId.getConfig)
+    if (service === 'set_config') {
+      const config = args as ServiceArguments['set_config']
+      const payload = new Uint8Array(13)
+      payload[0] = serviceId.setConfig
+      payload[1] = config.slave_count
+      payload[2] = config.current_sense_slave
+      payload[3] = config.shunt_resistance_uohm & 0xff; payload[4] = (config.shunt_resistance_uohm >>> 8) & 0xff; payload[5] = (config.shunt_resistance_uohm >>> 16) & 0xff; payload[6] = (config.shunt_resistance_uohm >>> 24) & 0xff
+      payload[7] = config.battery_capacity_mah & 0xff; payload[8] = (config.battery_capacity_mah >>> 8) & 0xff; payload[9] = (config.battery_capacity_mah >>> 16) & 0xff; payload[10] = (config.battery_capacity_mah >>> 24) & 0xff
+      payload[11] = config.invert_current ? 1 : 0
+      payload[12] = config.balance_enabled ? 1 : 0
+      return payload
+    }
     const register = args as ServiceArguments['read_register']
     return Uint8Array.of(serviceId.readRegister, register.slave_index, register.register)
   }
@@ -153,6 +166,10 @@ export class WebSerialTransport implements BmsTransport {
     if (result === 'ok' && pending.service === 'read_register' && payload.length === 6) data = { slave_index: payload[2], register: payload[3], value: readLe16(payload, 4) }
     if (result === 'ok' && pending.service === 'get_rtc' && payload.length === 6) data = { unix_time_s: readLe32(payload, 2) }
     if (result === 'ok' && pending.service === 'get_device_info' && payload.length === 6) data = { firmware_version_packed: readLe32(payload, 2) }
+    if (result === 'ok' && pending.service === 'get_config' && payload.length === 19) {
+      const reasons = ['valid', 'blank', 'version_mismatch', 'corrupt'] as const
+      data = { reason: reasons[payload[2]] ?? 'corrupt', expected_version: readLe16(payload, 3), stored_version: readLe16(payload, 5), slave_count: payload[7], current_sense_slave: payload[8], shunt_resistance_uohm: readLe32(payload, 9), battery_capacity_mah: readLe32(payload, 13), invert_current: payload[17] !== 0, balance_enabled: payload[18] !== 0 }
+    }
     pending.resolve({ request_id: '', service: pending.service, result, ...(data ? { data } : {}) })
   }
 

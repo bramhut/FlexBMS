@@ -188,8 +188,10 @@ current software and forces HV safe-off for the remainder of that boot.
 BMS ERROR bitmap bits are: 0 `CONFIGURATION_INVALID`, 1
 `SLAVE_UNAVAILABLE`, 2 `BCC_DIAGNOSTICS`, 3 `CELL_VOLTAGE_LIMIT`, 4
 `THERMAL_LIMIT`, 5 `CURRENT_LIMIT`, 6 `BCC_INTEGRITY`, 7 `ADC_FAULT`, 8
-`BALANCING_HARDWARE_FAULT`, and 9 `BCC_COMMUNICATION`. Bits 10--31 are
-reserved and zero.
+`BALANCING_HARDWARE_FAULT`, 9 `BCC_COMMUNICATION`, and 10 `NO_CONFIG`. Bits
+11--31 are reserved and zero. `NO_CONFIG` means that no blank or
+version-compatible runtime configuration is available; the STM32 remains in
+`CRITICAL` and safe-off, while configuration services remain available.
 
 HV ERROR bitmap bits are: 0 `HV_SENSOR_DIAGNOSTIC`, 1
 `BATTERY_VOLTAGE_MISMATCH`, 2 `LOAD_SIDE_ENERGISED`, 3 `PRECHARGE_TIMEOUT`, 4
@@ -300,6 +302,8 @@ reads, to the link and sequence that originated them.
 | `0x08` | `GET_RTC` | None | `unix_time_s:u32` UTC |
 | `0x09` | `SET_BALANCING_ENABLED` | `enabled:u8` (`0` or `1`) | None |
 | `0x0A` | `COMMIT_STM32_BOOTLOADER` | None | None (successful request enters ROM immediately) |
+| `0x0B` | `GET_CONFIG` | None | 17-byte runtime configuration status and values |
+| `0x0C` | `SET_CONFIG` | `slave_count:u8, current_sense_slave:u8, shunt_resistance_uohm:u32, battery_capacity_mah:u32, invert_current:u8, balance_enabled:u8` | None; the STM32 resets after responding `OK` |
 
 The STM32 calendar stores UTC only. It accepts `SET_RTC` only for 2000--2099
 and returns `INVALID` for another timestamp or `DENIED` if the hardware write
@@ -319,12 +323,30 @@ The Gateway and Home Assistant cannot bypass a fault, write BCC registers, or
 override the HV supervisor.
 
 `SET_BALANCING_ENABLED` controls the STM32-owned automatic balancing enable
-gate. An enabled value does not guarantee that any cell is balancing: the STM32
-still requires a running, fault-free BMS, fresh measurements, and its configured
-cell-voltage thresholds. A disabled value inhibits the BCC balancing drivers on
-the next BCC loop. Automatic balancing is enabled by default after every STM32
-reset; the setting remains volatile and is not changed by Gateway or Companion
-reconnects.
+gate and persists the value in runtime configuration. It applies immediately
+after the flash write succeeds and does not reboot the STM32. An enabled value
+does not guarantee that any cell is balancing: the STM32 still requires a
+running, fault-free BMS, fresh measurements, and its configured cell-voltage
+thresholds. A disabled value inhibits the BCC balancing drivers on the next
+BCC loop. New configuration defaults enable balancing.
+
+`GET_CONFIG` returns `reason:u8` (`0` valid, `1` blank, `2` version mismatch,
+`3` corrupt), `expected_version:u16`, `stored_version:u16`, followed by
+`slave_count:u8`, `current_sense_slave:u8` (`0` means none),
+`shunt_resistance_uohm:u32`, `battery_capacity_mah:u32`, and
+`invert_current:u8`, and `balance_enabled:u8`. When no usable record exists, the value fields contain
+the compile-time factory defaults for editing and resubmission. The STM32
+accepts 1--32 slaves. The wire format remains milliamp-hours; Companion
+displays and edits this value in amp-hours with 0.001 Ah precision. The
+configuration schema version is currently 2; version-1 records are not
+migrated and require resubmission through `SET_CONFIG`.
+
+`SET_CONFIG` is accepted only while the HV system is safely off. The STM32
+validates the complete candidate, stores it in its reserved dual-slot FLASH
+area, and applies it after reset. Runtime configuration is separate from the
+SoC/Ah counter and RTC metadata retained in the backup domain. The final 4 KiB
+of STM32 application FLASH is reserved for the two configuration slots and
+must not be erased by firmware update tooling.
 
 `firmware_version` packs `major | (minor << 8) | (patch << 16) |
 (build << 24)`.

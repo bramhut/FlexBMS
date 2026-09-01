@@ -41,8 +41,6 @@
     #define BCC_INT_PORT MC_INT_GPIO_Port
     #define BCC_INT_PIN MC_INT_Pin
 
-    #define WSEN_TIDS_MODULES
-
 /***** DON'T EDIT *****/
 
     #define ADC_ENABLED __has_include("adc.h")

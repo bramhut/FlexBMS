@@ -19,6 +19,7 @@ namespace FaultManager
         AdcFault,
         BalancingHardwareFault,
         BccCommunication,
+        NoConfig,
     };
 
     enum class HvFault : uint8_t

@@ -927,6 +927,8 @@ accepted and invoked the requested operation; STATUS and EVENT show the resultin
   [`0x08`], [GET_RTC], [none], [`unix_time_s:u32` UTC],
   [`0x09`], [SET_BALANCING_ENABLED], [`enabled:u8` (`0` or `1`)], [none],
   [`0x0A`], [COMMIT_STM32_BOOTLOADER], [none], [none (successful request enters ROM immediately)],
+  [`0x0B`], [GET_CONFIG], [none], [17-byte runtime configuration status and values],
+  [`0x0C`], [SET_CONFIG], [`slave_count:u8, current_sense_slave:u8, shunt_resistance_uohm:u32, battery_capacity_mah:u32, invert_current:u8, balance_enabled:u8`], [none; the STM32 resets after responding `OK`],
 )
 
 `SET_RUN_REQUEST(0)` immediately removes the request through the STM32 PCC path. A request of 1
@@ -940,12 +942,13 @@ it. Neither the Gateway nor Home Assistant can bypass a fault, write BCC registe
 HV supervisor. `firmware_version` is packed as
 `major | (minor << 8) | (patch << 16) | (build << 24)`.
 
-`SET_BALANCING_ENABLED` controls the STM32-owned automatic balancing enable gate. An enabled
-value does not guarantee that any cell is balancing: the STM32 still requires a running,
-fault-free BMS, fresh measurements, and its configured cell-voltage thresholds. A disabled
-value inhibits the BCC balancing drivers on the next BCC loop. Automatic balancing is enabled
-by default after every STM32 reset; the setting remains volatile and is not changed by Gateway
-or Companion reconnects.
+`SET_BALANCING_ENABLED` controls the STM32-owned automatic balancing enable gate and persists
+the value in runtime configuration. It applies immediately after the flash write succeeds and
+does not reboot the STM32. An enabled value does not guarantee that any cell is balancing: the
+STM32 still requires a running, fault-free BMS, fresh measurements, and its configured
+cell-voltage thresholds. A disabled value inhibits the BCC balancing drivers on the next BCC
+loop. New configuration defaults enable balancing. The configuration schema version is 2;
+version-1 records are not migrated and require resubmission through `SET_CONFIG`.
 
 `PREPARE_STM32_BOOTLOADER` and `COMMIT_STM32_BOOTLOADER` form the STM32-update handoff.
 The Gateway must already have staged and CRC-checked the image. The STM32 validates the prepare
