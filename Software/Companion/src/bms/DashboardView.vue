@@ -82,11 +82,6 @@ const currentValue = computed(() => {
   if (!props.status?.current_sensing_enabled) return 'Disabled'
   return props.snapshot ? measurement(`${currentA(props.snapshot.pack.pack_current_raw).toFixed(2)} A`) : '—'
 })
-const hvVoltage = (field: 'bat_plus_uV' | 'load_plus_uV') => {
-  const voltages = props.snapshot?.hv_voltages
-  if (!voltages?.valid) return props.snapshot ? 'Unavailable' : '—'
-  return measurement(`${cellVoltageV(voltages[field]).toFixed(2)} V`)
-}
 const hvDisplay = computed(() => {
   const status = props.status
   if (!status) return { detail: 'Waiting', ready: false }
@@ -137,6 +132,11 @@ onBeforeUnmount(() => { window.clearInterval(clockTimer) })
 
 <template>
   <main class="dashboard">
+    <section class="device-status-bar" aria-label="Device status">
+      <strong class="device-status-label">Device status</strong>
+      <dl class="clock-details"><div><dt>Device time</dt><dd>{{ formattedDeviceTime }}</dd></div><div><dt>BMS uptime</dt><dd>{{ formattedStm32Uptime }}</dd><small v-if="stm32Restarted">Restart detected in this Companion session.</small></div><div><dt>Gateway uptime</dt><dd>{{ formattedGatewayUptime }}</dd><small v-if="gatewayRestarted">Restart detected in this Companion session.</small></div></dl>
+      <small class="device-status-note">Updated every minute</small>
+    </section>
     <section class="dashboard-top">
       <section class="panel overview">
         <div class="overview-section">
@@ -160,15 +160,7 @@ onBeforeUnmount(() => { window.clearInterval(clockTimer) })
             <div class="primary-metric" :class="{ unavailable: !status?.current_sensing_enabled }"><span>Current</span><b>{{ currentValue }}</b><small>{{ status?.current_sensing_enabled ? 'Positive is charging' : 'Development configuration' }}</small></div>
             <div class="primary-metric" :class="{ unavailable: !status?.soc_valid }"><span>SoC</span><b>{{ socValue }}</b><small>Last calibration: {{ socCalibration }}</small></div>
           </div>
-          <div class="hv-metrics">
-            <div class="primary-metric" :class="{ unavailable: !snapshot?.hv_voltages?.valid }"><span>BAT+ · AMC3330</span><b>{{ hvVoltage('bat_plus_uV') }}</b></div>
-            <div class="primary-metric" :class="{ unavailable: !snapshot?.hv_voltages?.valid }"><span>LOAD+ · AMC3330</span><b>{{ hvVoltage('load_plus_uV') }}</b></div>
-          </div>
           <div class="cell-summary"><span>Cells</span><b>{{ snapshot ? measurement(`${cellVoltageV(snapshot.pack.min_cell_uV).toFixed(3)}–${cellVoltageV(snapshot.pack.max_cell_uV).toFixed(3)} V`) : '—' }}</b><small>{{ snapshot ? measurement(`Δ ${cellDeltaMv.toFixed(1)} mV`) : '—' }} · {{ snapshot ? measurement(`NTC ${ntcCelsius(snapshot.pack.min_ntc_raw).toFixed(1)}–${ntcCelsius(snapshot.pack.max_ntc_raw).toFixed(1)} °C`) : '—' }} · {{ snapshot ? measurement(`IC ${icCelsius(snapshot.pack.min_ic_raw).toFixed(1)}–${icCelsius(snapshot.pack.max_ic_raw).toFixed(1)} °C`) : '—' }}</small></div>
-        </div>
-        <div class="overview-section device-status-section">
-          <span class="section-label">Device status</span>
-          <dl class="clock-details"><div><dt>Device time</dt><dd>{{ formattedDeviceTime }}</dd></div><div><dt>BMS uptime</dt><dd>{{ formattedStm32Uptime }}</dd><small v-if="stm32Restarted">Restart detected in this Companion session.</small></div><div><dt>Gateway uptime</dt><dd>{{ formattedGatewayUptime }}</dd><small v-if="gatewayRestarted">Restart detected in this Companion session.</small></div></dl>
         </div>
       </section>
       <section class="panel attention">

@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { csvHeader, csvRow, downloadCsv } from '@/shared/csv'
 import { registerFields } from '@/shared/registers'
 import { serviceResultLabel } from '@/shared/service'
-import { bccDiagnosticNames, bccDiagnosticStatusNames } from '@/shared/model'
+import { bccDiagnosticNames, bccDiagnosticStatusNames, cellVoltageV } from '@/shared/model'
 import type { BccDiagnosticReport, BmsTransport, Capabilities, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
 
 const props = defineProps<{ snapshot: Snapshot | null; status: Status | null; transport: BmsTransport; capabilities: Capabilities; connected: boolean; diagnosticReports: BccDiagnosticReport[] }>()
@@ -25,6 +25,12 @@ const reportRows = computed(() => props.diagnosticReports.map(report => ({
   statusName: bccDiagnosticStatusNames[report.status_code] ?? `BCC status ${report.status_code}`,
   failedName: bccDiagnosticNames[report.failed_diagnostic] ?? 'diagnostic execution',
 })))
+const hvVoltage = (field: 'bat_plus_uV' | 'load_plus_uV') => {
+  const voltages = props.snapshot?.hv_voltages
+  if (!voltages?.valid) return props.snapshot ? 'Unavailable' : '—'
+  if (!fresh.value) return '—'
+  return `${cellVoltageV(voltages[field]).toFixed(2)} V`
+}
 
 function describe(response: ServiceResponse): string {
   if (response.data?.value !== undefined) return `${serviceResultLabel(response.result)}: 0x${response.data.value.toString(16).padStart(4, '0').toUpperCase()}`
@@ -68,6 +74,14 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
       <div class="panel-heading"><div><h2>Last BCC diagnostic report</h2></div><p>Per-slave details from the most recent startup diagnostic run.</p></div>
       <p v-if="!diagnosticReports.length" class="muted">No diagnostic report is available. A report appears when the BMS reports a BCC diagnostic failure.</p>
       <div v-else class="table-scroll"><table><thead><tr><th>Slave</th><th>CID</th><th>Failed checks</th><th>Low-level result</th></tr></thead><tbody><tr v-for="report in reportRows" :key="report.slave_index"><th>Slave {{ report.slave_index + 1 }}</th><td>{{ report.cid }}</td><td>{{ report.failedNames.length ? report.failedNames.join(', ') : 'None recorded' }}</td><td>{{ report.status_code === 0 ? 'Functional result' : `${report.statusName} during ${report.failedName}` }}</td></tr></tbody></table></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading"><div><h2>HV measurements</h2></div><p>Raw high-voltage readings from the AMC3330 isolation amplifiers.</p></div>
+      <div class="hv-metrics diagnostic-hv-metrics">
+        <div class="primary-metric" :class="{ unavailable: !snapshot?.hv_voltages?.valid }"><span>BAT+ · AMC3330</span><b>{{ hvVoltage('bat_plus_uV') }}</b></div>
+        <div class="primary-metric" :class="{ unavailable: !snapshot?.hv_voltages?.valid }"><span>LOAD+ · AMC3330</span><b>{{ hvVoltage('load_plus_uV') }}</b></div>
+      </div>
     </section>
 
     <section class="panel logging-panel">

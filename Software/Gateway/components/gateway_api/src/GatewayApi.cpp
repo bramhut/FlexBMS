@@ -10,6 +10,8 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include <array>
 #include <cctype>
@@ -63,8 +65,12 @@ namespace FlexBms::GatewayApi
             bool sendPending = false;
             bool retiring = false;
             int64_t nextCloseAttemptUs = 0;
+            char *queuedText = nullptr;
+            size_t queuedLength = 0U;
+            uint32_t generation = 0U;
         };
         std::array<WebSocketDelivery, kMaxTrackedWebSockets> webSocketDeliveries{};
+        SemaphoreHandle_t webSocketDeliveryMutex = nullptr;
 
         const char *wifiState()
         {
@@ -147,6 +153,7 @@ namespace FlexBms::GatewayApi
         {
             char *text = nullptr;
             httpd_ws_frame_t frame{};
+            uint32_t generation = 0U;
         };
 
         WebSocketDelivery *findWebSocketDelivery(int socket, bool create)
@@ -161,6 +168,8 @@ namespace FlexBms::GatewayApi
                 if (delivery.socket < 0)
                 {
                     delivery.socket = socket;
+                    ++delivery.generation;
+                    if (delivery.generation == 0U) delivery.generation = 1U;
                     return &delivery;
                 }
             }
@@ -169,12 +178,34 @@ namespace FlexBms::GatewayApi
 
         void resetWebSocketDelivery(WebSocketDelivery &delivery)
         {
+            const uint32_t nextGeneration = delivery.generation + 1U;
+            std::free(delivery.queuedText);
             delivery = {};
+            delivery.generation = nextGeneration == 0U ? 1U : nextGeneration;
+        }
+
+        void lockWebSocketDeliveries()
+        {
+            if (webSocketDeliveryMutex != nullptr) (void)xSemaphoreTake(webSocketDeliveryMutex, portMAX_DELAY);
+        }
+
+        void unlockWebSocketDeliveries()
+        {
+            if (webSocketDeliveryMutex != nullptr) (void)xSemaphoreGive(webSocketDeliveryMutex);
+        }
+
+        void prepareWebSocketConnection(int socket)
+        {
+            lockWebSocketDeliveries();
+            WebSocketDelivery *delivery = findWebSocketDelivery(socket, false);
+            if (delivery != nullptr) resetWebSocketDelivery(*delivery);
+            unlockWebSocketDeliveries();
         }
 
         void retireUnresponsiveWebSockets()
         {
             if (server == nullptr) return;
+            lockWebSocketDeliveries();
             const int64_t now = esp_timer_get_time();
             for (auto &delivery : webSocketDeliveries)
             {
@@ -196,15 +227,18 @@ namespace FlexBms::GatewayApi
                     ESP_LOGW(kLogTag, "WebSocket close request failed for socket %d: %s", delivery.socket, esp_err_to_name(closeResult));
                 }
             }
+            unlockWebSocketDeliveries();
         }
 
         void releaseQueuedWebSocketText(esp_err_t result, int socket, void *context)
         {
             auto *message = static_cast<QueuedWebSocketText *>(context);
+            const uint32_t generation = message->generation;
             std::free(message->text);
             delete message;
+            lockWebSocketDeliveries();
             WebSocketDelivery *delivery = findWebSocketDelivery(socket, false);
-            if (delivery != nullptr)
+            if (delivery != nullptr && delivery->generation == generation)
             {
                 delivery->sendPending = false;
                 if (result != ESP_OK)
@@ -214,9 +248,13 @@ namespace FlexBms::GatewayApi
                     // server callback, avoiding a control-queue feedback loop.
                     delivery->retiring = true;
                     delivery->nextCloseAttemptUs = 0;
+                    std::free(delivery->queuedText);
+                    delivery->queuedText = nullptr;
+                    delivery->queuedLength = 0U;
                     ESP_LOGW(kLogTag, "Retiring unresponsive WebSocket client %d: %s", socket, esp_err_to_name(result));
                 }
             }
+            unlockWebSocketDeliveries();
         }
 
         bool queueWebSocketText(int socket, const char *text, size_t length)
@@ -227,34 +265,127 @@ namespace FlexBms::GatewayApi
                 return false;
             }
 
-            WebSocketDelivery *delivery = findWebSocketDelivery(socket, true);
-            if (delivery == nullptr || delivery->retiring || delivery->sendPending) return false;
+            char *copy = static_cast<char *>(std::malloc(length + 1U));
+            if (copy == nullptr) return false;
+            std::memcpy(copy, text, length);
+            copy[length] = '\0';
 
-            auto *message = new (std::nothrow) QueuedWebSocketText{};
-            if (message == nullptr) return false;
-            message->text = static_cast<char *>(std::malloc(length + 1U));
-            if (message->text == nullptr)
+            lockWebSocketDeliveries();
+            WebSocketDelivery *delivery = findWebSocketDelivery(socket, true);
+            if (delivery == nullptr || delivery->retiring)
             {
-                delete message;
+                unlockWebSocketDeliveries();
+                std::free(copy);
                 return false;
             }
-            std::memcpy(message->text, text, length);
-            message->text[length] = '\0';
+
+            if (delivery->sendPending || delivery->queuedText != nullptr)
+            {
+                // Status publications are state, not an event log. Keep the
+                // newest one and send it after the current async frame.
+                std::free(delivery->queuedText);
+                delivery->queuedText = copy;
+                delivery->queuedLength = length;
+                unlockWebSocketDeliveries();
+                return true;
+            }
+
+            auto *message = new (std::nothrow) QueuedWebSocketText{};
+            if (message == nullptr)
+            {
+                unlockWebSocketDeliveries();
+                std::free(copy);
+                return false;
+            }
+            message->text = copy;
             message->frame.type = HTTPD_WS_TYPE_TEXT;
             message->frame.payload = reinterpret_cast<uint8_t *>(message->text);
             message->frame.len = length;
+            message->generation = delivery->generation;
             delivery->sendPending = true;
+            const uint32_t generation = delivery->generation;
+            unlockWebSocketDeliveries();
+
             if (httpd_ws_send_data_async(server, socket, &message->frame,
                                          releaseQueuedWebSocketText, message) == ESP_OK)
             {
                 return true;
             }
-            delivery->sendPending = false;
-            delivery->retiring = true;
-            delivery->nextCloseAttemptUs = 0;
+
+            lockWebSocketDeliveries();
+            delivery = findWebSocketDelivery(socket, false);
+            if (delivery != nullptr && delivery->generation == generation)
+            {
+                delivery->sendPending = false;
+                delivery->retiring = true;
+                delivery->nextCloseAttemptUs = 0;
+                std::free(delivery->queuedText);
+                delivery->queuedText = nullptr;
+                delivery->queuedLength = 0U;
+            }
+            unlockWebSocketDeliveries();
             std::free(message->text);
             delete message;
             return false;
+        }
+
+        void flushQueuedWebSockets()
+        {
+            if (server == nullptr) return;
+            for (auto &delivery : webSocketDeliveries)
+            {
+                QueuedWebSocketText *message = nullptr;
+                int socket = -1;
+                uint32_t generation = 0U;
+                lockWebSocketDeliveries();
+                if (delivery.socket >= 0 && !delivery.sendPending && !delivery.retiring && delivery.queuedText != nullptr)
+                {
+                    if (httpd_ws_get_fd_info(server, delivery.socket) != HTTPD_WS_CLIENT_WEBSOCKET)
+                    {
+                        resetWebSocketDelivery(delivery);
+                    }
+                    else
+                    {
+                        message = new (std::nothrow) QueuedWebSocketText{};
+                        if (message != nullptr)
+                        {
+                            message->text = delivery.queuedText;
+                            message->frame.type = HTTPD_WS_TYPE_TEXT;
+                            message->frame.payload = reinterpret_cast<uint8_t *>(message->text);
+                            message->frame.len = delivery.queuedLength;
+                            message->generation = delivery.generation;
+                            socket = delivery.socket;
+                            generation = delivery.generation;
+                            delivery.queuedText = nullptr;
+                            delivery.queuedLength = 0U;
+                            delivery.sendPending = true;
+                        }
+                    }
+                }
+                unlockWebSocketDeliveries();
+
+                if (message == nullptr) continue;
+                if (httpd_ws_send_data_async(server, socket, &message->frame,
+                                             releaseQueuedWebSocketText, message) == ESP_OK)
+                {
+                    continue;
+                }
+
+                lockWebSocketDeliveries();
+                WebSocketDelivery *current = findWebSocketDelivery(socket, false);
+                if (current != nullptr && current->generation == generation)
+                {
+                    current->sendPending = false;
+                    current->retiring = true;
+                    current->nextCloseAttemptUs = 0;
+                    std::free(current->queuedText);
+                    current->queuedText = nullptr;
+                    current->queuedLength = 0U;
+                }
+                unlockWebSocketDeliveries();
+                std::free(message->text);
+                delete message;
+            }
         }
 
         bool sendJsonTo(int socket, cJSON *root)
@@ -823,6 +954,7 @@ namespace FlexBms::GatewayApi
             const int socket = httpd_req_to_sockfd(request);
             if (request->method == HTTP_GET)
             {
+                prepareWebSocketConnection(socket);
                 (void)sendJsonTo(socket, hello());
                 if (hasStatus) (void)sendJsonTo(socket, bmsStatusJson());
                 if (completeSnapshot()) (void)sendJsonTo(socket, snapshotJson());
@@ -922,6 +1054,8 @@ namespace FlexBms::GatewayApi
     bool start(ServiceSender sender)
     {
         if (server != nullptr) return true;
+        webSocketDeliveryMutex = xSemaphoreCreateMutex();
+        if (webSocketDeliveryMutex == nullptr) return false;
         serviceSender = sender;
         httpd_config_t config = HTTPD_DEFAULT_CONFIG();
         config.lru_purge_enable = true;
@@ -931,7 +1065,12 @@ namespace FlexBms::GatewayApi
         config.max_open_sockets = kMaxHttpClients;
         config.max_uri_handlers = 6;
         config.uri_match_fn = httpd_uri_match_wildcard;
-        if (httpd_start(&server, &config) != ESP_OK) return false;
+        if (httpd_start(&server, &config) != ESP_OK)
+        {
+            vSemaphoreDelete(webSocketDeliveryMutex);
+            webSocketDeliveryMutex = nullptr;
+            return false;
+        }
         const httpd_uri_t log = {.uri = "/api/diagnostic-log", .method = HTTP_GET, .handler = logHandler, .user_ctx = nullptr,
                                  .is_websocket = false, .handle_ws_control_frames = false, .supported_subprotocol = nullptr};
         const httpd_uri_t ws = {.uri = "/ws", .method = HTTP_GET, .handler = wsHandler, .user_ctx = nullptr,
@@ -950,6 +1089,7 @@ namespace FlexBms::GatewayApi
     void poll()
     {
         retireUnresponsiveWebSockets();
+        flushQueuedWebSockets();
         Wifi::ScanResults results{};
         if (Wifi::consumeScanResults(results) && pendingScanSocket >= 0)
         {
