@@ -105,6 +105,8 @@
 
 namespace BCC_Diagnostics
 {
+    using ProgressCallback = void (*)();
+
 
     enum DiagnosticId : uint8_t
     {
@@ -611,5 +613,6 @@ namespace BCC_Diagnostics
      * @return bcc_status_t Error code.
      */
     bcc_status_t runStartupChecks(BCC *bcc, SafetyLimits_t safetyLimits, diags_t *result,
-                                  uint8_t *failedDiagnostic = nullptr);
+                                  uint8_t *failedDiagnostic = nullptr,
+                                  ProgressCallback progressCallback = nullptr);
 }

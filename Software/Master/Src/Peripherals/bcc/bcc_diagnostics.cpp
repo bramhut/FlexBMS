@@ -2341,7 +2341,7 @@ namespace BCC_Diagnostics
      *
      *END**************************************************************************/
     bcc_status_t runChecks(BCC *bcc, diags_t funcs, SafetyLimits_t safetyLimits, diags_t *result,
-                           uint8_t *failedDiagnostic)
+                           uint8_t *failedDiagnostic, ProgressCallback progressCallback)
     {
         bcc_status_t status;
 
@@ -2362,6 +2362,7 @@ namespace BCC_Diagnostics
                 return status;
             }
             result->ADC1VER = res.error;
+            if (progressCallback != nullptr) progressCallback();
         }
         if (funcs.OVUVVER)
         {
@@ -2374,6 +2375,7 @@ namespace BCC_Diagnostics
                 return status;
             }
             result->OVUVVER = res.error;
+            if (progressCallback != nullptr) progressCallback();
         }
         if (funcs.OVUVDET)
         {
@@ -2386,6 +2388,7 @@ namespace BCC_Diagnostics
                 return status;
             }
             result->OVUVDET = res.error;
+            if (progressCallback != nullptr) progressCallback();
         }
         if (funcs.CTXOPEN)
         {
@@ -2398,6 +2401,7 @@ namespace BCC_Diagnostics
                 return status;
             }
             result->CTXOPEN = res.ctxOpen | res.swxOpen | res.swxShort;
+            if (progressCallback != nullptr) progressCallback();
         }
         if (funcs.CELLVOLT)
         {
@@ -2410,6 +2414,7 @@ namespace BCC_Diagnostics
                 return status;
             }
             result->CELLVOLT = res.result;
+            if (progressCallback != nullptr) progressCallback();
         }
         if (funcs.CONNRES)
         {
@@ -2422,6 +2427,7 @@ namespace BCC_Diagnostics
                 return status;
             }
             result->CONNRES = res.result;
+            if (progressCallback != nullptr) progressCallback();
         }
         if (funcs.CTXLEAK)
         {
@@ -2434,6 +2440,7 @@ namespace BCC_Diagnostics
                 return status;
             }
             result->CTXLEAK = res.result;
+            if (progressCallback != nullptr) progressCallback();
         }
 
         // The following diagnostics are only available on BCC's with current sense enabled.
@@ -2451,6 +2458,7 @@ namespace BCC_Diagnostics
                     return status;
                 }
                 result->CURRMEAS = fault;
+                if (progressCallback != nullptr) progressCallback();
 
                 // Current measurement diagnostics consists of two parts, so we need to run the second part as well.
                 status = diag_CurrentMeas(bcc, BCC_DCM_VREF_GAIN4, &current, &fault);
@@ -2460,6 +2468,7 @@ namespace BCC_Diagnostics
                     return status;
                 }
                 result->CURRMEAS |= fault;
+                if (progressCallback != nullptr) progressCallback();
             }
             if (funcs.SHUNTNOTCONN)
             {
@@ -2472,6 +2481,7 @@ namespace BCC_Diagnostics
                     return status;
                 }
                 result->SHUNTNOTCONN = !shuntConn;
+                if (progressCallback != nullptr) progressCallback();
             }
         } else {
             // If current sense is not enabled, we set the diagnostics to false.
@@ -2490,6 +2500,7 @@ namespace BCC_Diagnostics
                 return status;
             }
             result->GPIOXOTUT = res.error;
+            if (progressCallback != nullptr) progressCallback();
         }
         if (funcs.GPIOXOPEN)
         {
@@ -2502,6 +2513,7 @@ namespace BCC_Diagnostics
                 return status;
             }
             result->GPIOXOPEN = openStatus;
+            if (progressCallback != nullptr) progressCallback();
         }
         if (funcs.CBXOPEN)
         {
@@ -2514,12 +2526,13 @@ namespace BCC_Diagnostics
                 return status;
             }
             result->CBXOPEN = res.error;
+            if (progressCallback != nullptr) progressCallback();
         }
         return BCC_STATUS_SUCCESS;
     }
 
     bcc_status_t runStartupChecks(BCC *bcc, SafetyLimits_t safetyLimits, diags_t *result,
-                                  uint8_t *failedDiagnostic)
+                                  uint8_t *failedDiagnostic, ProgressCallback progressCallback)
     {
         // List of all diagnostic functions that should be run during startup checks.
         // TBD
@@ -2538,6 +2551,6 @@ namespace BCC_Diagnostics
             .CBXOPEN = true
         };
 
-        return runChecks(bcc, funcs, safetyLimits, result, failedDiagnostic);
+        return runChecks(bcc, funcs, safetyLimits, result, failedDiagnostic, progressCallback);
     }
 }

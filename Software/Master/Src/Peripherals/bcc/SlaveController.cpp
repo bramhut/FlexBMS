@@ -935,7 +935,8 @@ namespace SlaveController
                 uint8_t failedDiagnostic = BCC_Diagnostics::DIAGNOSTIC_NONE;
                 // If a generic issue arrises during a diagnostic, set succes to false
                 const bcc_status_t diagnosticStatus = BCC_Diagnostics::runStartupChecks(
-                    &slave, settings.SAFETY_LIMITS, &result, &failedDiagnostic);
+                    &slave, settings.SAFETY_LIMITS, &result, &failedDiagnostic,
+                    Watchdog::reportBccProgress);
                 const uint16_t failedChecks = diagnosticFailureMask(result);
                 taskENTER_CRITICAL();
                 diagnosticReports[index] = {
