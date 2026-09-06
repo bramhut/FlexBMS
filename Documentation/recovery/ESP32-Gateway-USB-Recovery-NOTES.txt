@@ -1,0 +1,47 @@
+FlexBMS Gateway recovery build
+==============================
+
+Why this package exists
+-----------------------
+
+The previous Gateway startup path could stop before Wi-Fi was started when a
+boot self-test failed. That made both HTTP and ping unavailable. This recovery
+build keeps network recovery independent from the STM32 side:
+
+- UART codec and browser API self-test failures are logged instead of causing
+  an early abort before Wi-Fi starts.
+- UART setup and status LED failures are isolated from the network services.
+- Gateway firmware update is available through the setup/recovery access point
+  as well as the normal station LAN.
+- STM32 updates remain restricted to the normal station LAN because the STM32
+  update protocol requires the running STM32 application to prepare the
+  transfer.
+
+Expected first boot
+-------------------
+
+The complete factory image is written at flash offset 0x0 and contains:
+
+- ESP32-C3 bootloader at 0x000000
+- partition table at 0x008000
+- Gateway application in ota_0 at 0x020000
+
+The image also initializes the non-volatile network area to the factory state,
+so it is normal to need Wi-Fi setup again after this recovery. The supplied
+image is for an ESP32-C3 with 4 MiB flash.
+
+Validation performed before packaging
+--------------------------------------
+
+- PlatformIO Gateway build completed successfully.
+- Companion type checks and tests completed successfully before packaging.
+- The factory image is built from the same bootloader, partition table, and
+  current Gateway application.
+- SHA-256 of the factory image is listed in SHA256SUMS.txt.
+
+Limitations
+-----------
+
+This USB procedure restores the ESP32 Gateway only. It cannot force an
+unresponsive STM32 into its bootloader because the current Gateway hardware has
+no independent ESP32-controlled STM32 BOOT0 and NRST path.
