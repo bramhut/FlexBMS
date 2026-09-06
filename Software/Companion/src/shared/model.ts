@@ -6,6 +6,23 @@ export const socPercent = (raw: number) => 100 * (raw / 65535 * 3 - 1)
 export const ntcCelsius = (raw: number) => raw / 65535 * 120 - 20
 // The STM32 BCC driver exports IC temperature as centikelvin.
 export const icCelsius = (raw: number) => raw / 100 - 273.15
+const formatEnergyScaled = (microWh: bigint, divisor: bigint, decimals: bigint, unit: string): string => {
+  const factor = 10n ** decimals
+  const rounded = (microWh * factor + divisor / 2n) / divisor
+  const whole = rounded / factor
+  if (decimals === 0n) return `${whole} ${unit}`
+  const fraction = (rounded % factor).toString().padStart(Number(decimals), '0')
+  return `${whole}.${fraction} ${unit}`
+}
+export const formatEnergy = (microWh: string | number | bigint | undefined, valid = true): string => {
+  if (!valid || microWh === undefined) return 'Unavailable'
+  let value: bigint
+  try { value = typeof microWh === 'bigint' ? microWh : BigInt(microWh) } catch { return 'Unavailable' }
+  if (value < 1_000n) return `${value} µWh`
+  if (value < 1_000_000n) return formatEnergyScaled(value, 1_000n, 2n, 'mWh')
+  if (value < 1_000_000_000n) return formatEnergyScaled(value, 1_000_000n, 2n, 'Wh')
+  return formatEnergyScaled(value, 1_000_000_000n, 3n, 'kWh')
+}
 export const isFresh = (snapshot: Snapshot | null) => snapshot !== null && snapshot.status.measurements_fresh
 export const valueOrStale = (value: string, fresh: boolean) => fresh ? value : 'Stale'
 export const bmsStateName = (value: number) => ['Starting', 'Ready', 'Running', 'Error', 'Critical'][value] ?? `Unknown (${value})`

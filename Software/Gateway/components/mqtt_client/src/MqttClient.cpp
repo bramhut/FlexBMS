@@ -54,8 +54,10 @@ namespace FlexBms::Mqtt
         int64_t lastStatePublishUs = 0;
         UartV1::Status status{};
         UartV1::Pack pack{};
+        UartV1::Energy energy{};
         bool hasStatus = false;
         bool hasPack = false;
+        bool hasEnergy = false;
         uint32_t lastGatewayUptimeMs = 0U;
         std::array<char, 24U> deviceId{};
         std::array<char, 96U> baseTopic{};
@@ -139,7 +141,7 @@ namespace FlexBms::Mqtt
 
         void addComponent(cJSON *components, const char *key, const char *platform, const char *name, const char *uniqueId, const char *templateText,
                           const char *deviceClass = nullptr, const char *unit = nullptr, const char *entityCategory = nullptr,
-                          int suggestedDisplayPrecision = -1)
+                          int suggestedDisplayPrecision = -1, const char *stateClass = nullptr)
         {
             cJSON *component = cJSON_AddObjectToObject(components, key);
             cJSON_AddStringToObject(component, "p", platform);
@@ -150,6 +152,7 @@ namespace FlexBms::Mqtt
             if (unit != nullptr) cJSON_AddStringToObject(component, "unit_of_measurement", unit);
             if (entityCategory != nullptr) cJSON_AddStringToObject(component, "entity_category", entityCategory);
             if (suggestedDisplayPrecision >= 0) cJSON_AddNumberToObject(component, "suggested_display_precision", suggestedDisplayPrecision);
+            if (stateClass != nullptr) cJSON_AddStringToObject(component, "state_class", stateClass);
         }
 
         void publishDiscovery()
@@ -172,10 +175,11 @@ namespace FlexBms::Mqtt
             cJSON *components = cJSON_AddObjectToObject(root, "cmps");
             char uniqueId[48]{};
             auto component = [&](const char *key, const char *platform, const char *name, const char *tpl, const char *deviceClass = nullptr,
-                                 const char *unit = nullptr, const char *category = nullptr, int suggestedDisplayPrecision = -1)
+                                 const char *unit = nullptr, const char *category = nullptr, int suggestedDisplayPrecision = -1,
+                                 const char *stateClass = nullptr)
             {
                 std::snprintf(uniqueId, sizeof(uniqueId), "%s_%s", deviceId.data(), key);
-                addComponent(components, key, platform, name, uniqueId, tpl, deviceClass, unit, category, suggestedDisplayPrecision);
+                addComponent(components, key, platform, name, uniqueId, tpl, deviceClass, unit, category, suggestedDisplayPrecision, stateClass);
             };
             component("run_request", "switch", "Run request", "{{ 'ON' if value_json.run_request else 'OFF' }}");
             cJSON *runRequest = cJSON_GetObjectItemCaseSensitive(components, "run_request");
@@ -183,15 +187,17 @@ namespace FlexBms::Mqtt
             cJSON_AddStringToObject(runRequest, "pl_on", "ON");
             cJSON_AddStringToObject(runRequest, "pl_off", "OFF");
             cJSON_AddBoolToObject(runRequest, "opt", false);
-            component("pack_voltage", "sensor", "Pack voltage", "{{ value_json.pack_voltage_v }}", "voltage", "V");
-            component("pack_current", "sensor", "Pack current", "{{ value_json.pack_current_a if value_json.current_valid else none }}", "current", "A");
-            component("pack_power", "sensor", "Pack power", "{{ value_json.pack_power_w if value_json.current_valid else none }}", "power", "W");
-            component("state_of_charge", "sensor", "State of charge", "{{ value_json.soc_percent if value_json.soc_valid else none }}", "battery", "%");
-            component("min_cell_voltage", "sensor", "Minimum cell voltage", "{{ value_json.min_cell_v }}", "voltage", "V", nullptr, 3);
-            component("max_cell_voltage", "sensor", "Maximum cell voltage", "{{ value_json.max_cell_v }}", "voltage", "V", nullptr, 3);
-            component("cell_delta", "sensor", "Cell voltage delta", "{{ value_json.cell_delta_mv }}", nullptr, "mV", nullptr, 0);
-            component("min_ntc_temperature", "sensor", "Minimum NTC temperature", "{{ value_json.min_ntc_c }}", "temperature", "°C");
-            component("max_ntc_temperature", "sensor", "Maximum NTC temperature", "{{ value_json.max_ntc_c }}", "temperature", "°C");
+            component("pack_voltage", "sensor", "Pack voltage", "{{ value_json.pack_voltage_v }}", "voltage", "V", nullptr, -1, "measurement");
+            component("pack_current", "sensor", "Pack current", "{{ value_json.pack_current_a if value_json.current_valid else none }}", "current", "A", nullptr, -1, "measurement");
+            component("pack_power", "sensor", "Pack power", "{{ value_json.pack_power_w if value_json.current_valid else none }}", "power", "W", nullptr, -1, "measurement");
+            component("state_of_charge", "sensor", "State of charge", "{{ value_json.soc_percent if value_json.soc_valid else none }}", "battery", "%", nullptr, -1, "measurement");
+            component("min_cell_voltage", "sensor", "Minimum cell voltage", "{{ value_json.min_cell_v }}", "voltage", "V", nullptr, 3, "measurement");
+            component("max_cell_voltage", "sensor", "Maximum cell voltage", "{{ value_json.max_cell_v }}", "voltage", "V", nullptr, 3, "measurement");
+            component("cell_delta", "sensor", "Cell voltage delta", "{{ value_json.cell_delta_mv }}", nullptr, "mV", nullptr, 0, "measurement");
+            component("min_ntc_temperature", "sensor", "Minimum NTC temperature", "{{ value_json.min_ntc_c }}", "temperature", "°C", nullptr, -1, "measurement");
+            component("max_ntc_temperature", "sensor", "Maximum NTC temperature", "{{ value_json.max_ntc_c }}", "temperature", "°C", nullptr, -1, "measurement");
+            component("battery_energy_charged", "sensor", "Battery energy charged", "{{ value_json.charged_energy_kwh if value_json.energy_valid else none }}", "energy", "kWh", nullptr, 3, "total_increasing");
+            component("battery_energy_discharged", "sensor", "Battery energy discharged", "{{ value_json.discharged_energy_kwh if value_json.energy_valid else none }}", "energy", "kWh", nullptr, 3, "total_increasing");
             component("bms_state", "sensor", "BMS state", "{{ value_json.bms_state }}", nullptr, nullptr, "diagnostic");
             component("hv_state", "sensor", "HV state", "{{ value_json.hv_state }}", nullptr, nullptr, "diagnostic");
             component("telemetry_fresh", "binary_sensor", "Telemetry fresh", "{{ 'ON' if value_json.measurements_fresh else 'OFF' }}", nullptr, nullptr, "diagnostic");
@@ -225,6 +231,12 @@ namespace FlexBms::Mqtt
             cJSON_AddBoolToObject(root, "measurements_fresh", fresh);
             cJSON_AddBoolToObject(root, "current_valid", (status.flags & (1U << 7U)) != 0U);
             cJSON_AddBoolToObject(root, "soc_valid", (status.flags & (1U << 6U)) != 0U);
+            cJSON_AddBoolToObject(root, "energy_valid", hasEnergy && energy.valid);
+            if (hasEnergy && energy.valid)
+            {
+                cJSON_AddNumberToObject(root, "charged_energy_kwh", static_cast<double>(energy.chargedEnergyUWh) / 1'000'000'000.0);
+                cJSON_AddNumberToObject(root, "discharged_energy_kwh", static_cast<double>(energy.dischargedEnergyUWh) / 1'000'000'000.0);
+            }
             cJSON_AddBoolToObject(root, "uart_healthy", uartHealthy);
             cJSON_AddStringToObject(root, "mqtt_state", "connected");
             cJSON_AddNumberToObject(root, "gateway_uptime_s", lastGatewayUptimeMs / 1000U);
@@ -420,8 +432,14 @@ namespace FlexBms::Mqtt
     void publishFrame(const UartV1::Frame &frame, uint32_t gatewayUptimeMs)
     {
         lastGatewayUptimeMs = gatewayUptimeMs;
-        if (frame.type == UartV1::MessageType::Status && UartV1::decodeStatus(frame, status)) { hasStatus = true; stateDirty = true; }
+        if (frame.type == UartV1::MessageType::Status && UartV1::decodeStatus(frame, status))
+        {
+            hasStatus = true;
+            if ((status.flags & (1U << 3U)) == 0U) hasEnergy = false;
+            stateDirty = true;
+        }
         else if (frame.type == UartV1::MessageType::Pack && UartV1::decodePack(frame, pack)) { hasPack = true; stateDirty = true; }
+        else if (frame.type == UartV1::MessageType::Energy && UartV1::decodeEnergy(frame, energy)) { hasEnergy = true; stateDirty = true; }
         else if (frame.type == UartV1::MessageType::Event && frame.length == 5U)
         {
             const uint32_t value = static_cast<uint32_t>(frame.payload[1]) | (static_cast<uint32_t>(frame.payload[2]) << 8U) |

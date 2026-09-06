@@ -9,6 +9,7 @@ export const messageType = {
   cell: 0x04,
   temperature: 0x05,
   hvVoltages: 0x06,
+  energy: 0x07,
   serviceRequest: 0x10,
   serviceResponse: 0x11,
   event: 0x12,
@@ -20,6 +21,11 @@ export type UartV1Frame = { type: number; sequence: number; payload: Uint8Array 
 
 export function readLe16(bytes: Uint8Array, offset = 0): number { return bytes[offset] | (bytes[offset + 1] << 8) }
 export function readLe32(bytes: Uint8Array, offset = 0): number { return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0 }
+export function readLe64(bytes: Uint8Array, offset = 0): bigint {
+  let value = 0n
+  for (let index = 0; index < 8; index += 1) value |= BigInt(bytes[offset + index]) << BigInt(index * 8)
+  return value
+}
 export function writeLe16(bytes: Uint8Array, offset: number, value: number): void { bytes[offset] = value; bytes[offset + 1] = value >>> 8 }
 export function writeLe32(bytes: Uint8Array, offset: number, value: number): void { bytes[offset] = value; bytes[offset + 1] = value >>> 8; bytes[offset + 2] = value >>> 16; bytes[offset + 3] = value >>> 24 }
 
@@ -82,6 +88,11 @@ export function decodePack(payload: Uint8Array): Snapshot['pack'] | undefined {
 export function decodeHvVoltages(payload: Uint8Array): Snapshot['hv_voltages'] | undefined {
   if (payload.length !== 12) return undefined
   return { valid: (payload[0] & 1) !== 0, bat_plus_uV: readLe32(payload, 4), load_plus_uV: readLe32(payload, 8) }
+}
+
+export function decodeEnergy(payload: Uint8Array): Snapshot['energy'] | undefined {
+  if (payload.length !== 17) return undefined
+  return { valid: (payload[0] & 1) !== 0, charged_energy_uWh: readLe64(payload, 1).toString(), discharged_energy_uWh: readLe64(payload, 9).toString() }
 }
 
 export function decodeCell(payload: Uint8Array): Snapshot['cells'][number] | undefined {

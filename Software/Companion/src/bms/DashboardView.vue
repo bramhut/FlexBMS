@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ServiceView from './ServiceView.vue'
 import RecentChangesList from './RecentChangesList.vue'
-import { bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, hvReasonNames, hvStateName, icCelsius, ntcCelsius, setBits, socPercent, warningDisplayNames } from '@/shared/model'
+import { bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, formatEnergy, hvReasonNames, hvStateName, icCelsius, ntcCelsius, setBits, socPercent, warningDisplayNames } from '@/shared/model'
 import { serviceResultLabel } from '@/shared/service'
 import { advancingUnixTime, advancingUptimeMs, formatUptime } from '@/shared/time'
 import type { BccDiagnosticReport, BmsTransport, Capabilities, GatewayStatus, RecordedControllerEvent, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
@@ -93,6 +93,8 @@ const hvDisplay = computed(() => {
   return { detail: `${state} · ${ready ? 'Ready' : 'Not ready'}`, ready }
 })
 const socValue = computed(() => props.snapshot && props.status?.soc_valid ? measurement(`${socPercent(props.snapshot.pack.soc_raw).toFixed(1)} %`) : 'Unavailable')
+const chargedEnergyValue = computed(() => props.snapshot?.energy ? measurement(formatEnergy(props.snapshot.energy.charged_energy_uWh, props.snapshot.energy.valid)) : 'Unavailable')
+const dischargedEnergyValue = computed(() => props.snapshot?.energy ? measurement(formatEnergy(props.snapshot.energy.discharged_energy_uWh, props.snapshot.energy.valid)) : 'Unavailable')
 const socCalibration = computed(() => {
   const status = props.status
   if (!status?.current_sensing_enabled) return 'Current sensing disabled'
@@ -159,6 +161,10 @@ onBeforeUnmount(() => { window.clearInterval(clockTimer) })
             <div class="primary-metric"><span>Pack</span><b>{{ snapshot ? measurement(`${cellVoltageV(snapshot.pack.pack_voltage_uV).toFixed(2)} V`) : '—' }}</b></div>
             <div class="primary-metric" :class="{ unavailable: !status?.current_sensing_enabled }"><span>Current</span><b>{{ currentValue }}</b><small>{{ status?.current_sensing_enabled ? 'Positive is charging' : 'Development configuration' }}</small></div>
             <div class="primary-metric" :class="{ unavailable: !status?.soc_valid }"><span>SoC</span><b>{{ socValue }}</b><small>Last calibration: {{ socCalibration }}</small></div>
+          </div>
+          <div class="hv-metrics">
+            <div class="primary-metric" :class="{ unavailable: !snapshot?.energy?.valid }"><span>Energy charged</span><b>{{ chargedEnergyValue }}</b><small>Persistent total</small></div>
+            <div class="primary-metric" :class="{ unavailable: !snapshot?.energy?.valid }"><span>Energy discharged</span><b>{{ dischargedEnergyValue }}</b><small>Persistent total</small></div>
           </div>
           <div class="cell-summary"><span>Cells</span><b>{{ snapshot ? measurement(`${cellVoltageV(snapshot.pack.min_cell_uV).toFixed(3)}–${cellVoltageV(snapshot.pack.max_cell_uV).toFixed(3)} V`) : '—' }}</b><small>{{ snapshot ? measurement(`Δ ${cellDeltaMv.toFixed(1)} mV`) : '—' }} · {{ snapshot ? measurement(`NTC ${ntcCelsius(snapshot.pack.min_ntc_raw).toFixed(1)}–${ntcCelsius(snapshot.pack.max_ntc_raw).toFixed(1)} °C`) : '—' }} · {{ snapshot ? measurement(`IC ${icCelsius(snapshot.pack.min_ic_raw).toFixed(1)}–${icCelsius(snapshot.pack.max_ic_raw).toFixed(1)} °C`) : '—' }}</small></div>
         </div>

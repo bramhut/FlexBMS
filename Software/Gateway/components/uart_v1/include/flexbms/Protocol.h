@@ -22,6 +22,7 @@ namespace FlexBms::UartV1
         Cell = 0x04U,
         Temperature = 0x05U,
         HvVoltages = 0x06U,
+        Energy = 0x07U,
         ServiceRequest = 0x10U,
         ServiceResponse = 0x11U,
         Event = 0x12U,
@@ -70,6 +71,13 @@ namespace FlexBms::UartV1
         uint32_t loadVoltageUv{};
     };
 
+    struct Energy
+    {
+        bool valid{};
+        uint64_t chargedEnergyUWh{};
+        uint64_t dischargedEnergyUWh{};
+    };
+
     struct Cell
     {
         uint8_t slaveIndex{};
@@ -112,6 +120,7 @@ namespace FlexBms::UartV1
     bool decodeStatus(const Frame &frame, Status &status);
     bool decodePack(const Frame &frame, Pack &pack);
     bool decodeHvVoltages(const Frame &frame, HvVoltages &voltages);
+    bool decodeEnergy(const Frame &frame, Energy &energy);
     bool decodeCell(const Frame &frame, Cell &cell);
     bool decodeTemperature(const Frame &frame, Temperature &temperature);
 

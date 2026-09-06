@@ -56,6 +56,7 @@ namespace BmsUart
             CELL = 0x04U,
             TEMPERATURE = 0x05U,
             HV_VOLTAGES = 0x06U,
+            ENERGY = 0x07U,
             SERVICE_REQUEST = 0x10U,
             SERVICE_RESPONSE = 0x11U,
             EVENT = 0x12U,
@@ -604,6 +605,22 @@ namespace BmsUart
             writeLe16(payload.data() + 20U, measurement.minIcTemperatureRaw);
             writeLe16(payload.data() + 22U, measurement.maxIcTemperatureRaw);
             broadcastFrame(PACK, 0U, payload.data(), payload.size());
+        }
+
+        void writeLe64(uint8_t *data, uint64_t value)
+        {
+            writeLe32(data, static_cast<uint32_t>(value));
+            writeLe32(data + 4U, static_cast<uint32_t>(value >> 32U));
+        }
+
+        void sendEnergy()
+        {
+            const SlaveController::EnergySnapshot energy = SlaveController::getEnergySnapshot();
+            std::array<uint8_t, 17U> payload = {};
+            if (energy.valid) payload[0] = 1U;
+            writeLe64(payload.data() + 1U, energy.chargedEnergyUWh);
+            writeLe64(payload.data() + 9U, energy.dischargedEnergyUWh);
+            broadcastFrame(ENERGY, 0U, payload.data(), payload.size());
         }
 
         uint32_t voltageToMicrovolts(double voltage)
@@ -1208,6 +1225,7 @@ namespace BmsUart
                     sendHvVoltages();
                     const SlaveController::MeasurementSnapshot measurement = SlaveController::getMeasurementSnapshot();
                     sendPack(measurement);
+                    sendEnergy();
                     sendCellsAndTemperatures(measurement);
                     lastSnapshotMs = now;
                 }

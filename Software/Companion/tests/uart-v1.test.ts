@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { crc32, decodeHvVoltages, decodeStatus, encodeFrame, FrameDecoder, messageType, serviceId, writeLe32 } from '../src/shared/uartV1.ts'
+import { crc32, decodeEnergy, decodeHvVoltages, decodeStatus, encodeFrame, FrameDecoder, messageType, serviceId, writeLe32 } from '../src/shared/uartV1.ts'
 
 test('UART v1 browser codec matches the canonical heartbeat vector', () => {
   const heartbeat = encodeFrame({ type: messageType.heartbeat, sequence: 0, payload: new Uint8Array() })
@@ -26,6 +26,12 @@ test('UART v1 decodes valid AMC3330 BAT+ and LOAD+ telemetry', () => {
   writeLe32(payload, 8, 12_345)
   assert.deepEqual(decodeHvVoltages(payload), { valid: true, bat_plus_uV: 301_234_567, load_plus_uV: 12_345 })
   assert.equal(decodeHvVoltages(payload.slice(0, 11)), undefined)
+})
+
+test('UART v1 decodes 64-bit energy counters and rejects malformed payloads', () => {
+  const payload = Uint8Array.from([1, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x99, 0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff])
+  assert.deepEqual(decodeEnergy(payload), { valid: true, charged_energy_uWh: '1234605616436508552', discharged_energy_uWh: '18441921395520307353' })
+  assert.equal(decodeEnergy(payload.slice(0, 16)), undefined)
 })
 
 test('UART v1 status exposes current sensing and SOC calibration validity', () => {

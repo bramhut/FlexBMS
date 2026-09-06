@@ -111,6 +111,14 @@ namespace SlaveController
         std::vector<uint16_t> balancingMasks{};
     };
 
+    /*! @brief Persistent directional energy counters in micro-watt-hours. */
+    struct EnergySnapshot
+    {
+        bool valid{};
+        uint64_t chargedEnergyUWh{};
+        uint64_t dischargedEnergyUWh{};
+    };
+
     /*******************************************************************************
      * API
      ******************************************************************************/
@@ -134,6 +142,9 @@ namespace SlaveController
 
     /*! @brief Return one coherent copy of the latest complete measurement set. */
     MeasurementSnapshot getMeasurementSnapshot();
+
+    /*! @brief Return the latest persistent charge/discharge energy counters. */
+    EnergySnapshot getEnergySnapshot();
 
     /*!
      * @brief Get the current state of the BMS

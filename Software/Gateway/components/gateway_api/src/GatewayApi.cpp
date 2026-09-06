@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
@@ -50,6 +51,7 @@ namespace FlexBms::GatewayApi
         char pendingScanRequestId[kMaxRequestIdBytes + 1U] = {};
         UartV1::Status status{};
         UartV1::Pack pack{};
+        UartV1::Energy energy{};
         UartV1::HvVoltages hvVoltages{};
         std::array<UartV1::Cell, kMaxSlaves> cells{};
         std::array<UartV1::Temperature, kMaxSlaves> temperatures{};
@@ -57,6 +59,7 @@ namespace FlexBms::GatewayApi
         std::array<bool, kMaxSlaves> hasTemperature{};
         bool hasStatus = false;
         bool hasPack = false;
+        bool hasEnergy = false;
         bool hasHvVoltages = false;
 
         struct WebSocketDelivery
@@ -600,6 +603,17 @@ namespace FlexBms::GatewayApi
             cJSON_AddNumberToObject(packJson, "max_ntc_raw", pack.maxNtcRaw);
             cJSON_AddNumberToObject(packJson, "min_ic_raw", pack.minIcRaw);
             cJSON_AddNumberToObject(packJson, "max_ic_raw", pack.maxIcRaw);
+            if (hasEnergy)
+            {
+                cJSON *energyJson = cJSON_AddObjectToObject(root, "energy");
+                cJSON_AddBoolToObject(energyJson, "valid", energy.valid);
+                char chargedText[32]{};
+                char dischargedText[32]{};
+                std::snprintf(chargedText, sizeof(chargedText), "%llu", static_cast<unsigned long long>(energy.chargedEnergyUWh));
+                std::snprintf(dischargedText, sizeof(dischargedText), "%llu", static_cast<unsigned long long>(energy.dischargedEnergyUWh));
+                cJSON_AddStringToObject(energyJson, "charged_energy_uWh", chargedText);
+                cJSON_AddStringToObject(energyJson, "discharged_energy_uWh", dischargedText);
+            }
             if (hasHvVoltages)
             {
                 cJSON *hvVoltagesJson = cJSON_AddObjectToObject(root, "hv_voltages");
@@ -1263,12 +1277,14 @@ namespace FlexBms::GatewayApi
             if ((status.flags & (1U << 3U)) == 0U)
             {
                 hasPack = false;
+                hasEnergy = false;
                 hasHvVoltages = false;
                 hasCell.fill(false);
                 hasTemperature.fill(false);
             }
         }
         else if (frame.type == UartV1::MessageType::Pack && UartV1::decodePack(frame, pack)) hasPack = true;
+        else if (frame.type == UartV1::MessageType::Energy && UartV1::decodeEnergy(frame, energy)) hasEnergy = true;
         else if (frame.type == UartV1::MessageType::HvVoltages && UartV1::decodeHvVoltages(frame, hvVoltages)) hasHvVoltages = true;
         else if (frame.type == UartV1::MessageType::Cell)
         {

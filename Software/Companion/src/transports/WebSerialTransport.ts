@@ -1,6 +1,6 @@
 import type { BmsTransport, Capabilities, ConnectionState, MqttConfigurationResponse, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport.ts'
 import { unavailableCapabilities } from './Transport.ts'
-import { decodeCell, decodeHvVoltages, decodePack, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId } from '../shared/uartV1.ts'
+import { decodeCell, decodeEnergy, decodeHvVoltages, decodePack, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId } from '../shared/uartV1.ts'
 
 type SerialPortLike = { open(options: { baudRate: number }): Promise<void>; close(): Promise<void>; readable?: ReadableStream<Uint8Array>; writable?: WritableStream<Uint8Array> }
 declare global { interface Navigator { serial?: { requestPort(): Promise<SerialPortLike> } } }
@@ -25,6 +25,7 @@ export class WebSerialTransport implements BmsTransport {
   private decoder = new FrameDecoder()
   private status: Status | null = null
   private pack: Snapshot['pack'] | null = null
+  private energy: Snapshot['energy']
   private hvVoltages: Snapshot['hv_voltages']
   private cells = new Map<number, Snapshot['cells'][number]>()
   private temperatures = new Map<number, Snapshot['temperatures'][number]>()
@@ -145,12 +146,13 @@ export class WebSerialTransport implements BmsTransport {
       const status = decodeStatus(payload)
       if (!status) return
       this.status = status
-      if (!status.measurements_fresh) { this.pack = null; this.hvVoltages = undefined; this.cells.clear(); this.temperatures.clear() }
+      if (!status.measurements_fresh) { this.pack = null; this.energy = undefined; this.hvVoltages = undefined; this.cells.clear(); this.temperatures.clear() }
       this.emitStatus()
       this.emitSnapshotIfComplete()
       return
     }
     if (type === messageType.pack) { const pack = decodePack(payload); if (pack) { this.pack = pack; this.emitSnapshotIfComplete() }; return }
+    if (type === messageType.energy) { const energy = decodeEnergy(payload); if (energy) { this.energy = energy; this.emitSnapshotIfComplete() }; return }
     if (type === messageType.hvVoltages) { const voltages = decodeHvVoltages(payload); if (voltages) { this.hvVoltages = voltages; this.emitSnapshotIfComplete() }; return }
     if (type === messageType.cell) { const cell = decodeCell(payload); if (cell) { this.cells.set(cell.slave_index, cell); this.emitSnapshotIfComplete() }; return }
     if (type === messageType.temperature) { const temperature = decodeTemperature(payload); if (temperature) { this.temperatures.set(temperature.slave_index, temperature); this.emitSnapshotIfComplete() }; return }
@@ -185,7 +187,7 @@ export class WebSerialTransport implements BmsTransport {
       else if (event_id === 5) this.status.hv_active_errors = value
       else if (event_id === 6) this.status.hv_latched_errors = value
       else if (event_id === 7) this.status.warnings = value
-      else if (event_id === 8) { this.status.measurements_fresh = value !== 0; if (value === 0) { this.pack = null; this.cells.clear(); this.temperatures.clear() } }
+      else if (event_id === 8) { this.status.measurements_fresh = value !== 0; if (value === 0) { this.pack = null; this.energy = undefined; this.cells.clear(); this.temperatures.clear() } }
       this.emitStatus()
     }
     this.eventListeners.forEach(listener => listener({ event_id, value }))
@@ -195,7 +197,7 @@ export class WebSerialTransport implements BmsTransport {
   private emitSnapshotIfComplete(): void {
     if (!this.status?.measurements_fresh || !this.pack || this.status.slave_count === 0) return
     for (let slave = 0; slave < this.status.slave_count; slave += 1) if (!this.cells.has(slave) || !this.temperatures.has(slave)) return
-    this.snapshotListeners.forEach(listener => listener({ status: { ...this.status! }, pack: { ...this.pack! }, ...(this.hvVoltages ? { hv_voltages: { ...this.hvVoltages } } : {}), cells: Array.from(this.cells.values()).sort((a, b) => a.slave_index - b.slave_index), temperatures: Array.from(this.temperatures.values()).sort((a, b) => a.slave_index - b.slave_index) }))
+    this.snapshotListeners.forEach(listener => listener({ status: { ...this.status! }, pack: { ...this.pack! }, ...(this.energy ? { energy: { ...this.energy } } : {}), ...(this.hvVoltages ? { hv_voltages: { ...this.hvVoltages } } : {}), cells: Array.from(this.cells.values()).sort((a, b) => a.slave_index - b.slave_index), temperatures: Array.from(this.temperatures.values()).sort((a, b) => a.slave_index - b.slave_index) }))
   }
 
   private completeTransportError(sequence: number): void { const pending = this.pending.get(sequence); if (!pending) return; this.pending.delete(sequence); window.clearTimeout(pending.timeout); pending.resolve({ request_id: '', service: pending.service, result: 'transport_error' }) }

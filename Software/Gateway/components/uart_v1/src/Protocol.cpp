@@ -20,6 +20,12 @@ namespace FlexBms::UartV1
                    (static_cast<uint32_t>(data[3]) << 24U);
         }
 
+        uint64_t readLe64(const uint8_t *data)
+        {
+            return static_cast<uint64_t>(readLe32(data)) |
+                   (static_cast<uint64_t>(readLe32(data + 4U)) << 32U);
+        }
+
         void writeLe16(uint8_t *data, uint16_t value)
         {
             data[0] = static_cast<uint8_t>(value);
@@ -213,6 +219,15 @@ namespace FlexBms::UartV1
         return true;
     }
 
+    bool decodeEnergy(const Frame &frame, Energy &energy)
+    {
+        if (!frameHasPayload(frame, MessageType::Energy, 17U)) return false;
+        energy.valid = (frame.payload[0] & 0x01U) != 0U;
+        energy.chargedEnergyUWh = readLe64(frame.payload.data() + 1U);
+        energy.dischargedEnergyUWh = readLe64(frame.payload.data() + 9U);
+        return true;
+    }
+
     bool decodeCell(const Frame &frame, Cell &cell)
     {
         if (!frameHasPayload(frame, MessageType::Cell, 51U)) return false;
@@ -291,6 +306,27 @@ namespace FlexBms::UartV1
         {
             return false;
         }
+
+        Frame energyFrame{};
+        energyFrame.type = MessageType::Energy;
+        energyFrame.length = 17U;
+        energyFrame.payload[0] = 1U;
+        const uint64_t charged = 0x1122334455667788ULL;
+        const uint64_t discharged = 0xFFEEDDCCBBAA0099ULL;
+        for (size_t index = 0U; index < 8U; ++index)
+        {
+            energyFrame.payload[1U + index] = static_cast<uint8_t>(charged >> (index * 8U));
+            energyFrame.payload[9U + index] = static_cast<uint8_t>(discharged >> (index * 8U));
+        }
+        Energy decodedEnergy{};
+        if (!decodeEnergy(energyFrame, decodedEnergy) || !decodedEnergy.valid ||
+            decodedEnergy.chargedEnergyUWh != charged || decodedEnergy.dischargedEnergyUWh != discharged)
+        {
+            return false;
+        }
+        Frame malformedEnergy = energyFrame;
+        malformedEnergy.length = 16U;
+        if (decodeEnergy(malformedEnergy, decodedEnergy)) return false;
 
         std::array<uint8_t, kMaxFrameBytes> encoded{};
         const Frame expected{.type = MessageType::Heartbeat, .sequence = 0U, .length = 0U};

@@ -13,6 +13,7 @@
 #include "RtcTime.h"
 #include "main.h"
 #include "FaultManager.h"
+#include "EnergyCounter.h"
 #include "Watchdog.h"
 #include "bcc/SlaveController.h"
 #include "bcc/bcc_diagnostics.h"
@@ -991,6 +992,12 @@ namespace SlaveController
                                                     ? measurementSequence.load(std::memory_order_relaxed) + 1U
                                                     : measurementSequence.load(std::memory_order_relaxed);
             publishBatteryCanSnapshot(publishedSequence);
+            const MeasurementSnapshot energyMeasurement = getMeasurementSnapshot();
+            EnergyCounter::update(energyMeasurement.packVoltageUv,
+                                  BCC_CURRENT_TO_RAW(energyMeasurement.packCurrentA),
+                                  micros(),
+                                  energyMeasurement.valid && energyMeasurement.measurementsFresh &&
+                                      energyMeasurement.currentSensingEnabled);
             if (completeMeasurementSetValid)
             {
                 measurementSequence.store(publishedSequence, std::memory_order_release);
@@ -1281,6 +1288,13 @@ namespace SlaveController
             {
                 const uint8_t first = config.AMPHOUR_BACKUP_REG;
                 const uint8_t last = static_cast<uint8_t>(first + 3U);
+                constexpr uint8_t energyFirst = EnergyCounter::kChargedEnergyBackupRegister;
+                constexpr uint8_t energyLast = EnergyCounter::kMarkerBackupRegister;
+                if (first <= energyLast && last >= energyFirst)
+                {
+                    PRINTF_ERR("[SC] CONFIG ERR: Ah backup registers overlap energy counter storage!\n");
+                    return false;
+                }
                 if (config.CURRENT_SENSING_ENABLED && first <= kSocCalibrationTimeBackupRegister + 2U && last >= kSocCalibrationTimeBackupRegister)
                 {
                     PRINTF_ERR("[SC] CONFIG ERR: Ah backup registers overlap SoC calibration timestamp storage!\n");
@@ -1393,6 +1407,7 @@ namespace SlaveController
 
         // Enable backup domain register access
         HAL_PWR_EnableBkUpAccess();
+        EnergyCounter::setup();
 
         if (currentMeasurementConfigured && !mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid())
         {
@@ -1438,6 +1453,16 @@ namespace SlaveController
         snapshot = latestMeasurementSnapshot;
         taskEXIT_CRITICAL();
         return snapshot;
+    }
+
+    EnergySnapshot getEnergySnapshot()
+    {
+        const EnergyCounter::Snapshot snapshot = EnergyCounter::getSnapshot();
+        return {
+            .valid = snapshot.valid,
+            .chargedEnergyUWh = snapshot.chargedEnergyUWh,
+            .dischargedEnergyUWh = snapshot.dischargedEnergyUWh,
+        };
     }
 
     BMSState getState()

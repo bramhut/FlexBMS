@@ -182,6 +182,9 @@ cell-voltage extrema in V (three display decimals), cell-voltage delta in whole
 mV, NTC-temperature extrema, active-fault text, and the `telemetry_fresh`,
 `hv_running`, `fault_active`, and `uart_healthy` binary states. It also exposes
 distinct ESP32 **Gateway uptime** and STM32 **BMS controller uptime** sensors.
+The STM32 ENERGY frame adds `Battery energy charged` and `Battery energy
+discharged` sensors in kWh. They use device class `energy` and state class
+`total_increasing`, and remain unavailable until a valid ENERGY frame arrives.
 The latter comes from the STM32 `STATUS.uptime_ms` field; both counters reset
 when their respective controller resets and are diagnostic only. Home Assistant
 normally prefixes an entity's friendly name with this discovered device's name;
@@ -192,6 +195,11 @@ On MQTT connect and on Home Assistant's `homeassistant/status` birth `online`
 message, the Gateway republishes discovery and current state. This
 updates discovery metadata after a firmware upgrade without manually deleting
 entities.
+
+After the first discovery at each site, select these two discovered energy
+entities once under Home Assistant **Settings → Dashboards → Energy →
+Batteries**. No YAML template or Integral helper is required; the Gateway
+already maintains the persistent monotonic counters.
 
 The published device provides aggregate BMS health and pack telemetry plus a
 `run_request` switch. Its non-retained command topic accepts only `ON` and

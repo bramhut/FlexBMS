@@ -56,6 +56,7 @@ magic byte, and resumes magic scanning. There is no escaping or byte stuffing.
 | `0x04` | `CELL` | STM32 to Gateway or direct USB Companion |
 | `0x05` | `TEMPERATURE` | STM32 to Gateway or direct USB Companion |
 | `0x06` | `HV_VOLTAGES` | STM32 to Gateway or direct USB Companion |
+| `0x07` | `ENERGY` | STM32 to Gateway or direct USB Companion |
 | `0x10` | `SERVICE_REQUEST` | Gateway or direct USB Companion to STM32 |
 | `0x11` | `SERVICE_RESPONSE` | STM32 to Gateway or direct USB Companion |
 | `0x12` | `EVENT` | STM32 to Gateway or direct USB Companion |
@@ -137,6 +138,41 @@ than treating the zero payload as a measurement.
 These diagnostic readings are sent with each normal fresh snapshot. They do
 not change PCC thresholds, fault decisions, or STM32 safety ownership.
 
+### `ENERGY` — 17 bytes
+
+```text
+flags:u8 | charged_energy_uWh:u64 | discharged_energy_uWh:u64
+```
+
+The counters are monotonic, saturating `uint64` totals in micro-watt-hours
+(µWh). Positive signed pack current is charging and increments
+`charged_energy_uWh`; negative current is discharging and increments
+`discharged_energy_uWh`. A counter is integrated from pack voltage in µV,
+current in the existing A×64 raw representation, and elapsed time between
+complete valid measurements. Invalid measurements and unavailable current
+sensing do not contribute energy. Bit 0 of `flags` means the STM32 backup
+record is valid; bits 1--7 are reserved. The Gateway converts µWh to kWh for
+MQTT/Home Assistant; UART counters remain exact.
+
+The counters use one RTC backup-register record:
+
+| Registers | Contents |
+|---|---|
+| BKP0–BKP3 | Reserved |
+| BKP4–BKP7 | Existing SoC/Ah state |
+| BKP8–BKP11 | Charged energy, 64-bit µWh |
+| BKP12–BKP15 | Discharged energy, 64-bit µWh |
+| BKP16 | Energy-record checksum |
+| BKP17 | Energy-record marker/version |
+| BKP18–BKP27 | Reserved |
+| BKP28–BKP30 | Existing SoC calibration metadata |
+| BKP31 | Existing RTC validity marker |
+
+The STM32 writes both counters, then the checksum, and writes the marker last.
+An invalid marker/checksum resets both counters to zero and creates a valid
+record. This is deliberately a single-slot design; an interrupted update can
+lose energy history while the remaining backup registers stay free.
+
 ### `CELL` — 51 bytes per configured slave
 
 ```text
@@ -159,7 +195,7 @@ Each packet includes four NTC readings and one IC reading. Both endpoint
 implementations must enforce the four-NTC-per-slave configuration at compile
 time.
 
-The STM32 sends `STATUS` and a complete `HV_VOLTAGES`/`PACK`/`CELL`/`TEMPERATURE` snapshot
+The STM32 sends `STATUS` and a complete `HV_VOLTAGES`/`PACK`/`ENERGY`/`CELL`/`TEMPERATURE` snapshot
 after fresh measurement data, no more than once every 500 ms. It sends `EVENT`
 immediately on change. The Gateway treats all measurement telemetry as invalid
 while `STATUS` says measurements are not fresh.
