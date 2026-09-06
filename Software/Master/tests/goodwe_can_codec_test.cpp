@@ -33,7 +33,7 @@ namespace
         if (!GoodweCan::encodeCandidateA(0x456U, sample, frame) ||
             frame.data[0] != 0x80U || frame.data[1] != 0x0DU ||
             frame.data[2] != 0x7BU || frame.data[3] != 0x00U ||
-            frame.data[4] != 0x9CU || frame.data[5] != 0xFFU ||
+            frame.data[4] != 0x64U || frame.data[5] != 0x00U ||
             frame.data[6] != 0x60U || frame.data[7] != 0x09U)
         {
             return false;

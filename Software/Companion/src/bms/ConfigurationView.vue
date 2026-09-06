@@ -12,7 +12,7 @@ type EditableConfiguration = Omit<RuntimeConfiguration, 'reason' | 'expected_ver
 const configuration = reactive<EditableConfiguration>({
   slave_count: 1,
   current_sense_slave: 1,
-  shunt_resistance_uohm: 10000,
+  shunt_resistance_uohm: 375,
   battery_capacity_ah: 314,
   invert_current: false,
   balance_enabled: true,

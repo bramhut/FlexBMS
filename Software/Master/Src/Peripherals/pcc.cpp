@@ -20,8 +20,7 @@ namespace PCC
         constexpr uint32_t PRECHARGE_STABLE_TIME_MS = 200U;
         constexpr uint32_t CONTACTOR_PULL_IN_TIME_MS = 100U;
         constexpr uint32_t CONTACTOR_VALIDATION_TIME_MS = 200U;
-        constexpr double PRECHARGE_RATIO = 0.95;
-        constexpr double MAX_PRECHARGE_DELTA_V = 10.0;
+        constexpr double PRECHARGE_RATIO = 0.88;
         constexpr double MAX_SELF_TEST_LOAD_V = 30.0;
         constexpr double MIN_BATTERY_SOURCE_V = 30.0;
         constexpr double MIN_BATTERY_AGREEMENT_V = 10.0;
@@ -79,9 +78,7 @@ namespace PCC
                 return false;
             }
 
-            const double delta = std::abs(batteryVoltage - loadVoltage);
-            return loadVoltage >= batteryVoltage * PRECHARGE_RATIO &&
-                   delta <= MAX_PRECHARGE_DELTA_V;
+            return loadVoltage >= batteryVoltage * PRECHARGE_RATIO;
         }
 
         void refreshActiveErrors()

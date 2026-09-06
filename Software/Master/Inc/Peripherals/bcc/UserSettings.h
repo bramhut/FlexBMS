@@ -3,7 +3,6 @@
 #include "main.h"
 #include "bcc/bcc.h"
 #include "bcc/bcc_utils.h"
-#include <vector>
 
 struct SafetyLimits_t
 {
@@ -16,17 +15,22 @@ struct SafetyLimits_t
     uint32_t COMMUNICATION_TIMEOUT; // In millis
 };
 
-struct UserSettings_t
+struct StaticSlaveTemplate_t
 {
-    std::vector<BCC::Config_t> SLAVE_CONFIG;
+    bcc_device_t DEVICE_TYPE;
+    uint8_t CELL_COUNT;
+    uint8_t NTC_COUNT;
+    uint8_t AMPHOUR_BACKUP_REG;
+};
+
+struct StaticSettings_t
+{
+    StaticSlaveTemplate_t SLAVE_TEMPLATE;
     SafetyLimits_t SAFETY_LIMITS;
-    double SHUNT_RESISTANCE;
     double NTC_RESISTANCE;
     double NTC_BETA;
-    double BATTERY_AMPHOURS;
 
     // Current and SoC
-    bool INVERT_CURRENT;                 // Inverts the current measurement, and therefore also the SoC calculation. Usefull in case sense wires are connected the wrong way
     bool AUTO_CALIBRATE_SOC;
     double SOC_FULL_CALIBRATION_CELL_VOLTAGE;  // [V] every cell must reach this voltage
     double SOC_FULL_CALIBRATION_MAX_CURRENT_C; // [C] maximum charging current (C/50 = 0.02)
@@ -46,27 +50,13 @@ struct UserSettings_t
     uint32_t MINIMUM_FAULT_ACTIVE_TIME; // [ms] The minimum time that a fault is active in milliseconds
 };
 
-const UserSettings_t DEFAULT_SETTINGS = {
-    .SLAVE_CONFIG = {
-        {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4, .CURRENT_SENSING_ENABLED = true, .AMPHOUR_BACKUP_REG = 4},
-        // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
-        // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
-        // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
-        // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
-        // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
-        // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
-        // {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4},
-    },
-    // .SAFETY_LIMITS = {.OVERVOLTAGE_LIMIT = 3.6, .UNDERVOLTAGE_LIMIT = 2.5, .OVERTEMPERATURE_LIMIT = 60, .UNDERTEMPERATURE_LIMIT = 5, .CHARGE_CURRENT_LIMIT = 63, .DISCHARGE_CURRENT_LIMIT = 63, .COMMUNICATION_TIMEOUT = 500},
-    // TEMP:
-    .SAFETY_LIMITS = {.OVERVOLTAGE_LIMIT = 3.6, .UNDERVOLTAGE_LIMIT = 2.5, .OVERTEMPERATURE_LIMIT = 60, .UNDERTEMPERATURE_LIMIT = 5, .CHARGE_CURRENT_LIMIT = 10, .DISCHARGE_CURRENT_LIMIT = 10, .COMMUNICATION_TIMEOUT = 500},
-    .SHUNT_RESISTANCE = 10.0e-3, // 10 Ohm temporary resistor //375e-6, // 200 A / 75 mV shunt
+const StaticSettings_t DEFAULT_STATIC_SETTINGS = {
+    .SLAVE_TEMPLATE = {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4, .AMPHOUR_BACKUP_REG = 4},
+    .SAFETY_LIMITS = {.OVERVOLTAGE_LIMIT = 3.6, .UNDERVOLTAGE_LIMIT = 2.5, .OVERTEMPERATURE_LIMIT = 60, .UNDERTEMPERATURE_LIMIT = 5, .CHARGE_CURRENT_LIMIT = 63, .DISCHARGE_CURRENT_LIMIT = 63, .COMMUNICATION_TIMEOUT = 500},
     .NTC_RESISTANCE = 10000,
     .NTC_BETA = 3950,
-    .BATTERY_AMPHOURS = 314,
 
     // Current and SoC
-    .INVERT_CURRENT = false, // Positive current is charging; negative current is discharging
     .AUTO_CALIBRATE_SOC = true,
     .SOC_FULL_CALIBRATION_CELL_VOLTAGE = 3.450,
     .SOC_FULL_CALIBRATION_MAX_CURRENT_C = 1.0 / 50.0,

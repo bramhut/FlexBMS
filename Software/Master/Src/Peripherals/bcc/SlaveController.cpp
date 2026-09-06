@@ -72,7 +72,10 @@ namespace SlaveController
         static vector<BCC> mSlaves; /* Array of BCC devices */
         vector<uint8_t> cidInitializationFailureCounts;
 
-        UserSettings_t settings;
+        // Static firmware defaults contain safety limits and hardware timing.
+        // Companion-configurable values live in this runtime/NV-backed object.
+        const StaticSettings_t &settings = DEFAULT_STATIC_SETTINGS;
+        RuntimeConfiguration::Values runtimeConfiguration = RuntimeConfiguration::defaults();
 
         uint16_t cBalancingTime = 0; // Time in [min] for a single cell balancing operation
 
@@ -120,7 +123,10 @@ namespace SlaveController
         vector<vector<uint32_t>> cellVoltages; // 2D vector of cell voltages
         uint32_t minCellVoltage = UINT32_MAX;
         uint32_t maxCellVoltage = 0;
-        uint32_t packVoltage = 0;
+        // Published only after a complete measurement pass. PCC reads this
+        // from its own task, so never expose the accumulator while it is
+        // being rebuilt cell-by-cell.
+        std::atomic<uint32_t> packVoltage{0U};
         double packCurrent = 0.0;
 
         RegisterRequest registerRequest = {};
@@ -131,6 +137,16 @@ namespace SlaveController
         /*******************************************************************************
          * Private functions
          ******************************************************************************/
+
+        double shuntResistanceOhms()
+        {
+            return runtimeConfiguration.shuntResistanceMicroOhms / 1'000'000.0;
+        }
+
+        double batteryCapacityAh()
+        {
+            return runtimeConfiguration.batteryCapacityMilliAh / 1'000.0;
+        }
 
         bool measurementsAreFresh()
         {
@@ -164,7 +180,7 @@ namespace SlaveController
                                        completeMeasurementSetValid &&
                                        minCellVoltage >= static_cast<uint32_t>(settings.SOC_FULL_CALIBRATION_CELL_VOLTAGE * 1'000'000.0) &&
                                        current >= settings.SOC_FULL_CALIBRATION_MIN_CURRENT &&
-                                       current <= settings.BATTERY_AMPHOURS * settings.SOC_FULL_CALIBRATION_MAX_CURRENT_C &&
+                                       current <= batteryCapacityAh() * settings.SOC_FULL_CALIBRATION_MAX_CURRENT_C &&
                                        faults.bmsActive == 0U;
             if (!conditionsMet)
             {
@@ -464,9 +480,9 @@ namespace SlaveController
                 double ampHour = 0.0;
                 double current = 0.0;
                 if (mSlaves[currentMeasurementSlaveIdx].meas_GetAmpHourAndIAvg(
-                        settings.SHUNT_RESISTANCE,
-                        settings.INVERT_CURRENT,
-                        settings.BATTERY_AMPHOURS,
+                        shuntResistanceOhms(),
+                        runtimeConfiguration.invertCurrent,
+                        batteryCapacityAh(),
                         &ampHour,
                         &current) != BCC_STATUS_SUCCESS)
                 {
@@ -560,7 +576,7 @@ namespace SlaveController
             uint32_t ntcTemperatureSum = 0U;
             minICtemperature = UINT16_MAX;
             maxICtemperature = 0;
-            packVoltage = 0;
+            uint32_t measuredPackVoltage = 0U;
 
             // Gather all cell voltages & temperatures and put them into static 2D arrays
             for (size_t i = 0; i < getNumOfSlaves(); i++)
@@ -600,7 +616,7 @@ namespace SlaveController
                     {
                         maxCellVoltage = cellVoltage;
                     }
-                    packVoltage += cellVoltage;
+                    measuredPackVoltage += cellVoltage;
                 }
 
                 // Update some NTC temperature stats
@@ -633,6 +649,11 @@ namespace SlaveController
                                         ? 0U
                                         : static_cast<uint16_t>(ntcTemperatureSum / NTCtemperatureCount);
 
+            if (success)
+            {
+                packVoltage.store(measuredPackVoltage, std::memory_order_release);
+            }
+
             completeMeasurementSetValid = success;
             return success;
         }
@@ -663,7 +684,6 @@ namespace SlaveController
             snapshot.valid = currentState == RUNNING &&
                              completeMeasurementSetValid &&
                              snapshot.measurementsFresh &&
-                             snapshot.socValid &&
                              NTCtemperatureCount != 0U;
 
             snapshot.commonSafe = currentState == RUNNING &&
@@ -681,7 +701,7 @@ namespace SlaveController
             snapshot.communicationFault = communicationFaultActive;
             snapshot.internalFault = internalFaultActive;
 
-            snapshot.packVoltageUv = packVoltage;
+            snapshot.packVoltageUv = packVoltage.load(std::memory_order_acquire);
             snapshot.packCurrentA = packCurrent;
             snapshot.chargeVoltageV = settings.SAFETY_LIMITS.OVERVOLTAGE_LIMIT * getCellCount();
             snapshot.dischargeVoltageV = settings.SAFETY_LIMITS.UNDERVOLTAGE_LIMIT * getCellCount();
@@ -1161,7 +1181,7 @@ namespace SlaveController
         }
 
         /**
-         * @brief Load the configuration from the UserSettings.h file
+         * @brief Load static defaults and the Companion-managed runtime configuration from NV
          * @return true if the configuration is valid, false otherwise
          */
         bool loadConfig()
@@ -1175,31 +1195,32 @@ namespace SlaveController
                 return false;
             }
 
-            settings = DEFAULT_SETTINGS;
-            if (!validateRuntimeConfiguration(persisted.values) || settings.SLAVE_CONFIG.empty())
+            if (!validateRuntimeConfiguration(persisted.values))
             {
                 return false;
             }
 
-            const BCC::Config_t defaultSlaveConfig = settings.SLAVE_CONFIG.front();
-            settings.SLAVE_CONFIG.assign(persisted.values.slaveCount, defaultSlaveConfig);
-            for (size_t index = 0U; index < settings.SLAVE_CONFIG.size(); ++index)
+            runtimeConfiguration = persisted.values;
+            vector<BCC::Config_t> slaveConfigs;
+            slaveConfigs.reserve(runtimeConfiguration.slaveCount);
+            for (size_t index = 0U; index < runtimeConfiguration.slaveCount; ++index)
             {
-                settings.SLAVE_CONFIG[index].CURRENT_SENSING_ENABLED =
-                    persisted.values.currentSenseSlave == static_cast<uint8_t>(index + 1U);
-                if (!settings.SLAVE_CONFIG[index].CURRENT_SENSING_ENABLED)
-                {
-                    settings.SLAVE_CONFIG[index].AMPHOUR_BACKUP_REG = 0U;
-                }
+                BCC::Config_t config{};
+                config.DEVICE_TYPE = settings.SLAVE_TEMPLATE.DEVICE_TYPE;
+                config.CELL_COUNT = settings.SLAVE_TEMPLATE.CELL_COUNT;
+                config.NTC_COUNT = settings.SLAVE_TEMPLATE.NTC_COUNT;
+                config.CURRENT_SENSING_ENABLED =
+                    runtimeConfiguration.currentSenseSlave == static_cast<uint8_t>(index + 1U);
+                config.AMPHOUR_BACKUP_REG = config.CURRENT_SENSING_ENABLED
+                                                ? settings.SLAVE_TEMPLATE.AMPHOUR_BACKUP_REG
+                                                : 0U;
+                slaveConfigs.push_back(config);
             }
-            settings.SHUNT_RESISTANCE = persisted.values.shuntResistanceMicroOhms / 1'000'000.0;
-            settings.BATTERY_AMPHOURS = persisted.values.batteryCapacityMilliAh / 1'000.0;
-            settings.INVERT_CURRENT = persisted.values.invertCurrent;
-            balancingEnabled.store(persisted.values.balanceEnabled, std::memory_order_relaxed);
-            startupDiagnosticsEnabled = persisted.values.startupDiagnostics;
+            balancingEnabled.store(runtimeConfiguration.balanceEnabled, std::memory_order_relaxed);
+            startupDiagnosticsEnabled = runtimeConfiguration.startupDiagnostics;
             currentMeasurementConfigured = false;
 
-            for (const BCC::Config_t &config : settings.SLAVE_CONFIG)
+            for (const BCC::Config_t &config : slaveConfigs)
             {
                 const uint8_t first = config.AMPHOUR_BACKUP_REG;
                 const uint8_t last = static_cast<uint8_t>(first + 3U);
@@ -1211,7 +1232,7 @@ namespace SlaveController
             }
 
             // Verify that the set maximum current is measurable with the given shunt resistance
-            double maxCurrentForShunt = 0.15 / settings.SHUNT_RESISTANCE;
+            const double maxCurrentForShunt = 0.15 / shuntResistanceOhms();
             if (settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT > maxCurrentForShunt || settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT > maxCurrentForShunt)
             {
                 PRINTF_ERR("[SC] CONFIG ERR: Current limits are not measurable with the current shunt resistance!\n");
@@ -1240,7 +1261,7 @@ namespace SlaveController
             // Only do this if IMPROVED_BALANCING_ACCURACY is disabled
             if (!settings.IMPROVED_BALANCING_ACCURACY)
             {
-                const double batteryDrainedMinutes = (settings.BATTERY_AMPHOURS / (settings.SAFETY_LIMITS.OVERVOLTAGE_LIMIT / BMS_BAL_RESISTANCE)) * 60.0;
+                const double batteryDrainedMinutes = (batteryCapacityAh() / (settings.SAFETY_LIMITS.OVERVOLTAGE_LIMIT / BMS_BAL_RESISTANCE)) * 60.0;
                 cBalancingTime = lround((batteryDrainedMinutes / maxBalancingFactor) * 0.25e-2);
                 PRINTF_WARN("[SC] NOTE: The automagically configured balancing time is %u minutes per trigger\n", cBalancingTime);
             }
@@ -1253,9 +1274,12 @@ namespace SlaveController
             PRINTF_WARN("[SC] NOTE: Current config allows for balancing a maximum of %.1f%% of the time \n", maxBalancingFactor * 100);
 
             // Create BCC objects and assign CID's starting from 1
-            for (size_t i = 0; i < settings.SLAVE_CONFIG.size(); i++)
+            mSlaves.clear();
+            currentMeasurementConfigured = false;
+            currentMeasurementSlaveIdx = 0U;
+            for (size_t i = 0; i < slaveConfigs.size(); i++)
             {
-                mSlaves.emplace_back(settings.SLAVE_CONFIG[i], i + 1);
+                mSlaves.emplace_back(slaveConfigs[i], i + 1);
 
                 // If the slave is responsible for the current measurement, save the CID
                 // For now we only support one slave for current measurement
@@ -1357,7 +1381,7 @@ namespace SlaveController
 
     size_t getNumOfSlaves()
     {
-        return settings.SLAVE_CONFIG.size();
+        return mSlaves.size();
     }
 
     size_t getCellCount()
@@ -1438,7 +1462,7 @@ namespace SlaveController
 
     uint32_t getPackVoltage()
     {
-        return packVoltage;
+        return packVoltage.load(std::memory_order_acquire);
     }
 
     double getCurrent()
@@ -1532,13 +1556,13 @@ namespace SlaveController
     {
         if (!isSoCValid())
         {
-            return BCC_AMPHOUR_TO_SOC(0, settings.BATTERY_AMPHOURS);
+            return BCC_AMPHOUR_TO_SOC(0, batteryCapacityAh());
         }
         const double ampHour = std::clamp(
             mSlaves[currentMeasurementSlaveIdx].getAhCounter(),
             0.0,
-            settings.BATTERY_AMPHOURS);
-        return BCC_AMPHOUR_TO_SOC(ampHour, settings.BATTERY_AMPHOURS);
+            batteryCapacityAh());
+        return BCC_AMPHOUR_TO_SOC(ampHour, batteryCapacityAh());
     }
 
     bool isSoCValid()
@@ -1558,8 +1582,8 @@ namespace SlaveController
         if (!RuntimeConfiguration::validate(values)) return false;
         const double shuntResistance = values.shuntResistanceMicroOhms / 1'000'000.0;
         const double maxCurrentForShunt = 0.15 / shuntResistance;
-        return DEFAULT_SETTINGS.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT <= maxCurrentForShunt &&
-               DEFAULT_SETTINGS.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT <= maxCurrentForShunt;
+        return DEFAULT_STATIC_SETTINGS.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT <= maxCurrentForShunt &&
+               DEFAULT_STATIC_SETTINGS.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT <= maxCurrentForShunt;
     }
 
     bool getLastSoCCalibrationUnixTime(uint32_t &unixTime)
@@ -1580,9 +1604,9 @@ namespace SlaveController
     {
         if (!currentMeasurementConfigured) return;
         const double ampHour = std::clamp(
-            BCC_SOC_TO_AMPHOUR(soc, settings.BATTERY_AMPHOURS),
+            BCC_SOC_TO_AMPHOUR(soc, batteryCapacityAh()),
             0.0,
-            settings.BATTERY_AMPHOURS);
+            batteryCapacityAh());
         mSlaves[currentMeasurementSlaveIdx].setAhCounter(ampHour);
     }
 

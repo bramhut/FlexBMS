@@ -316,6 +316,11 @@ The current battery profile is:
 - 314 Ah nominal capacity; and
 - amp-hour retention in RTC backup registers while backup power is present.
 
+Static firmware settings contain the safety limits, monitor hardware template, and timing parameters.
+Companion-configurable values such as the shunt resistance, capacity, current polarity, balancing gate,
+diagnostics gate, and monitor topology are kept in the versioned STM32 runtime configuration in flash;
+they are not duplicated in the static settings.
+
 The firmware separates active fault conditions and acknowledgement-required latches. The HV supervisor
 receives permission only while the BMS is running without blocking faults and holds one fresh, complete
 measurement set from the monitor chain.
@@ -455,7 +460,7 @@ test.
   [Two little-endian 16-bit bitmaps: BMS alarms followed by BMS warnings. Exact bit semantics remain provisional.],
   [Medium.],
   [`0x456`], [STM32 -> inverter],
-  [Four little-endian signed 16-bit values: charge-voltage limit, charge-current limit, maximum discharge current, and minimum discharge voltage. Voltage/current resolution is 0.1 V/0.1 A.],
+  [Four little-endian 16-bit values: charge-voltage limit, charge-current limit, maximum discharge current, and minimum discharge voltage. Voltage/current resolution is 0.1 V/0.1 A.],
   [Medium/high.],
   [`0x457`], [STM32 -> inverter],
   [SoC and SoH as little-endian 16-bit values with 0.01% resolution, followed by four reserved bytes.],
@@ -538,13 +543,17 @@ be enabled until a capture from the actual inverter identifies a required
 response and its payload.
 
 CAN data is published only from a coherent BMS snapshot. Stale or invalid
-measurements stop transmission. A fresh snapshot with a common fault keeps the
+electrical or thermal measurements stop transmission; an unavailable SoC does
+not. A fresh snapshot with a common fault keeps the
 status frames alive but forces both directional current limits to zero. The
 configured under-temperature threshold is charge-only: it sets the charge
 current limit to zero while leaving discharge available if all common safety
 conditions remain healthy. Pack voltage uses the BCC cell-voltage sum. The
 Candidate A module count defaults to six and SoH defaults to 100% until a real
-SoH source exists.
+SoH source exists. If no retained SoC calibration is available, the transmitter
+still publishes the coherent measurements and advertises 30% SoC until the
+automatic full-charge calibration completes; after that it publishes the
+calibrated SoC.
 
 ==== Open protocol questions
 

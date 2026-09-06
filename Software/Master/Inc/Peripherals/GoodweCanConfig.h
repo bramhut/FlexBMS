@@ -54,12 +54,21 @@
 #define GOODWE_CAN_SOH_PERCENT 100U
 #endif
 
+/* SOC advertised to the inverter until the coulomb counter is calibrated. */
+#ifndef GOODWE_CAN_UNAVAILABLE_SOC_PERCENT
+#define GOODWE_CAN_UNAVAILABLE_SOC_PERCENT 30U
+#endif
+
 #if GOODWE_CAN_A_MODULE_COUNT > 0xFFFFU
 #error "GOODWE_CAN_A_MODULE_COUNT does not fit the protocol field"
 #endif
 
 #if GOODWE_CAN_SOH_PERCENT > 100U
 #error "GOODWE_CAN_SOH_PERCENT must be between 0 and 100"
+#endif
+
+#if GOODWE_CAN_UNAVAILABLE_SOC_PERCENT > 100U
+#error "GOODWE_CAN_UNAVAILABLE_SOC_PERCENT must be between 0 and 100"
 #endif
 
 #if GOODWE_CAN_PROTOCOL == GOODWE_CAN_PROTOCOL_A

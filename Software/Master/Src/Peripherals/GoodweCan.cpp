@@ -158,7 +158,9 @@ namespace GoodweCan
             data.internalFault = snapshot.internalFault;
 
             data.moduleCount = static_cast<uint16_t>(GOODWE_CAN_A_MODULE_COUNT);
-            data.socPercent = snapshot.socPercent;
+            data.socPercent = snapshot.socValid
+                                  ? snapshot.socPercent
+                                  : static_cast<uint16_t>(GOODWE_CAN_UNAVAILABLE_SOC_PERCENT);
             data.sohPercent = static_cast<uint16_t>(GOODWE_CAN_SOH_PERCENT);
             data.chargeVoltageDeciV = toUnsignedDeci(snapshot.chargeVoltageV);
             data.dischargeVoltageDeciV = toUnsignedDeci(snapshot.dischargeVoltageV);

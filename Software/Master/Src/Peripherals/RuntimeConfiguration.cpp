@@ -44,7 +44,10 @@ namespace RuntimeConfiguration
         constexpr Values DEFAULT_VALUES = {
             .slaveCount = 1U,
             .currentSenseSlave = 1U,
-            .shuntResistanceMicroOhms = 10'000U,
+            // Documented hardware is 200 A / 75 mV = 375 micro-ohms.
+            // Existing NV records are loaded unchanged; this is only the
+            // factory/default value used before a Companion configuration is saved.
+            .shuntResistanceMicroOhms = 375U,
             .batteryCapacityMilliAh = 314'000U,
             .invertCurrent = false,
             .balanceEnabled = true,

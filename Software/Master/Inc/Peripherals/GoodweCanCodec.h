@@ -124,9 +124,8 @@ namespace GoodweCan
         case 0x456U:
             detail::putLe16(frame.data, 0U, data.chargeVoltageDeciV);
             detail::putLe16(frame.data, 2U, detail::effectiveChargeCurrent(data));
-            detail::putLe16(frame.data, 4U,
-                            static_cast<uint16_t>(-static_cast<int32_t>(
-                                detail::effectiveDischargeCurrent(data))));
+            // GoodWe displays this limit as a positive 0.1 A value.
+            detail::putLe16(frame.data, 4U, detail::effectiveDischargeCurrent(data));
             detail::putLe16(frame.data, 6U, data.dischargeVoltageDeciV);
             return true;
 
