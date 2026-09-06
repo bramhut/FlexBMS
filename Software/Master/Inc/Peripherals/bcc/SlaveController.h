@@ -140,6 +140,9 @@ namespace SlaveController
     /*! @brief True when the most recent complete measurement set is still valid. */
     bool areMeasurementsFresh();
 
+    /*! @brief Return the sequence number of the latest committed measurement. */
+    uint32_t getMeasurementSequence();
+
     /*! @brief Return one coherent copy of the latest complete measurement set. */
     MeasurementSnapshot getMeasurementSnapshot();
 

@@ -537,23 +537,19 @@ namespace FlexBms::GatewayApi
             return root;
         }
 
-        bool completeSnapshot()
+        bool completeSnapshotLocked()
         {
-            lockTelemetryState();
             if (!hasStatus || !hasPack || status.slaveCount > kMaxSlaves || (status.flags & (1U << 3U)) == 0U)
             {
-                unlockTelemetryState();
                 return false;
             }
             for (uint8_t index = 0U; index < status.slaveCount; ++index)
             {
                 if (!hasCell[index] || !hasTemperature[index])
                 {
-                    unlockTelemetryState();
                     return false;
                 }
             }
-            unlockTelemetryState();
             return true;
         }
 
@@ -590,6 +586,11 @@ namespace FlexBms::GatewayApi
         cJSON *snapshotJson()
         {
             lockTelemetryState();
+            if (!completeSnapshotLocked())
+            {
+                unlockTelemetryState();
+                return nullptr;
+            }
             cJSON *root = base("snapshot");
             cJSON *stateJson = cJSON_AddObjectToObject(root, "status");
             addBmsStatus(stateJson);
@@ -1018,7 +1019,7 @@ namespace FlexBms::GatewayApi
                 prepareWebSocketConnection(socket);
                 (void)sendJsonTo(socket, hello());
                 if (telemetryHasStatus()) (void)sendJsonTo(socket, bmsStatusJson());
-                if (completeSnapshot()) (void)sendJsonTo(socket, snapshotJson());
+                if (cJSON *snapshot = snapshotJson()) (void)sendJsonTo(socket, snapshot);
                 return ESP_OK;
             }
             httpd_ws_frame_t frame{};
@@ -1084,15 +1085,21 @@ namespace FlexBms::GatewayApi
                         }
                         if (accepted && !sender(requestedService, arguments.data(), argumentLength, sequence))
                         {
+                            bool clearedForWriteFailure = false;
                             lockServiceState();
                             if (serviceInFlight && pendingSequence == sequence)
                             {
                                 serviceInFlight = false;
                                 pendingServiceSocket = -1;
+                                internalServiceCompletion = nullptr;
+                                clearedForWriteFailure = true;
                             }
                             unlockServiceState();
-                            ESP_LOGW(kLogTag, "Service %s could not be written to STM32 UART", serviceName(requestedService));
-                            sendServiceResult(socket, requestId, requestedService, ServiceResult::TransportError);
+                            if (clearedForWriteFailure)
+                            {
+                                ESP_LOGW(kLogTag, "Service %s could not be written to STM32 UART", serviceName(requestedService));
+                                sendServiceResult(socket, requestId, requestedService, ServiceResult::TransportError);
+                            }
                         }
                     }
                 }
@@ -1319,7 +1326,7 @@ namespace FlexBms::GatewayApi
         unlockTelemetryState();
         if (statusPublished) broadcast(bmsStatusJson());
         if (eventToPublish != nullptr) broadcast(eventToPublish);
-        if (completeSnapshot()) broadcast(snapshotJson());
+        if (cJSON *snapshot = snapshotJson()) broadcast(snapshot);
     }
 
     void completeService(uint8_t sequence, ServiceResult result, const uint8_t *data, uint8_t dataLength)
@@ -1444,15 +1451,24 @@ namespace FlexBms::GatewayApi
         serviceInFlight = true;
         unlockServiceState();
         if (sender(service, arguments, argumentLength, sequence)) return true;
+        bool clearedForWriteFailure = false;
         lockServiceState();
         if (serviceInFlight && pendingSequence == sequence)
         {
             serviceInFlight = false;
             internalServiceCompletion = nullptr;
+            clearedForWriteFailure = true;
         }
         unlockServiceState();
-        ESP_LOGW(kLogTag, "Internal service %s could not be written to STM32 UART", serviceName(service));
-        return false;
+        if (clearedForWriteFailure)
+        {
+            ESP_LOGW(kLogTag, "Internal service %s could not be written to STM32 UART", serviceName(service));
+            return false;
+        }
+        // A response completed the request while the sender was returning a
+        // failure. Treat the completed request as accepted and do not create
+        // a second transport result.
+        return true;
     }
 
     bool verifyBrowserApi()

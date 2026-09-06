@@ -32,6 +32,16 @@ namespace PCC
         CONTACTOR_VOLTAGE_LOST
     };
 
+    struct VoltageMismatchDiagnostics
+    {
+        bool valid{};
+        double batteryVoltageV{};
+        double bccPackVoltageV{};
+        bool hvSampleValid{};
+        uint32_t measurementSequence{};
+        uint32_t timestampMs{};
+    };
+
     void setup();
     void loop();
 
@@ -47,6 +57,7 @@ namespace PCC
 
     PCC_STATE getPCCState();
     PCC_ERROR getPCCError();
+    VoltageMismatchDiagnostics getVoltageMismatchDiagnostics();
     uint32_t getLastPrechargeTime();
 
     double getBatteryVoltage();

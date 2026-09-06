@@ -21,6 +21,7 @@
 #include "RuntimeConfiguration.h"
 #include "USBCOM.h"
 #include "FreeRTOS.h"
+#include "semphr.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -102,6 +103,8 @@ namespace SlaveController
         std::atomic<uint32_t> measurementSequence{0};
         bool completeMeasurementSetValid = false;
         std::atomic<bool> publishedMeasurementsFresh{false};
+        std::atomic<bool> publishedMeasurementValid{false};
+        SemaphoreHandle_t measurementSnapshotMutex = nullptr;
         MeasurementSnapshot latestMeasurementSnapshot{};
         BatteryCanSnapshot latestBatteryCanSnapshot{};
         std::atomic<bool> chargeTemperatureInhibit{false};
@@ -166,6 +169,30 @@ namespace SlaveController
             return BCC_AMPHOUR_TO_SOC(ampHour, batteryCapacityAh());
         }
 
+        class MeasurementSnapshotLock
+        {
+        public:
+            MeasurementSnapshotLock()
+            {
+                if (measurementSnapshotMutex != nullptr)
+                {
+                    (void)xSemaphoreTake(measurementSnapshotMutex, portMAX_DELAY);
+                    ownsLock = true;
+                }
+            }
+
+            ~MeasurementSnapshotLock()
+            {
+                if (ownsLock) (void)xSemaphoreGive(measurementSnapshotMutex);
+            }
+
+            MeasurementSnapshotLock(const MeasurementSnapshotLock &) = delete;
+            MeasurementSnapshotLock &operator=(const MeasurementSnapshotLock &) = delete;
+
+        private:
+            bool ownsLock = false;
+        };
+
         bool measurementsAreFresh()
         {
             if (!completeMeasurementSetValid)
@@ -185,11 +212,15 @@ namespace SlaveController
 
         void invalidateBatteryCanSnapshot()
         {
+            {
+                MeasurementSnapshotLock lock;
+                latestMeasurementSnapshot = {};
+                publishedMeasurementsFresh.store(false, std::memory_order_release);
+                publishedMeasurementValid.store(false, std::memory_order_release);
+            }
             taskENTER_CRITICAL();
             latestBatteryCanSnapshot = {};
-            latestMeasurementSnapshot = {};
             taskEXIT_CRITICAL();
-            publishedMeasurementsFresh.store(false, std::memory_order_release);
         }
 
         void updateFullSocCalibration(const double current)
@@ -774,11 +805,18 @@ namespace SlaveController
             /* Keep the externally visible snapshot coherent. The BMS task is
              * the only writer; CAN consumers copy it under the same critical
              * section. */
+            {
+                MeasurementSnapshotLock lock;
+                if (measurement.valid)
+                {
+                    latestMeasurementSnapshot = std::move(measurement);
+                }
+                publishedMeasurementsFresh.store(snapshot.measurementsFresh, std::memory_order_release);
+                publishedMeasurementValid.store(snapshot.valid, std::memory_order_release);
+            }
             taskENTER_CRITICAL();
-            latestMeasurementSnapshot = std::move(measurement);
             latestBatteryCanSnapshot = snapshot;
             taskEXIT_CRITICAL();
-            publishedMeasurementsFresh.store(snapshot.measurementsFresh, std::memory_order_release);
         }
 
         // Balancing is allowed only with a healthy, fully running BMS.
@@ -1378,6 +1416,8 @@ namespace SlaveController
     {
         // Make sure to start at correct state. This also faults the relay driver to be off during startup
         setState(DEVICE_INITIALIZATION);
+        measurementSnapshotMutex = xSemaphoreCreateMutex();
+        configASSERT(measurementSnapshotMutex != nullptr);
         FaultManager::setStartupComplete(false);
 
         BCC_MCU_Assert(can != nullptr);
@@ -1446,12 +1486,18 @@ namespace SlaveController
         return publishedMeasurementsFresh.load(std::memory_order_acquire);
     }
 
+    uint32_t getMeasurementSequence()
+    {
+        return measurementSequence.load(std::memory_order_acquire);
+    }
+
     MeasurementSnapshot getMeasurementSnapshot()
     {
         MeasurementSnapshot snapshot{};
-        taskENTER_CRITICAL();
+        MeasurementSnapshotLock lock;
         snapshot = latestMeasurementSnapshot;
-        taskEXIT_CRITICAL();
+        snapshot.valid = publishedMeasurementValid.load(std::memory_order_acquire);
+        snapshot.measurementsFresh = publishedMeasurementsFresh.load(std::memory_order_acquire);
         return snapshot;
     }
 
