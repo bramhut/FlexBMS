@@ -18,6 +18,7 @@
 #include "USBCOM.h"
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -105,12 +106,10 @@ namespace BmsUart
         {
             bool active = false;
             Link link = Link::Uart;
-            bool finished = false;
             uint8_t sequence = 0U;
             uint8_t slaveIndex = 0U;
             uint8_t regAddr = 0U;
             uint32_t deadlineMs = 0U;
-            SlaveController::RegisterReponse response = {};
         };
 
         struct EventCache
@@ -155,18 +154,18 @@ namespace BmsUart
         size_t rxParserLength = 0U;
         uint16_t rxPayloadLength = 0U;
         uint8_t rxCrcBytes = 0U;
-        volatile bool txComplete = false;
-        volatile bool hasValidGatewayFrame = false;
-        volatile uint32_t lastValidGatewayFrameMs = 0U;
-        volatile uint32_t uartStartedMs = 0U;
-        volatile uint32_t lastValidUsbHeartbeatMs = 0U;
-        volatile bool rxRecoveryRequested = false;
+        std::atomic<bool> txComplete{false};
+        std::atomic<bool> hasValidGatewayFrame{false};
+        std::atomic<uint32_t> lastValidGatewayFrameMs{0U};
+        std::atomic<uint32_t> uartStartedMs{0U};
+        std::atomic<uint32_t> lastValidUsbHeartbeatMs{0U};
+        std::atomic<bool> rxRecoveryRequested{false};
 
         // Retained for debugger inspection after a recovered UART incident.
-        volatile uint32_t rxErrorCount = 0U;
-        volatile uint32_t lastRxErrorCode = HAL_UART_ERROR_NONE;
-        volatile uint32_t rxArmFailureCount = 0U;
-        volatile uint32_t rxRecoveryCount = 0U;
+        std::atomic<uint32_t> rxErrorCount{0U};
+        std::atomic<uint32_t> lastRxErrorCode{HAL_UART_ERROR_NONE};
+        std::atomic<uint32_t> rxArmFailureCount{0U};
+        std::atomic<uint32_t> rxRecoveryCount{0U};
         uint32_t nextRxRecoveryAttemptMs = 0U;
 
         // CDC shares a port with the engineering text console. Hold only
@@ -247,37 +246,38 @@ namespace BmsUart
                 __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
                 return true;
             }
-            ++rxArmFailureCount;
-            rxRecoveryRequested = true;
+            rxArmFailureCount.fetch_add(1U, std::memory_order_relaxed);
+            rxRecoveryRequested.store(true, std::memory_order_release);
             return false;
         }
 
         bool gatewayLinkLostAt(uint32_t now)
         {
-            return now - uartStartedMs >= GATEWAY_LOSS_MS &&
-                   (!hasValidGatewayFrame || now - lastValidGatewayFrameMs >= GATEWAY_LOSS_MS);
+            return now - uartStartedMs.load(std::memory_order_acquire) >= GATEWAY_LOSS_MS &&
+                   (!hasValidGatewayFrame.load(std::memory_order_acquire) ||
+                    now - lastValidGatewayFrameMs.load(std::memory_order_acquire) >= GATEWAY_LOSS_MS);
         }
 
         void processReceiveRecovery(uint32_t now)
         {
-            if (!rxRecoveryRequested && !gatewayLinkLostAt(now)) return;
+            if (!rxRecoveryRequested.load(std::memory_order_acquire) && !gatewayLinkLostAt(now)) return;
             if (static_cast<int32_t>(now - nextRxRecoveryAttemptMs) < 0) return;
             nextRxRecoveryAttemptMs = now + RX_RECOVERY_RETRY_MS;
 
             // Abort only reception so telemetry transmission remains active.
             // Clear the request before the abort so an ISR-detected error that
             // races this recovery schedules another bounded attempt.
-            rxRecoveryRequested = false;
+            rxRecoveryRequested.store(false, std::memory_order_release);
             if (HAL_UART_AbortReceive(&huart1) != HAL_OK)
             {
-                rxRecoveryRequested = true;
+                rxRecoveryRequested.store(true, std::memory_order_release);
                 return;
             }
 
             resetParser();
             if (armReceiveDma())
             {
-                ++rxRecoveryCount;
+                rxRecoveryCount.fetch_add(1U, std::memory_order_relaxed);
             }
         }
 
@@ -298,8 +298,8 @@ namespace BmsUart
             portYIELD_FROM_ISR(taskWoken);
             if (link == Link::Uart)
             {
-                hasValidGatewayFrame = true;
-                lastValidGatewayFrameMs = HAL_GetTick();
+                hasValidGatewayFrame.store(true, std::memory_order_release);
+                lastValidGatewayFrameMs.store(HAL_GetTick(), std::memory_order_release);
             }
         }
 
@@ -511,14 +511,14 @@ namespace BmsUart
         {
             const size_t frameLength = encodeFrame(type, sequence, payload, payloadLength);
             if (frameLength == 0U) return false;
-            txComplete = false;
+            txComplete.store(false, std::memory_order_release);
             if (HAL_UART_Transmit_DMA(&huart1, txBuffer.data(), frameLength) != HAL_OK)
             {
                 return false;
             }
 
             const uint32_t deadline = HAL_GetTick() + TX_TIMEOUT_MS;
-            while (!txComplete)
+            while (!txComplete.load(std::memory_order_acquire))
             {
                 if (static_cast<int32_t>(HAL_GetTick() - deadline) >= 0)
                 {
@@ -532,7 +532,7 @@ namespace BmsUart
 
         bool usbCompanionAlive()
         {
-            const uint32_t lastHeartbeat = lastValidUsbHeartbeatMs;
+            const uint32_t lastHeartbeat = lastValidUsbHeartbeatMs.load(std::memory_order_acquire);
             return lastHeartbeat != 0U && HAL_GetTick() - lastHeartbeat < USB_COMPANION_LOSS_MS;
         }
 
@@ -556,16 +556,18 @@ namespace BmsUart
         uint16_t makeStatusPayload(uint8_t *payload)
         {
             const FaultManager::Snapshot faultSnapshot = FaultManager::getSnapshot();
+            const SlaveController::MeasurementSnapshot measurement = SlaveController::getMeasurementSnapshot();
             const bool measurementsFresh = SlaveController::areMeasurementsFresh();
             uint16_t flags = 0U;
             if (SlaveController::isHVReady()) flags |= 1U << 0U;
             if (SlaveController::isChargingAllowed()) flags |= 1U << 1U;
             if (PCC::isRunRequested()) flags |= 1U << 2U;
             if (measurementsFresh) flags |= 1U << 3U;
-            if (hasValidGatewayFrame && HAL_GetTick() - lastValidGatewayFrameMs < GATEWAY_LOSS_MS) flags |= 1U << 4U;
+            if (hasValidGatewayFrame.load(std::memory_order_acquire) &&
+                HAL_GetTick() - lastValidGatewayFrameMs.load(std::memory_order_acquire) < GATEWAY_LOSS_MS) flags |= 1U << 4U;
             if (SlaveController::isBalancingEnabled()) flags |= 1U << 5U;
-            if (SlaveController::isSoCValid()) flags |= 1U << 6U;
-            if (SlaveController::isCurrentSensingEnabled()) flags |= 1U << 7U;
+            if (measurement.socValid) flags |= 1U << 6U;
+            if (measurement.currentSensingEnabled) flags |= 1U << 7U;
             uint32_t socCalibrationUnixTime = 0U;
             if (SlaveController::getLastSoCCalibrationUnixTime(socCalibrationUnixTime)) flags |= 1U << 8U;
 
@@ -589,18 +591,18 @@ namespace BmsUart
             broadcastFrame(STATUS, 0U, payload.data(), makeStatusPayload(payload.data()));
         }
 
-        void sendPack()
+        void sendPack(const SlaveController::MeasurementSnapshot &measurement)
         {
             std::array<uint8_t, 24U> payload = {};
-            writeLe32(payload.data(), SlaveController::getPackVoltage());
-            writeLe16(payload.data() + 4U, static_cast<uint16_t>(static_cast<int16_t>(BCC_CURRENT_TO_RAW(SlaveController::getCurrent()))));
-            writeLe16(payload.data() + 6U, SlaveController::getSoC());
-            writeLe32(payload.data() + 8U, SlaveController::getMinCellVoltage());
-            writeLe32(payload.data() + 12U, SlaveController::getMaxCellVoltage());
-            writeLe16(payload.data() + 16U, SlaveController::getMinNTCtemp());
-            writeLe16(payload.data() + 18U, SlaveController::getMaxNTCtemp());
-            writeLe16(payload.data() + 20U, SlaveController::getMinICtemp());
-            writeLe16(payload.data() + 22U, SlaveController::getMaxICtemp());
+            writeLe32(payload.data(), measurement.packVoltageUv);
+            writeLe16(payload.data() + 4U, static_cast<uint16_t>(static_cast<int16_t>(BCC_CURRENT_TO_RAW(measurement.packCurrentA))));
+            writeLe16(payload.data() + 6U, measurement.socRaw);
+            writeLe32(payload.data() + 8U, measurement.minCellVoltageUv);
+            writeLe32(payload.data() + 12U, measurement.maxCellVoltageUv);
+            writeLe16(payload.data() + 16U, measurement.minNtcTemperatureRaw);
+            writeLe16(payload.data() + 18U, measurement.maxNtcTemperatureRaw);
+            writeLe16(payload.data() + 20U, measurement.minIcTemperatureRaw);
+            writeLe16(payload.data() + 22U, measurement.maxIcTemperatureRaw);
             broadcastFrame(PACK, 0U, payload.data(), payload.size());
         }
 
@@ -632,11 +634,11 @@ namespace BmsUart
             broadcastFrame(HV_VOLTAGES, 0U, payload.data(), payload.size());
         }
 
-        void sendCellsAndTemperatures()
+        void sendCellsAndTemperatures(const SlaveController::MeasurementSnapshot &measurement)
         {
-            const auto &allCells = SlaveController::getCellVoltages();
-            const auto &allNtc = SlaveController::getNTCtemps();
-            const auto &allIc = SlaveController::getICtemps();
+            const auto &allCells = measurement.cellVoltages;
+            const auto &allNtc = measurement.ntcTemperatures;
+            const auto &allIc = measurement.icTemperatures;
             const size_t slaveCount = SlaveController::getNumOfSlaves();
 
             // A bench chain may contain one monitor; emit exactly the configured count.
@@ -650,7 +652,9 @@ namespace BmsUart
 
                 std::array<uint8_t, 51U> cellPayload = {};
                 cellPayload[0] = static_cast<uint8_t>(slaveIndex);
-                writeLe16(cellPayload.data() + 1U, SlaveController::getBalancingMask(slaveIndex));
+                writeLe16(cellPayload.data() + 1U, slaveIndex < measurement.balancingMasks.size()
+                                                        ? measurement.balancingMasks[slaveIndex]
+                                                        : 0U);
                 for (size_t cellIndex = 0U; cellIndex < 12U; ++cellIndex)
                 {
                     writeLe32(cellPayload.data() + 3U + cellIndex * 4U, allCells[slaveIndex][cellIndex]);
@@ -836,9 +840,10 @@ namespace BmsUart
                 return;
             }
 
-            if (pendingRegisterRead.finished)
+            SlaveController::RegisterReponse response{};
+            if (SlaveController::takeRegisterResponse(response))
             {
-                if (pendingRegisterRead.response.status == BCC_STATUS_SUCCESS)
+                if (response.status == BCC_STATUS_SUCCESS)
                 {
                     std::array<uint8_t, 4U> payload = {
                         pendingRegisterRead.slaveIndex,
@@ -846,7 +851,7 @@ namespace BmsUart
                         0U,
                         0U,
                     };
-                    writeLe16(payload.data() + 2U, pendingRegisterRead.response.regValue);
+                    writeLe16(payload.data() + 2U, response.regValue);
                     sendServiceResponse(pendingRegisterRead.link, pendingRegisterRead.sequence, READ_REGISTER, OK, payload.data(), payload.size());
                 }
                 else
@@ -944,8 +949,7 @@ namespace BmsUart
                 pendingRegisterRead.regAddr = frame.payload[2];
                 pendingRegisterRead.deadlineMs = HAL_GetTick() + REGISTER_READ_TIMEOUT_MS;
                 if (!SlaveController::requestRegister(
-                        {.cid = static_cast<uint8_t>(pendingRegisterRead.slaveIndex + 1U), .regAddr = pendingRegisterRead.regAddr},
-                        &pendingRegisterRead.finished, &pendingRegisterRead.response))
+                        {.cid = static_cast<uint8_t>(pendingRegisterRead.slaveIndex + 1U), .regAddr = pendingRegisterRead.regAddr}))
                 {
                     sendServiceResponse(frame.sequence, serviceId, DENIED);
                     return;
@@ -1157,7 +1161,7 @@ namespace BmsUart
             {
                 if (frame.link == Link::Usb && frame.sequence == 0U && frame.length == 0U)
                 {
-                    lastValidUsbHeartbeatMs = HAL_GetTick();
+                    lastValidUsbHeartbeatMs.store(HAL_GetTick(), std::memory_order_release);
                 }
                 return;
             }
@@ -1202,8 +1206,9 @@ namespace BmsUart
                 {
                     sendStatus();
                     sendHvVoltages();
-                    sendPack();
-                    sendCellsAndTemperatures();
+                    const SlaveController::MeasurementSnapshot measurement = SlaveController::getMeasurementSnapshot();
+                    sendPack(measurement);
+                    sendCellsAndTemperatures(measurement);
                     lastSnapshotMs = now;
                 }
                 osDelay(10U);
@@ -1213,15 +1218,15 @@ namespace BmsUart
 
     void setup()
     {
-        hasValidGatewayFrame = false;
-        lastValidGatewayFrameMs = HAL_GetTick();
-        uartStartedMs = lastValidGatewayFrameMs;
-        lastValidUsbHeartbeatMs = 0U;
-        rxRecoveryRequested = false;
-        rxErrorCount = 0U;
-        lastRxErrorCode = HAL_UART_ERROR_NONE;
-        rxArmFailureCount = 0U;
-        rxRecoveryCount = 0U;
+        hasValidGatewayFrame.store(false, std::memory_order_release);
+        lastValidGatewayFrameMs.store(HAL_GetTick(), std::memory_order_release);
+        uartStartedMs.store(lastValidGatewayFrameMs.load(std::memory_order_acquire), std::memory_order_release);
+        lastValidUsbHeartbeatMs.store(0U, std::memory_order_release);
+        rxRecoveryRequested.store(false, std::memory_order_release);
+        rxErrorCount.store(0U, std::memory_order_relaxed);
+        lastRxErrorCode.store(HAL_UART_ERROR_NONE, std::memory_order_relaxed);
+        rxArmFailureCount.store(0U, std::memory_order_relaxed);
+        rxRecoveryCount.store(0U, std::memory_order_relaxed);
         nextRxRecoveryAttemptMs = 0U;
         resetUsbCandidate();
         rxQueue = xQueueCreateStatic(RX_QUEUE_DEPTH, sizeof(ReceivedFrame), rxQueueStorage.data(), &rxQueueControl);
@@ -1252,15 +1257,15 @@ namespace BmsUart
 
     void onTxComplete()
     {
-        txComplete = true;
+        txComplete.store(true, std::memory_order_release);
     }
 
     void onError()
     {
-        ++rxErrorCount;
-        lastRxErrorCode = HAL_UART_GetError(&huart1);
+        rxErrorCount.fetch_add(1U, std::memory_order_relaxed);
+        lastRxErrorCode.store(HAL_UART_GetError(&huart1), std::memory_order_relaxed);
         resetParser();
-        rxRecoveryRequested = true;
+        rxRecoveryRequested.store(true, std::memory_order_release);
     }
 
     void onHalRxEvent(uint16_t size)

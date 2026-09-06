@@ -71,6 +71,36 @@ namespace FlexBms::GatewayApi
         };
         std::array<WebSocketDelivery, kMaxTrackedWebSockets> webSocketDeliveries{};
         SemaphoreHandle_t webSocketDeliveryMutex = nullptr;
+        SemaphoreHandle_t serviceStateMutex = nullptr;
+        SemaphoreHandle_t telemetryStateMutex = nullptr;
+
+        void lockServiceState()
+        {
+            if (serviceStateMutex != nullptr) (void)xSemaphoreTake(serviceStateMutex, portMAX_DELAY);
+        }
+
+        void unlockServiceState()
+        {
+            if (serviceStateMutex != nullptr) (void)xSemaphoreGive(serviceStateMutex);
+        }
+
+        void lockTelemetryState()
+        {
+            if (telemetryStateMutex != nullptr) (void)xSemaphoreTake(telemetryStateMutex, portMAX_DELAY);
+        }
+
+        void unlockTelemetryState()
+        {
+            if (telemetryStateMutex != nullptr) (void)xSemaphoreGive(telemetryStateMutex);
+        }
+
+        bool telemetryHasStatus()
+        {
+            lockTelemetryState();
+            const bool available = hasStatus;
+            unlockTelemetryState();
+            return available;
+        }
 
         const char *wifiState()
         {
@@ -444,7 +474,10 @@ namespace FlexBms::GatewayApi
                 cJSON_AddStringToObject(setup, "ssid", accessPoint.ssid.data());
                 cJSON_AddStringToObject(setup, "address", accessPoint.address.data());
             }
-            cJSON_AddStringToObject(root, "uart_state", uartHealthy ? "healthy" : (hasStatus ? "lost" : "starting"));
+            lockServiceState();
+            const bool currentUartHealthy = uartHealthy;
+            unlockServiceState();
+            cJSON_AddStringToObject(root, "uart_state", currentUartHealthy ? "healthy" : (telemetryHasStatus() ? "lost" : "starting"));
             cJSON_AddStringToObject(root, "mqtt_state", Mqtt::stateName(Mqtt::getState()));
             const Mqtt::Settings mqtt = Mqtt::getSettings();
             cJSON *mqttJson = cJSON_AddObjectToObject(root, "mqtt");
@@ -503,11 +536,21 @@ namespace FlexBms::GatewayApi
 
         bool completeSnapshot()
         {
-            if (!hasStatus || !hasPack || status.slaveCount > kMaxSlaves || (status.flags & (1U << 3U)) == 0U) return false;
+            lockTelemetryState();
+            if (!hasStatus || !hasPack || status.slaveCount > kMaxSlaves || (status.flags & (1U << 3U)) == 0U)
+            {
+                unlockTelemetryState();
+                return false;
+            }
             for (uint8_t index = 0U; index < status.slaveCount; ++index)
             {
-                if (!hasCell[index] || !hasTemperature[index]) return false;
+                if (!hasCell[index] || !hasTemperature[index])
+                {
+                    unlockTelemetryState();
+                    return false;
+                }
             }
+            unlockTelemetryState();
             return true;
         }
 
@@ -533,14 +576,17 @@ namespace FlexBms::GatewayApi
 
         cJSON *bmsStatusJson()
         {
+            lockTelemetryState();
             cJSON *root = base("bms_status");
             cJSON *stateJson = cJSON_AddObjectToObject(root, "status");
             addBmsStatus(stateJson);
+            unlockTelemetryState();
             return root;
         }
 
         cJSON *snapshotJson()
         {
+            lockTelemetryState();
             cJSON *root = base("snapshot");
             cJSON *stateJson = cJSON_AddObjectToObject(root, "status");
             addBmsStatus(stateJson);
@@ -578,6 +624,7 @@ namespace FlexBms::GatewayApi
                 for (uint16_t value : temperatures[slave].ntcRaw) cJSON_AddItemToArray(ntcs, cJSON_CreateNumber(value));
                 cJSON_AddNumberToObject(temperature, "ic_temp_raw", temperatures[slave].icRaw);
             }
+            unlockTelemetryState();
             return root;
         }
 
@@ -898,7 +945,7 @@ namespace FlexBms::GatewayApi
             {
                 return httpd_resp_send_err(request, HTTPD_403_FORBIDDEN, "Firmware update is available only on the station LAN");
             }
-            if (!FirmwareUpdate::isAvailable(target) || serviceInFlight)
+            if (!FirmwareUpdate::isAvailable(target) || serviceBusy())
             {
                 const bool stm32NeedsRecovery = target == FirmwareUpdate::Target::Stm32 && FirmwareUpdate::isAvailable() && !FirmwareUpdate::isAvailable(target);
                 return httpd_resp_send_err(request, HTTPD_403_FORBIDDEN,
@@ -956,7 +1003,7 @@ namespace FlexBms::GatewayApi
             {
                 prepareWebSocketConnection(socket);
                 (void)sendJsonTo(socket, hello());
-                if (hasStatus) (void)sendJsonTo(socket, bmsStatusJson());
+                if (telemetryHasStatus()) (void)sendJsonTo(socket, bmsStatusJson());
                 if (completeSnapshot()) (void)sendJsonTo(socket, snapshotJson());
                 return ESP_OK;
             }
@@ -984,24 +1031,53 @@ namespace FlexBms::GatewayApi
                 if (parseService(root, requestedService, arguments, argumentLength))
                 {
                     const char *requestId = cJSON_GetObjectItemCaseSensitive(root, "request_id")->valuestring;
-                    if (!Wifi::allowsBmsServices() || FirmwareUpdate::getStatus().phase == FirmwareUpdate::Phase::Uploading || FirmwareUpdate::getStatus().phase == FirmwareUpdate::Phase::Installing) sendServiceResult(socket, requestId, requestedService, ServiceResult::Denied);
-                    else if (serviceInFlight) sendServiceResult(socket, requestId, requestedService, ServiceResult::Busy);
-                    else if (!uartHealthy || serviceSender == nullptr) sendServiceResult(socket, requestId, requestedService, ServiceResult::TransportError);
+                    if (!Wifi::allowsBmsServices() || FirmwareUpdate::getStatus().phase == FirmwareUpdate::Phase::Uploading || FirmwareUpdate::getStatus().phase == FirmwareUpdate::Phase::Installing)
+                    {
+                        sendServiceResult(socket, requestId, requestedService, ServiceResult::Denied);
+                    }
                     else
                     {
-                        const uint8_t sequence = nextServiceSequence++;
-                        if (nextServiceSequence == 0U) nextServiceSequence = 1U;
-                        std::strncpy(pendingRequestId, requestId, kMaxRequestIdBytes);
-                        pendingRequestId[kMaxRequestIdBytes] = '\0';
-                        pendingService = requestedService;
-                        pendingSequence = sequence;
-                        pendingServiceSocket = socket;
-                        pendingServiceStartedUs = esp_timer_get_time();
-                        serviceInFlight = true;
-                        if (!serviceSender(requestedService, arguments.data(), argumentLength, sequence))
+                        bool accepted = false;
+                        bool healthy = false;
+                        ServiceSender sender = nullptr;
+                        uint8_t sequence = 0U;
+                        lockServiceState();
+                        healthy = uartHealthy;
+                        if (serviceInFlight)
                         {
-                            serviceInFlight = false;
-                            pendingServiceSocket = -1;
+                            unlockServiceState();
+                            sendServiceResult(socket, requestId, requestedService, ServiceResult::Busy);
+                        }
+                        else if (!healthy || serviceSender == nullptr)
+                        {
+                            unlockServiceState();
+                            sendServiceResult(socket, requestId, requestedService, ServiceResult::TransportError);
+                        }
+                        else
+                        {
+                            sequence = nextServiceSequence++;
+                            if (nextServiceSequence == 0U) nextServiceSequence = 1U;
+                            std::strncpy(pendingRequestId, requestId, kMaxRequestIdBytes);
+                            pendingRequestId[kMaxRequestIdBytes] = '\0';
+                            pendingService = requestedService;
+                            pendingSequence = sequence;
+                            pendingServiceSocket = socket;
+                            pendingServiceStartedUs = esp_timer_get_time();
+                            serviceInFlight = true;
+                            sender = serviceSender;
+                            accepted = true;
+                            unlockServiceState();
+                        }
+                        if (accepted && !sender(requestedService, arguments.data(), argumentLength, sequence))
+                        {
+                            lockServiceState();
+                            if (serviceInFlight && pendingSequence == sequence)
+                            {
+                                serviceInFlight = false;
+                                pendingServiceSocket = -1;
+                            }
+                            unlockServiceState();
+                            ESP_LOGW(kLogTag, "Service %s could not be written to STM32 UART", serviceName(requestedService));
                             sendServiceResult(socket, requestId, requestedService, ServiceResult::TransportError);
                         }
                     }
@@ -1055,7 +1131,18 @@ namespace FlexBms::GatewayApi
     {
         if (server != nullptr) return true;
         webSocketDeliveryMutex = xSemaphoreCreateMutex();
-        if (webSocketDeliveryMutex == nullptr) return false;
+        serviceStateMutex = xSemaphoreCreateMutex();
+        telemetryStateMutex = xSemaphoreCreateMutex();
+        if (webSocketDeliveryMutex == nullptr || serviceStateMutex == nullptr || telemetryStateMutex == nullptr)
+        {
+            if (telemetryStateMutex != nullptr) vSemaphoreDelete(telemetryStateMutex);
+            if (serviceStateMutex != nullptr) vSemaphoreDelete(serviceStateMutex);
+            if (webSocketDeliveryMutex != nullptr) vSemaphoreDelete(webSocketDeliveryMutex);
+            serviceStateMutex = nullptr;
+            telemetryStateMutex = nullptr;
+            webSocketDeliveryMutex = nullptr;
+            return false;
+        }
         serviceSender = sender;
         httpd_config_t config = HTTPD_DEFAULT_CONFIG();
         config.lru_purge_enable = true;
@@ -1068,7 +1155,11 @@ namespace FlexBms::GatewayApi
         if (httpd_start(&server, &config) != ESP_OK)
         {
             vSemaphoreDelete(webSocketDeliveryMutex);
+            vSemaphoreDelete(serviceStateMutex);
+            vSemaphoreDelete(telemetryStateMutex);
             webSocketDeliveryMutex = nullptr;
+            serviceStateMutex = nullptr;
+            telemetryStateMutex = nullptr;
             return false;
         }
         const httpd_uri_t log = {.uri = "/api/diagnostic-log", .method = HTTP_GET, .handler = logHandler, .user_ctx = nullptr,
@@ -1097,16 +1188,27 @@ namespace FlexBms::GatewayApi
             pendingScanSocket = -1;
             pendingScanRequestId[0] = '\0';
         }
+        bool serviceTimedOut = false;
+        InternalServiceCompletion completion = nullptr;
+        int socket = -1;
+        Service service = Service::SetRunRequest;
+        char requestId[kMaxRequestIdBytes + 1U] = {};
+        lockServiceState();
         if (serviceInFlight && esp_timer_get_time() - pendingServiceStartedUs >= 3000000LL)
         {
-            const InternalServiceCompletion completion = internalServiceCompletion;
-            const int socket = pendingServiceSocket;
-            const Service service = pendingService;
-            char requestId[kMaxRequestIdBytes + 1U] = {};
+            serviceTimedOut = true;
+            completion = internalServiceCompletion;
+            socket = pendingServiceSocket;
+            service = pendingService;
             std::strncpy(requestId, pendingRequestId, kMaxRequestIdBytes);
             internalServiceCompletion = nullptr;
             serviceInFlight = false;
             pendingServiceSocket = -1;
+        }
+        unlockServiceState();
+        if (serviceTimedOut)
+        {
+            ESP_LOGW(kLogTag, "Service %s timed out waiting for STM32 response", serviceName(service));
             if (completion != nullptr)
             {
                 completion(ServiceResult::TransportError);
@@ -1121,22 +1223,29 @@ namespace FlexBms::GatewayApi
 
     void setUartHealthy(bool healthy)
     {
+        bool changed = false;
+        lockServiceState();
         if (uartHealthy != healthy)
         {
             uartHealthy = healthy;
-            publishGatewayStatus();
+            changed = true;
         }
+        unlockServiceState();
+        if (changed) publishGatewayStatus();
     }
 
     void publishGatewayStatus()
     {
         const bool currentServiceCapability = Wifi::allowsBmsServices();
-        if (!serviceCapabilityKnown || serviceCapability != currentServiceCapability)
+        lockServiceState();
+        const bool capabilityChanged = !serviceCapabilityKnown || serviceCapability != currentServiceCapability;
+        if (capabilityChanged)
         {
             serviceCapabilityKnown = true;
             serviceCapability = currentServiceCapability;
-            broadcast(hello());
         }
+        unlockServiceState();
+        if (capabilityChanged) broadcast(hello());
         cJSON *root = base("gateway_status");
         addGatewayStatus(root);
         broadcast(root);
@@ -1144,10 +1253,13 @@ namespace FlexBms::GatewayApi
 
     void publishFrame(const UartV1::Frame &frame, uint32_t gatewayUptimeMs)
     {
+        bool statusPublished = false;
+        cJSON *eventToPublish = nullptr;
+        lockTelemetryState();
         if (frame.type == UartV1::MessageType::Status && UartV1::decodeStatus(frame, status))
         {
             hasStatus = true;
-            broadcast(bmsStatusJson());
+            statusPublished = true;
             if ((status.flags & (1U << 3U)) == 0U)
             {
                 hasPack = false;
@@ -1186,92 +1298,126 @@ namespace FlexBms::GatewayApi
                                    (static_cast<uint32_t>(frame.payload[4]) << 24U);
             cJSON_AddNumberToObject(event, "value", value);
             cJSON_AddNumberToObject(event, "gateway_uptime_ms", gatewayUptimeMs);
-            broadcast(event);
+            eventToPublish = event;
         }
+        unlockTelemetryState();
+        if (statusPublished) broadcast(bmsStatusJson());
+        if (eventToPublish != nullptr) broadcast(eventToPublish);
         if (completeSnapshot()) broadcast(snapshotJson());
     }
 
     void completeService(uint8_t sequence, ServiceResult result, const uint8_t *data, uint8_t dataLength)
     {
-        if (!serviceInFlight || sequence != pendingSequence) return;
+        Service service = Service::SetRunRequest;
+        int socket = -1;
+        char requestId[kMaxRequestIdBytes + 1U] = {};
+        std::array<uint8_t, 64U> responseData{};
+        const uint8_t copiedDataLength = std::min<uint8_t>(dataLength, static_cast<uint8_t>(responseData.size()));
+        if (data != nullptr && copiedDataLength != 0U)
+        {
+            std::memcpy(responseData.data(), data, copiedDataLength);
+        }
+
+        lockServiceState();
+        if (!serviceInFlight || sequence != pendingSequence)
+        {
+            unlockServiceState();
+            return;
+        }
         const InternalServiceCompletion completion = internalServiceCompletion;
+        service = pendingService;
+        socket = pendingServiceSocket;
+        std::strncpy(requestId, pendingRequestId, kMaxRequestIdBytes);
         internalServiceCompletion = nullptr;
+        serviceInFlight = false;
+        pendingServiceSocket = -1;
+        unlockServiceState();
+
         if (completion != nullptr)
         {
-            serviceInFlight = false;
-            pendingServiceSocket = -1;
             completion(result);
             publishGatewayStatus();
             return;
         }
         cJSON *root = base("service_result");
-        cJSON_AddStringToObject(root, "request_id", pendingRequestId);
-        cJSON_AddStringToObject(root, "service", serviceName(pendingService));
+        cJSON_AddStringToObject(root, "request_id", requestId);
+        cJSON_AddStringToObject(root, "service", serviceName(service));
         cJSON_AddStringToObject(root, "result", resultName(result));
-        if (result == ServiceResult::Ok && pendingService == Service::ReadRegister && dataLength == 4U)
+        if (result == ServiceResult::Ok && service == Service::ReadRegister && copiedDataLength == 4U)
         {
             cJSON *value = cJSON_AddObjectToObject(root, "data");
-            cJSON_AddNumberToObject(value, "slave_index", data[0]);
-            cJSON_AddNumberToObject(value, "register", data[1]);
-            cJSON_AddNumberToObject(value, "value", static_cast<uint16_t>(data[2]) | (static_cast<uint16_t>(data[3]) << 8U));
+            cJSON_AddNumberToObject(value, "slave_index", responseData[0]);
+            cJSON_AddNumberToObject(value, "register", responseData[1]);
+            cJSON_AddNumberToObject(value, "value", static_cast<uint16_t>(responseData[2]) | (static_cast<uint16_t>(responseData[3]) << 8U));
         }
-        else if (result == ServiceResult::Ok && pendingService == Service::GetRtc && dataLength == 4U)
+        else if (result == ServiceResult::Ok && service == Service::GetRtc && copiedDataLength == 4U)
         {
             cJSON *value = cJSON_AddObjectToObject(root, "data");
-            cJSON_AddNumberToObject(value, "unix_time_s", static_cast<uint32_t>(data[0]) |
-                                                            (static_cast<uint32_t>(data[1]) << 8U) |
-                                                            (static_cast<uint32_t>(data[2]) << 16U) |
-                                                            (static_cast<uint32_t>(data[3]) << 24U));
+            cJSON_AddNumberToObject(value, "unix_time_s", static_cast<uint32_t>(responseData[0]) |
+                                                            (static_cast<uint32_t>(responseData[1]) << 8U) |
+                                                            (static_cast<uint32_t>(responseData[2]) << 16U) |
+                                                            (static_cast<uint32_t>(responseData[3]) << 24U));
         }
-        else if (result == ServiceResult::Ok && pendingService == Service::GetDeviceInfo && dataLength == 4U)
+        else if (result == ServiceResult::Ok && service == Service::GetDeviceInfo && copiedDataLength == 4U)
         {
             cJSON *value = cJSON_AddObjectToObject(root, "data");
-            cJSON_AddNumberToObject(value, "firmware_version_packed", static_cast<uint32_t>(data[0]) |
-                                                                     (static_cast<uint32_t>(data[1]) << 8U) |
-                                                                     (static_cast<uint32_t>(data[2]) << 16U) |
-                                                                     (static_cast<uint32_t>(data[3]) << 24U));
+            cJSON_AddNumberToObject(value, "firmware_version_packed", static_cast<uint32_t>(responseData[0]) |
+                                                                     (static_cast<uint32_t>(responseData[1]) << 8U) |
+                                                                     (static_cast<uint32_t>(responseData[2]) << 16U) |
+                                                                     (static_cast<uint32_t>(responseData[3]) << 24U));
         }
-        else if (result == ServiceResult::Ok && pendingService == Service::GetConfig && dataLength == 18U)
+        else if (result == ServiceResult::Ok && service == Service::GetConfig && copiedDataLength == 18U)
         {
             cJSON *value = cJSON_AddObjectToObject(root, "data");
-            const char *reason = data[0] == 0U ? "valid" : data[0] == 1U ? "blank" : data[0] == 2U ? "version_mismatch" : "corrupt";
+            const char *reason = responseData[0] == 0U ? "valid" : responseData[0] == 1U ? "blank" : responseData[0] == 2U ? "version_mismatch" : "corrupt";
             cJSON_AddStringToObject(value, "reason", reason);
-            cJSON_AddNumberToObject(value, "expected_version", static_cast<uint16_t>(data[1]) | (static_cast<uint16_t>(data[2]) << 8U));
-            cJSON_AddNumberToObject(value, "stored_version", static_cast<uint16_t>(data[3]) | (static_cast<uint16_t>(data[4]) << 8U));
-            cJSON_AddNumberToObject(value, "slave_count", data[5]);
-            cJSON_AddNumberToObject(value, "current_sense_slave", data[6]);
-            cJSON_AddNumberToObject(value, "shunt_resistance_uohm", static_cast<uint32_t>(data[7]) | (static_cast<uint32_t>(data[8]) << 8U) |
-                                                                            (static_cast<uint32_t>(data[9]) << 16U) | (static_cast<uint32_t>(data[10]) << 24U));
-            cJSON_AddNumberToObject(value, "battery_capacity_mah", static_cast<uint32_t>(data[11]) | (static_cast<uint32_t>(data[12]) << 8U) |
-                                                                      (static_cast<uint32_t>(data[13]) << 16U) | (static_cast<uint32_t>(data[14]) << 24U));
-            cJSON_AddBoolToObject(value, "invert_current", data[15] != 0U);
-            cJSON_AddBoolToObject(value, "balance_enabled", data[16] != 0U);
-            cJSON_AddBoolToObject(value, "startup_diagnostics", data[17] != 0U);
+            cJSON_AddNumberToObject(value, "expected_version", static_cast<uint16_t>(responseData[1]) | (static_cast<uint16_t>(responseData[2]) << 8U));
+            cJSON_AddNumberToObject(value, "stored_version", static_cast<uint16_t>(responseData[3]) | (static_cast<uint16_t>(responseData[4]) << 8U));
+            cJSON_AddNumberToObject(value, "slave_count", responseData[5]);
+            cJSON_AddNumberToObject(value, "current_sense_slave", responseData[6]);
+            cJSON_AddNumberToObject(value, "shunt_resistance_uohm", static_cast<uint32_t>(responseData[7]) | (static_cast<uint32_t>(responseData[8]) << 8U) |
+                                                                            (static_cast<uint32_t>(responseData[9]) << 16U) | (static_cast<uint32_t>(responseData[10]) << 24U));
+            cJSON_AddNumberToObject(value, "battery_capacity_mah", static_cast<uint32_t>(responseData[11]) | (static_cast<uint32_t>(responseData[12]) << 8U) |
+                                                                      (static_cast<uint32_t>(responseData[13]) << 16U) | (static_cast<uint32_t>(responseData[14]) << 24U));
+            cJSON_AddBoolToObject(value, "invert_current", responseData[15] != 0U);
+            cJSON_AddBoolToObject(value, "balance_enabled", responseData[16] != 0U);
+            cJSON_AddBoolToObject(value, "startup_diagnostics", responseData[17] != 0U);
         }
-        else if (result == ServiceResult::Ok && pendingService == Service::GetDiagnosticReport && dataLength == 6U)
+        else if (result == ServiceResult::Ok && service == Service::GetDiagnosticReport && copiedDataLength == 6U)
         {
             cJSON *value = cJSON_AddObjectToObject(root, "data");
-            cJSON_AddNumberToObject(value, "slave_index", data[0]);
-            cJSON_AddNumberToObject(value, "cid", data[1]);
-            cJSON_AddNumberToObject(value, "failed_checks", static_cast<uint16_t>(data[2]) | (static_cast<uint16_t>(data[3]) << 8U));
-            cJSON_AddNumberToObject(value, "status_code", data[4]);
-            cJSON_AddNumberToObject(value, "failed_diagnostic", data[5]);
+            cJSON_AddNumberToObject(value, "slave_index", responseData[0]);
+            cJSON_AddNumberToObject(value, "cid", responseData[1]);
+            cJSON_AddNumberToObject(value, "failed_checks", static_cast<uint16_t>(responseData[2]) | (static_cast<uint16_t>(responseData[3]) << 8U));
+            cJSON_AddNumberToObject(value, "status_code", responseData[4]);
+            cJSON_AddNumberToObject(value, "failed_diagnostic", responseData[5]);
         }
-        (void)sendJsonTo(pendingServiceSocket, root);
-        serviceInFlight = false;
-        pendingServiceSocket = -1;
+        (void)sendJsonTo(socket, root);
     }
 
-    bool serviceBusy() { return serviceInFlight; }
+    bool serviceBusy()
+    {
+        lockServiceState();
+        const bool busy = serviceInFlight;
+        unlockServiceState();
+        return busy;
+    }
 
     bool beginInternalService(Service service, const uint8_t *arguments, uint8_t argumentLength, InternalServiceCompletion completion)
     {
-        if (arguments == nullptr || completion == nullptr || argumentLength > kMaxServiceArgumentBytes || serviceInFlight || !Wifi::allowsBmsServices() ||
-            !uartHealthy || serviceSender == nullptr || FirmwareUpdate::getStatus().phase == FirmwareUpdate::Phase::Uploading ||
+        if (arguments == nullptr || completion == nullptr || argumentLength > kMaxServiceArgumentBytes || !Wifi::allowsBmsServices() ||
+            FirmwareUpdate::getStatus().phase == FirmwareUpdate::Phase::Uploading ||
             FirmwareUpdate::getStatus().phase == FirmwareUpdate::Phase::Installing)
         {
             return false;
         }
+        lockServiceState();
+        if (serviceInFlight || !uartHealthy || serviceSender == nullptr)
+        {
+            unlockServiceState();
+            return false;
+        }
+        const ServiceSender sender = serviceSender;
         const uint8_t sequence = nextServiceSequence++;
         if (nextServiceSequence == 0U) nextServiceSequence = 1U;
         pendingService = service;
@@ -1280,9 +1426,16 @@ namespace FlexBms::GatewayApi
         pendingServiceStartedUs = esp_timer_get_time();
         internalServiceCompletion = completion;
         serviceInFlight = true;
-        if (serviceSender(service, arguments, argumentLength, sequence)) return true;
-        serviceInFlight = false;
-        internalServiceCompletion = nullptr;
+        unlockServiceState();
+        if (sender(service, arguments, argumentLength, sequence)) return true;
+        lockServiceState();
+        if (serviceInFlight && pendingSequence == sequence)
+        {
+            serviceInFlight = false;
+            internalServiceCompletion = nullptr;
+        }
+        unlockServiceState();
+        ESP_LOGW(kLogTag, "Internal service %s could not be written to STM32 UART", serviceName(service));
         return false;
     }
 

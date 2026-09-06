@@ -67,7 +67,7 @@ namespace SlaveController
 		uint32_t initializationRetryNotBeforeMs = 0U;
         std::array<bool, static_cast<size_t>(NO_CONFIG) + 1U> bmsFaultInputs{};
 
-        BMSState currentState = DEVICE_INITIALIZATION; // Current state of the BMS
+        std::atomic<BMSState> currentState{DEVICE_INITIALIZATION}; // Current state of the BMS
 
         static vector<BCC> mSlaves; /* Array of BCC devices */
         vector<uint8_t> cidInitializationFailureCounts;
@@ -100,6 +100,8 @@ namespace SlaveController
 
         std::atomic<uint32_t> measurementSequence{0};
         bool completeMeasurementSetValid = false;
+        std::atomic<bool> publishedMeasurementsFresh{false};
+        MeasurementSnapshot latestMeasurementSnapshot{};
         BatteryCanSnapshot latestBatteryCanSnapshot{};
         std::atomic<bool> chargeTemperatureInhibit{false};
 
@@ -130,8 +132,8 @@ namespace SlaveController
         double packCurrent = 0.0;
 
         RegisterRequest registerRequest = {};
-        bool *registerRequestFlag = nullptr;
-        RegisterReponse *registerResponse = nullptr;
+        RegisterReponse registerResponse = {};
+        bool registerResponseReady = false;
         bool registerRequestBusy = false;
 
         /*******************************************************************************
@@ -146,6 +148,21 @@ namespace SlaveController
         double batteryCapacityAh()
         {
             return runtimeConfiguration.batteryCapacityMilliAh / 1'000.0;
+        }
+
+        uint16_t liveSoC()
+        {
+            if (!currentMeasurementConfigured ||
+                currentMeasurementSlaveIdx >= mSlaves.size() ||
+                !mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid())
+            {
+                return BCC_AMPHOUR_TO_SOC(0, batteryCapacityAh());
+            }
+            const double ampHour = std::clamp(
+                mSlaves[currentMeasurementSlaveIdx].getAhCounter(),
+                0.0,
+                batteryCapacityAh());
+            return BCC_AMPHOUR_TO_SOC(ampHour, batteryCapacityAh());
         }
 
         bool measurementsAreFresh()
@@ -169,7 +186,9 @@ namespace SlaveController
         {
             taskENTER_CRITICAL();
             latestBatteryCanSnapshot = {};
+            latestMeasurementSnapshot = {};
             taskEXIT_CRITICAL();
+            publishedMeasurementsFresh.store(false, std::memory_order_release);
         }
 
         void updateFullSocCalibration(const double current)
@@ -672,9 +691,10 @@ namespace SlaveController
             return communicationFault;
         }
 
-        void publishBatteryCanSnapshot()
+        void publishBatteryCanSnapshot(uint32_t publishedSequence)
         {
             BatteryCanSnapshot snapshot{};
+            MeasurementSnapshot measurement{};
 
             snapshot.measurementsFresh = measurementsAreFresh();
             snapshot.socValid = currentMeasurementConfigured &&
@@ -712,19 +732,52 @@ namespace SlaveController
                                               : BCC_TEMPRAW_TO_TEMP(averageNTCtemperature);
             snapshot.cellCount = getCellCount();
 
+            measurement.valid = snapshot.valid;
+            measurement.measurementsFresh = snapshot.measurementsFresh;
+            measurement.socValid = snapshot.socValid;
+            measurement.currentSensingEnabled = snapshot.currentSensingEnabled;
+            measurement.sequence = publishedSequence;
+            measurement.packVoltageUv = snapshot.packVoltageUv;
+            measurement.packCurrentA = snapshot.packCurrentA;
+            measurement.minCellVoltageUv = minCellVoltage;
+            measurement.maxCellVoltageUv = maxCellVoltage;
+            measurement.minNtcTemperatureRaw = minNTCtemperature;
+            measurement.maxNtcTemperatureRaw = maxNTCtemperature;
+            measurement.minIcTemperatureRaw = minICtemperature;
+            measurement.maxIcTemperatureRaw = maxICtemperature;
+            measurement.cellVoltages = cellVoltages;
+            measurement.ntcTemperatures = NTCtemperatures;
+            measurement.icTemperatures = ICtemperatures;
+            measurement.balancingMasks.reserve(mSlaves.size());
+            for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
+            {
+                uint16_t mask = 0U;
+                for (uint8_t cellIndex = 0U; cellIndex < 12U; ++cellIndex)
+                {
+                    if (mSlaves[slaveIndex].isCellBalancing(cellIndex))
+                    {
+                        mask |= static_cast<uint16_t>(1U << cellIndex);
+                    }
+                }
+                measurement.balancingMasks.push_back(mask);
+            }
+
             if (snapshot.socValid)
             {
                 const double socPercent =
-                    (static_cast<double>(getSoC()) / UINT16_MAX * 3.0 - 1.0) * 100.0;
+                    (static_cast<double>(liveSoC()) / UINT16_MAX * 3.0 - 1.0) * 100.0;
                 snapshot.socPercent = static_cast<uint16_t>(std::clamp(socPercent, 0.0, 100.0));
             }
+            measurement.socRaw = snapshot.socValid ? liveSoC() : 0U;
 
             /* Keep the externally visible snapshot coherent. The BMS task is
              * the only writer; CAN consumers copy it under the same critical
              * section. */
             taskENTER_CRITICAL();
+            latestMeasurementSnapshot = std::move(measurement);
             latestBatteryCanSnapshot = snapshot;
             taskEXIT_CRITICAL();
+            publishedMeasurementsFresh.store(snapshot.measurementsFresh, std::memory_order_release);
         }
 
         // Balancing is allowed only with a healthy, fully running BMS.
@@ -887,8 +940,6 @@ namespace SlaveController
         void handleRegisterRequests()
         {
             RegisterRequest request;
-            bool *finishedFlag;
-            RegisterReponse *responseTarget;
 
             taskENTER_CRITICAL();
             if (!registerRequestBusy || registerRequest.cid == 0U)
@@ -898,20 +949,16 @@ namespace SlaveController
             }
 
             request = registerRequest;
-            finishedFlag = registerRequestFlag;
-            responseTarget = registerResponse;
             taskEXIT_CRITICAL();
 
             PRINTF_INFO("[SC] Processing register request\n");
             RegisterReponse response = {};
             response.status = mSlaves[request.cid - 1U].regRead(request.regAddr, 1, &response.regValue);
-            *responseTarget = response;
-            *finishedFlag = true;
 
             taskENTER_CRITICAL();
+            registerResponse = response;
+            registerResponseReady = true;
             registerRequest = {};
-            registerRequestFlag = nullptr;
-            registerResponse = nullptr;
             registerRequestBusy = false;
             taskEXIT_CRITICAL();
         }
@@ -923,10 +970,6 @@ namespace SlaveController
             const bool conversionSuccessful = startMeasurements();
             const bool measurementsSuccessful = getMeasurements();
             completeMeasurementSetValid = conversionSuccessful && measurementsSuccessful;
-            if (completeMeasurementSetValid)
-            {
-                measurementSequence.fetch_add(1U);
-            }
             performCellBalancing();
 
             // Handle register requests from Companion
@@ -944,7 +987,14 @@ namespace SlaveController
                 initializationRetryNotBeforeMs = millis();
             }
 
-            publishBatteryCanSnapshot();
+            const uint32_t publishedSequence = completeMeasurementSetValid
+                                                    ? measurementSequence.load(std::memory_order_relaxed) + 1U
+                                                    : measurementSequence.load(std::memory_order_relaxed);
+            publishBatteryCanSnapshot(publishedSequence);
+            if (completeMeasurementSetValid)
+            {
+                measurementSequence.store(publishedSequence, std::memory_order_release);
+            }
         }
 
         bcc_status_t globalSoftwareReset()
@@ -1161,7 +1211,14 @@ namespace SlaveController
 
                         setState(RUNNING);
                         FaultManager::setStartupComplete(true);
-                        publishBatteryCanSnapshot();
+                        const uint32_t publishedSequence = completeMeasurementSetValid
+                                                                ? measurementSequence.load(std::memory_order_relaxed) + 1U
+                                                                : measurementSequence.load(std::memory_order_relaxed);
+                        publishBatteryCanSnapshot(publishedSequence);
+                        if (completeMeasurementSetValid)
+                        {
+                            measurementSequence.store(publishedSequence, std::memory_order_release);
+                        }
                     }
                 }
 
@@ -1371,12 +1428,21 @@ namespace SlaveController
 
     bool areMeasurementsFresh()
     {
-        return measurementsAreFresh();
+        return publishedMeasurementsFresh.load(std::memory_order_acquire);
+    }
+
+    MeasurementSnapshot getMeasurementSnapshot()
+    {
+        MeasurementSnapshot snapshot{};
+        taskENTER_CRITICAL();
+        snapshot = latestMeasurementSnapshot;
+        taskEXIT_CRITICAL();
+        return snapshot;
     }
 
     BMSState getState()
     {
-        return currentState;
+        return currentState.load(std::memory_order_acquire);
     }
 
     size_t getNumOfSlaves()
@@ -1416,48 +1482,46 @@ namespace SlaveController
         return NTCCounts;
     }
 
-    const vector<vector<uint32_t>> &getCellVoltages()
+    vector<vector<uint32_t>> getCellVoltages()
     {
-        return cellVoltages;
+        return getMeasurementSnapshot().cellVoltages;
     }
 
     const std::vector<std::vector<bool>> getBalancingList()
     {
         vector<vector<bool>> balanceActive;
-        balanceActive.reserve(getNumOfSlaves());
-        for (auto &slave : mSlaves)
+        const MeasurementSnapshot snapshot = getMeasurementSnapshot();
+        balanceActive.reserve(snapshot.balancingMasks.size());
+        for (const uint16_t mask : snapshot.balancingMasks)
         {
-            balanceActive.push_back(slave.getBalancingList());
+            vector<bool> slaveBalance(12U, false);
+            for (size_t cellIndex = 0U; cellIndex < slaveBalance.size(); ++cellIndex)
+            {
+                slaveBalance[cellIndex] = (mask & (1U << cellIndex)) != 0U;
+            }
+            balanceActive.push_back(std::move(slaveBalance));
         }
         return balanceActive;
     }
 
     uint16_t getBalancingMask(size_t slaveIndex)
     {
-        if (slaveIndex >= mSlaves.size())
+        const MeasurementSnapshot snapshot = getMeasurementSnapshot();
+        if (slaveIndex >= snapshot.balancingMasks.size())
         {
             return 0U;
         }
-
-        uint16_t mask = 0U;
-        for (uint8_t cellIndex = 0U; cellIndex < 12U; ++cellIndex)
-        {
-            if (mSlaves[slaveIndex].isCellBalancing(cellIndex))
-            {
-                mask |= static_cast<uint16_t>(1U << cellIndex);
-            }
-        }
-        return mask;
+        return snapshot.balancingMasks[slaveIndex];
     }
 
     uint32_t getMinCellVoltage()
     {
-        return minCellVoltage;
+        return getMeasurementSnapshot().minCellVoltageUv;
     }
 
     uint32_t getMaxCellVoltage()
     {
-        return maxCellVoltage;
+        return getMeasurementSnapshot().maxCellVoltageUv;
     }
 
     uint32_t getPackVoltage()
@@ -1467,31 +1531,31 @@ namespace SlaveController
 
     double getCurrent()
     {
-        return packCurrent;
+        return getMeasurementSnapshot().packCurrentA;
     }
 
     bool isHVReady()
     {
-        return currentState == RUNNING &&
+        return currentState.load(std::memory_order_acquire) == RUNNING &&
                FaultManager::canEnableHv() &&
-               measurementsAreFresh();
+               areMeasurementsFresh();
     }
 
     bool isChargingAllowed()
     {
         // Low temperature is a charge-only restriction. All other common BMS
         // and HV faults are handled by the shared HV permission.
-        return currentState == RUNNING &&
+        return currentState.load(std::memory_order_acquire) == RUNNING &&
                FaultManager::canEnableHv() &&
-               measurementsAreFresh() &&
+               areMeasurementsFresh() &&
                !chargeTemperatureInhibit.load(std::memory_order_relaxed);
     }
 
     bool isDischargingAllowed()
     {
-        return currentState == RUNNING &&
+        return currentState.load(std::memory_order_acquire) == RUNNING &&
                FaultManager::canEnableHv() &&
-               measurementsAreFresh();
+               areMeasurementsFresh();
     }
 
     BatteryCanSnapshot getBatteryCanSnapshot()
@@ -1522,59 +1586,49 @@ namespace SlaveController
         return available;
     }
 
-    const vector<vector<uint16_t>> &getNTCtemps()
+    vector<vector<uint16_t>> getNTCtemps()
     {
-        return NTCtemperatures;
+        return getMeasurementSnapshot().ntcTemperatures;
     }
 
     uint16_t getMinNTCtemp()
     {
-        return minNTCtemperature;
+        return getMeasurementSnapshot().minNtcTemperatureRaw;
     }
 
     uint16_t getMaxNTCtemp()
     {
-        return maxNTCtemperature;
+        return getMeasurementSnapshot().maxNtcTemperatureRaw;
     }
 
-    const vector<uint16_t> &getICtemps()
+    vector<uint16_t> getICtemps()
     {
-        return ICtemperatures;
+        return getMeasurementSnapshot().icTemperatures;
     }
 
     uint16_t getMinICtemp()
     {
-        return minICtemperature;
+        return getMeasurementSnapshot().minIcTemperatureRaw;
     }
 
     uint16_t getMaxICtemp()
     {
-        return maxICtemperature;
+        return getMeasurementSnapshot().maxIcTemperatureRaw;
     }
 
     uint16_t getSoC()
     {
-        if (!isSoCValid())
-        {
-            return BCC_AMPHOUR_TO_SOC(0, batteryCapacityAh());
-        }
-        const double ampHour = std::clamp(
-            mSlaves[currentMeasurementSlaveIdx].getAhCounter(),
-            0.0,
-            batteryCapacityAh());
-        return BCC_AMPHOUR_TO_SOC(ampHour, batteryCapacityAh());
+        return getMeasurementSnapshot().socRaw;
     }
 
     bool isSoCValid()
     {
-        return currentMeasurementConfigured &&
-               currentMeasurementSlaveIdx < mSlaves.size() &&
-               mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid();
+        return getMeasurementSnapshot().socValid;
     }
 
     bool isCurrentSensingEnabled()
     {
-        return currentMeasurementConfigured;
+        return getMeasurementSnapshot().currentSensingEnabled;
     }
 
     bool validateRuntimeConfiguration(const RuntimeConfiguration::Values &values)
@@ -1610,9 +1664,9 @@ namespace SlaveController
         mSlaves[currentMeasurementSlaveIdx].setAhCounter(ampHour);
     }
 
-    bool requestRegister(RegisterRequest requestInfo, bool *flag, RegisterReponse *regResponse)
+    bool requestRegister(RegisterRequest requestInfo)
     {
-        if (requestInfo.cid == 0U || requestInfo.cid > mSlaves.size() || flag == nullptr || regResponse == nullptr)
+        if (requestInfo.cid == 0U || requestInfo.cid > mSlaves.size())
         {
             return false;
         }
@@ -1625,9 +1679,24 @@ namespace SlaveController
         }
 
         registerRequest = requestInfo;
-        registerRequestFlag = flag;
-        registerResponse = regResponse;
+        registerResponse = {};
+        registerResponseReady = false;
         registerRequestBusy = true;
+        taskEXIT_CRITICAL();
+        return true;
+    }
+
+    bool takeRegisterResponse(RegisterReponse &response)
+    {
+        taskENTER_CRITICAL();
+        if (!registerResponseReady)
+        {
+            taskEXIT_CRITICAL();
+            return false;
+        }
+        response = registerResponse;
+        registerResponse = {};
+        registerResponseReady = false;
         taskEXIT_CRITICAL();
         return true;
     }

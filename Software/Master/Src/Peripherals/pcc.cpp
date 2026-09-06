@@ -5,8 +5,10 @@
 #include "Watchdog.h"
 #include "TimeFunctions.h"
 #include "bcc/SlaveController.h"
+#include "FreeRTOS.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 #define DEBUG_LVL 2
@@ -26,13 +28,14 @@ namespace PCC
         constexpr double MIN_BATTERY_AGREEMENT_V = 10.0;
         constexpr double BATTERY_AGREEMENT_PERCENT = 0.05;
         constexpr uint32_t FIRMWARE_UPDATE_PREPARE_TIMEOUT_MS = 3'000U;
-        PCC_STATE state = OFF;
-        PCC_ERROR error = NO_ERROR;
+        std::atomic<PCC_STATE> state{OFF};
+        std::atomic<PCC_ERROR> error{NO_ERROR};
 
-        bool runRequest = false;
-        bool firmwareUpdatePrepared = false;
-        bool firmwareUpdateLocked = false;
-        uint32_t firmwareUpdatePrepareDeadlineMs = 0U;
+        std::atomic<bool> runRequest{false};
+        std::atomic<bool> firmwareUpdatePrepared{false};
+        std::atomic<bool> firmwareUpdateLocked{false};
+        std::atomic<uint32_t> firmwareUpdatePrepareDeadlineMs{0U};
+        std::atomic<bool> hvVoltagesValid{false};
 
         double batteryVoltage = 0.0;
         double loadVoltage = 0.0;
@@ -54,6 +57,12 @@ namespace PCC
 
         bool batteryVoltageAgreesWithBms()
         {
+            // An invalid ADC snapshot is a sensor-data condition, not a real
+            // zero-voltage measurement and must not become a pack mismatch.
+            if (!hvVoltagesValid.load(std::memory_order_acquire))
+            {
+                return true;
+            }
             const double bccVoltage = getBccPackVoltage();
             const bool batteryPresent = batteryVoltage >= MIN_BATTERY_SOURCE_V;
             const bool bccPresent = bccVoltage >= MIN_BATTERY_SOURCE_V;
@@ -84,7 +93,8 @@ namespace PCC
         void refreshActiveErrors()
         {
             const uint32_t latched = FaultManager::getSnapshot().hvLatched;
-            const bool batteryMismatch = !batteryVoltageAgreesWithBms();
+            const bool batteryMismatch = hvVoltagesValid.load(std::memory_order_acquire) &&
+                                         !batteryVoltageAgreesWithBms();
 
             // A pack-voltage disagreement remains visible while deliberately
             // OFF, but becomes a blocking HV fault only for a run request.
@@ -96,7 +106,9 @@ namespace PCC
             }
             if ((latched & (1UL << static_cast<uint8_t>(FaultManager::HvFault::SensorDiagnostic))) != 0U)
             {
-                FaultManager::setHvFault(FaultManager::HvFault::SensorDiagnostic, !IO::areHVSensorDiagnosticsHealthy());
+                FaultManager::setHvFault(FaultManager::HvFault::SensorDiagnostic,
+                                         !hvVoltagesValid.load(std::memory_order_acquire) ||
+                                             !IO::areHVSensorDiagnosticsHealthy());
             }
             if (runRequest &&
                 (latched & (1UL << static_cast<uint8_t>(FaultManager::HvFault::BatteryVoltageMismatch))) != 0U)
@@ -125,6 +137,13 @@ namespace PCC
 
         bool validateSequencePlausibility()
         {
+            if (!hvVoltagesValid.load(std::memory_order_acquire))
+            {
+                latchFault(SENSOR_DIAGNOSTIC_ERROR,
+                           FaultManager::HvFault::SensorDiagnostic,
+                           true);
+                return false;
+            }
             if (!IO::areHVSensorDiagnosticsHealthy())
             {
                 latchFault(SENSOR_DIAGNOSTIC_ERROR,
@@ -162,6 +181,13 @@ namespace PCC
                 return;
             }
             if (!IO::areHVSensorDiagnosticsHealthy())
+            {
+                latchFault(SENSOR_DIAGNOSTIC_ERROR,
+                           FaultManager::HvFault::SensorDiagnostic,
+                           true);
+                return;
+            }
+            if (!hvVoltagesValid.load(std::memory_order_acquire))
             {
                 latchFault(SENSOR_DIAGNOSTIC_ERROR,
                            FaultManager::HvFault::SensorDiagnostic,
@@ -289,6 +315,7 @@ namespace PCC
         firmwareUpdatePrepared = false;
         firmwareUpdateLocked = false;
         firmwareUpdatePrepareDeadlineMs = 0U;
+        hvVoltagesValid = false;
         state = OFF;
         error = NO_ERROR;
         disableOutputs();
@@ -296,112 +323,137 @@ namespace PCC
 
     void setRunRequest(bool requested)
     {
-        if (requested && (firmwareUpdatePrepared || firmwareUpdateLocked))
+        taskENTER_CRITICAL();
+        if (requested && (firmwareUpdatePrepared.load(std::memory_order_relaxed) ||
+                          firmwareUpdateLocked.load(std::memory_order_relaxed)))
         {
+            taskEXIT_CRITICAL();
             PRINTF_WARN("[PCC] Run request denied during firmware update\n");
             return;
         }
 
         if (!requested)
         {
-            runRequest = false;
+            runRequest.store(false, std::memory_order_release);
+            state.store(OFF, std::memory_order_release);
+            taskEXIT_CRITICAL();
             disableOutputs();
-            state = OFF;
             FaultManager::setHvFault(FaultManager::HvFault::BatteryVoltageMismatch, false);
-            FaultManager::setWarning(FaultManager::Warning::BatteryVoltageMismatchOff,
-                                     !batteryVoltageAgreesWithBms());
             return;
         }
 
-        runRequest = true;
+        runRequest.store(true, std::memory_order_release);
+        taskEXIT_CRITICAL();
     }
 
     void forceSafeOffFromFaultManager()
     {
         disableOutputs();
-        state = OFF;
+        state.store(OFF, std::memory_order_release);
         FaultManager::setHvRunning(false);
     }
 
     bool isSafeForFirmwareUpdate()
     {
-        return !firmwareUpdatePrepared && !firmwareUpdateLocked && !runRequest && state == OFF;
+        taskENTER_CRITICAL();
+        const bool safe = !firmwareUpdatePrepared.load(std::memory_order_relaxed) &&
+                          !firmwareUpdateLocked.load(std::memory_order_relaxed) &&
+                          !runRequest.load(std::memory_order_relaxed) &&
+                          state.load(std::memory_order_relaxed) == OFF;
+        taskEXIT_CRITICAL();
+        return safe;
     }
 
     bool prepareFirmwareUpdate()
     {
-        if (!isSafeForFirmwareUpdate())
+        taskENTER_CRITICAL();
+        if (firmwareUpdatePrepared.load(std::memory_order_relaxed) ||
+            firmwareUpdateLocked.load(std::memory_order_relaxed) ||
+            runRequest.load(std::memory_order_relaxed) ||
+            state.load(std::memory_order_relaxed) != OFF)
         {
+            taskEXIT_CRITICAL();
             return false;
         }
 
-        firmwareUpdatePrepared = true;
-        firmwareUpdatePrepareDeadlineMs = HAL_GetTick() + FIRMWARE_UPDATE_PREPARE_TIMEOUT_MS;
+        firmwareUpdatePrepared.store(true, std::memory_order_release);
+        firmwareUpdatePrepareDeadlineMs.store(HAL_GetTick() + FIRMWARE_UPDATE_PREPARE_TIMEOUT_MS,
+                                              std::memory_order_release);
+        state.store(OFF, std::memory_order_release);
+        taskEXIT_CRITICAL();
         disableOutputs();
-        state = OFF;
         FaultManager::setHvRunning(false);
         return true;
     }
 
     bool commitFirmwareUpdate()
     {
-        if (!firmwareUpdatePrepared || static_cast<int32_t>(HAL_GetTick() - firmwareUpdatePrepareDeadlineMs) >= 0)
+        taskENTER_CRITICAL();
+        if (!firmwareUpdatePrepared.load(std::memory_order_relaxed) ||
+            static_cast<int32_t>(HAL_GetTick() - firmwareUpdatePrepareDeadlineMs.load(std::memory_order_relaxed)) >= 0)
         {
-            firmwareUpdatePrepared = false;
+            firmwareUpdatePrepared.store(false, std::memory_order_release);
+            taskEXIT_CRITICAL();
             return false;
         }
 
-        firmwareUpdatePrepared = false;
-        firmwareUpdateLocked = true;
+        firmwareUpdatePrepared.store(false, std::memory_order_release);
+        firmwareUpdateLocked.store(true, std::memory_order_release);
+        state.store(OFF, std::memory_order_release);
+        taskEXIT_CRITICAL();
         disableOutputs();
-        state = OFF;
         FaultManager::setHvRunning(false);
         return true;
     }
 
     bool isFirmwareUpdatePrepared()
     {
-        return firmwareUpdatePrepared;
+        return firmwareUpdatePrepared.load(std::memory_order_acquire);
     }
 
     bool isFirmwareUpdateLocked()
     {
-        return firmwareUpdateLocked;
+        return firmwareUpdateLocked.load(std::memory_order_acquire);
     }
 
     bool isRunRequested()
     {
-        return runRequest;
+        return runRequest.load(std::memory_order_acquire);
     }
 
     void loop()
     {
 		Watchdog::reportPccProgress();
-        batteryVoltage = IO::getBatterySideVoltage();
-        loadVoltage = IO::getLoadSideVoltage();
+        const IO::HVVoltages hvVoltages = IO::getHVVoltages();
+        hvVoltagesValid.store(hvVoltages.valid, std::memory_order_release);
+        if (hvVoltages.valid)
+        {
+            batteryVoltage = hvVoltages.batteryVoltage;
+            loadVoltage = hvVoltages.loadVoltage;
+        }
 
-        if (firmwareUpdateLocked)
+        if (firmwareUpdateLocked.load(std::memory_order_acquire))
         {
             disableOutputs();
             state = OFF;
             return;
         }
 
-        if (firmwareUpdatePrepared)
+        if (firmwareUpdatePrepared.load(std::memory_order_acquire))
         {
             disableOutputs();
             state = OFF;
             FaultManager::setHvRunning(false);
-            if (static_cast<int32_t>(HAL_GetTick() - firmwareUpdatePrepareDeadlineMs) >= 0)
+            if (static_cast<int32_t>(HAL_GetTick() - firmwareUpdatePrepareDeadlineMs.load(std::memory_order_acquire)) >= 0)
             {
-                firmwareUpdatePrepared = false;
+                firmwareUpdatePrepared.store(false, std::memory_order_release);
             }
             return;
         }
 
         refreshActiveErrors();
 
-        if (!runRequest)
+        if (!runRequest.load(std::memory_order_acquire))
         {
             disableOutputs();
             state = OFF;
@@ -411,7 +463,7 @@ namespace PCC
         {
         case OFF:
             disableOutputs();
-            if (runRequest && FaultManager::canEnableHv())
+            if (runRequest.load(std::memory_order_acquire) && FaultManager::canEnableHv())
             {
                 state = SELF_TEST;
                 PRINTF_INFO("[PCC] New state: SELF_TEST\n");
@@ -435,17 +487,17 @@ namespace PCC
             break;
         }
 
-        FaultManager::setHvRunning(state == RUN);
+        FaultManager::setHvRunning(state.load(std::memory_order_acquire) == RUN);
     }
 
     PCC_STATE getPCCState()
     {
-        return state;
+        return state.load(std::memory_order_acquire);
     }
 
     PCC_ERROR getPCCError()
     {
-        return error;
+        return error.load(std::memory_order_acquire);
     }
 
     uint32_t getLastPrechargeTime()

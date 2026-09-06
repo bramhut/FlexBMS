@@ -6,6 +6,7 @@
 #include "tim.h"
 
 #include <algorithm>
+#include <atomic>
 
 #define DEBUG_LVL 2
 #include "Debug.h"
@@ -31,9 +32,9 @@ namespace IO
         constexpr double MAX_VALID_ADC_REFERENCE = 3.0;
 
         alignas(4) volatile uint32_t adcDmaValues[ADC_CHANNEL_COUNT] = {};
-        volatile uint32_t adcValues[ADC_CHANNEL_COUNT] = {};
-        volatile uint32_t adcSnapshotVersion = 0U;
-        volatile uint32_t lastAdcDmaCompletionAt = 0U;
+        std::atomic<uint32_t> adcValues[ADC_CHANNEL_COUNT] = {};
+        std::atomic<uint32_t> adcSnapshotVersion{0U};
+        std::atomic<uint32_t> lastAdcDmaCompletionAt{0U};
         bool adcStarted = false;
         uint32_t lastAdcHealthCheckAt = 0U;
         uint8_t adcHealthFailureCount = 0U;
@@ -44,7 +45,7 @@ namespace IO
         {
             for (uint8_t attempt = 0U; attempt < 3U; ++attempt)
             {
-                const uint32_t begin = adcSnapshotVersion;
+                const uint32_t begin = adcSnapshotVersion.load(std::memory_order_acquire);
                 if ((begin & 1U) != 0U)
                 {
                     continue;
@@ -53,11 +54,11 @@ namespace IO
                 __DMB();
                 for (size_t index = 0U; index < ADC_CHANNEL_COUNT; ++index)
                 {
-                    values[index] = adcValues[index];
+                    values[index] = adcValues[index].load(std::memory_order_relaxed);
                 }
                 __DMB();
 
-                const uint32_t end = adcSnapshotVersion;
+                const uint32_t end = adcSnapshotVersion.load(std::memory_order_acquire);
                 if (begin == end && (end & 1U) == 0U)
                 {
                     return true;
@@ -116,7 +117,7 @@ namespace IO
         bool isAdcHealthy(uint32_t now)
         {
             const bool dmaIsFresh =
-                now - lastAdcDmaCompletionAt <= ADC_DMA_STALE_TIMEOUT_MS;
+                now - lastAdcDmaCompletionAt.load(std::memory_order_acquire) <= ADC_DMA_STALE_TIMEOUT_MS;
 
             uint32_t values[ADC_CHANNEL_COUNT] = {};
             const bool snapshotAvailable = readAdcSnapshot(values);
@@ -135,15 +136,15 @@ namespace IO
     {
         if (hadc->Instance == ADC1)
         {
-            ++adcSnapshotVersion;
+            adcSnapshotVersion.fetch_add(1U, std::memory_order_release);
             __DMB();
             for (size_t index = 0U; index < ADC_CHANNEL_COUNT; ++index)
             {
-                adcValues[index] = adcDmaValues[index];
+                adcValues[index].store(adcDmaValues[index], std::memory_order_relaxed);
             }
             __DMB();
-            ++adcSnapshotVersion;
-            lastAdcDmaCompletionAt = HAL_GetTick();
+            adcSnapshotVersion.fetch_add(1U, std::memory_order_release);
+            lastAdcDmaCompletionAt.store(HAL_GetTick(), std::memory_order_release);
         }
     }
 
@@ -303,7 +304,7 @@ namespace IO
     {
         uint32_t values[ADC_CHANNEL_COUNT] = {};
         const uint32_t now = HAL_GetTick();
-        if (!adcStarted || now - lastAdcDmaCompletionAt > ADC_DMA_STALE_TIMEOUT_MS || !readAdcSnapshot(values))
+        if (!adcStarted || now - lastAdcDmaCompletionAt.load(std::memory_order_acquire) > ADC_DMA_STALE_TIMEOUT_MS || !readAdcSnapshot(values))
         {
             return {};
         }

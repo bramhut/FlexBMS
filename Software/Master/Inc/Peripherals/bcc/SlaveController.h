@@ -88,6 +88,29 @@ namespace SlaveController
         CRITICAL
     };
 
+    /*! @brief Coherent copy of one complete BCC measurement publication. */
+    struct MeasurementSnapshot
+    {
+        bool valid{};
+        bool measurementsFresh{};
+        bool socValid{};
+        bool currentSensingEnabled{};
+        uint32_t sequence{};
+        uint32_t packVoltageUv{};
+        double packCurrentA{};
+        uint16_t socRaw{};
+        uint32_t minCellVoltageUv{};
+        uint32_t maxCellVoltageUv{};
+        uint16_t minNtcTemperatureRaw{};
+        uint16_t maxNtcTemperatureRaw{};
+        uint16_t minIcTemperatureRaw{};
+        uint16_t maxIcTemperatureRaw{};
+        std::vector<std::vector<uint32_t>> cellVoltages{};
+        std::vector<std::vector<uint16_t>> ntcTemperatures{};
+        std::vector<uint16_t> icTemperatures{};
+        std::vector<uint16_t> balancingMasks{};
+    };
+
     /*******************************************************************************
      * API
      ******************************************************************************/
@@ -108,6 +131,9 @@ namespace SlaveController
 
     /*! @brief True when the most recent complete measurement set is still valid. */
     bool areMeasurementsFresh();
+
+    /*! @brief Return one coherent copy of the latest complete measurement set. */
+    MeasurementSnapshot getMeasurementSnapshot();
 
     /*!
      * @brief Get the current state of the BMS
@@ -183,7 +209,7 @@ namespace SlaveController
      *
      * @return 2D vector of cell voltages (uint32_t) per slave [uV]
      */
-    const std::vector<std::vector<uint32_t>>& getCellVoltages();
+    std::vector<std::vector<uint32_t>> getCellVoltages();
 
         /*!
      * @brief Get a list of cells that are balancing per slave
@@ -220,7 +246,7 @@ namespace SlaveController
      *
      * @return 2D vector of NTC temperatures (uint16_t) per slave [raw]
      */
-    const std::vector<std::vector<uint16_t>>& getNTCtemps();
+    std::vector<std::vector<uint16_t>> getNTCtemps();
 
     /*!
      * @brief Get the minimum NTC temperature [raw]
@@ -241,7 +267,7 @@ namespace SlaveController
      *
      * @return Vector of IC temperatures (uint16_t) [raw]
      */
-    const std::vector<uint16_t>& getICtemps();
+    std::vector<uint16_t> getICtemps();
 
     /*!
      * @brief Get the minimum IC temperature [raw]
@@ -283,5 +309,6 @@ namespace SlaveController
      */
     void setSoC(uint16_t soc);
 
-    bool requestRegister(RegisterRequest requestInfo, bool *flag, RegisterReponse *regValue);
+    bool requestRegister(RegisterRequest requestInfo);
+    bool takeRegisterResponse(RegisterReponse &response);
 }
