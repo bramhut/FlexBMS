@@ -956,9 +956,13 @@ namespace FlexBms::GatewayApi
         esp_err_t firmwareHandler(httpd_req_t *request)
         {
             const FirmwareUpdate::Target target = std::strcmp(request->uri, "/api/firmware/gateway") == 0 ? FirmwareUpdate::Target::Gateway : FirmwareUpdate::Target::Stm32;
-            if (!Wifi::allowsBmsServices() || Wifi::isAccessPointActive())
+            const bool gatewayRecovery = target == FirmwareUpdate::Target::Gateway && Wifi::isAccessPointActive();
+            const bool stationLan = Wifi::allowsBmsServices() && !Wifi::isAccessPointActive();
+            if (!gatewayRecovery && !stationLan)
             {
-                return httpd_resp_send_err(request, HTTPD_403_FORBIDDEN, "Firmware update is available only on the station LAN");
+                return httpd_resp_send_err(request, HTTPD_403_FORBIDDEN, target == FirmwareUpdate::Target::Gateway
+                                                                              ? "Gateway firmware update requires Wi-Fi or the setup AP"
+                                                                              : "STM32 firmware update is available only on the station LAN");
             }
             if (!FirmwareUpdate::isAvailable(target) || serviceBusy())
             {

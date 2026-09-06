@@ -2,14 +2,14 @@
 
 #include "driver/ledc.h"
 #include "esp_err.h"
+#include "esp_log.h"
 #include "esp_timer.h"
-
-#include <cstdlib>
 
 namespace FlexBms
 {
     namespace
     {
+        constexpr const char *kLogTag = "flexbms_status_led";
         constexpr gpio_num_t kStatusLedGpio = GPIO_NUM_1;
         constexpr ledc_mode_t kLedcMode = LEDC_LOW_SPEED_MODE;
         constexpr ledc_timer_t kLedcTimer = LEDC_TIMER_0;
@@ -24,12 +24,14 @@ namespace FlexBms
         constexpr int64_t kCodeGapUs = 150'000;
         constexpr int64_t kUpdateHalfPeriodUs = 125'000;
 
-        void check(esp_err_t result)
+        bool check(const char *operation, esp_err_t result)
         {
             if (result != ESP_OK)
             {
-                abort();
+                ESP_LOGE(kLogTag, "%s unavailable; keeping network recovery active: %s", operation, esp_err_to_name(result));
+                return false;
             }
+            return true;
         }
 
         bool periodicOn(int64_t now, int64_t period, int64_t onTime)
@@ -55,6 +57,7 @@ namespace FlexBms
 
     void StatusLed::setup()
     {
+        available = true;
         const ledc_timer_config_t timerConfig = {
             .speed_mode = kLedcMode,
             .duty_resolution = LEDC_TIMER_8_BIT,
@@ -74,13 +77,22 @@ namespace FlexBms
             .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
             .flags = {},
         };
-        check(ledc_timer_config(&timerConfig));
-        check(ledc_channel_config(&channelConfig));
+        if (!check("LEDC timer", ledc_timer_config(&timerConfig)))
+        {
+            available = false;
+            return;
+        }
+        if (!check("LEDC channel", ledc_channel_config(&channelConfig)))
+        {
+            available = false;
+            return;
+        }
         bootStartedUs = esp_timer_get_time();
     }
 
     void StatusLed::update()
     {
+        if (!available) return;
         const int64_t now = esp_timer_get_time();
         const int64_t phaseNow = stm32PhaseAvailable
                                      ? stm32PhaseAtReceiptUs + (now - stm32PhaseReceivedUs)
@@ -117,8 +129,11 @@ namespace FlexBms
 
         const uint32_t activeHighDuty =
             kPwmMaximumDuty * kYellowBrightnessPercent / 100U;
-        check(ledc_set_duty(kLedcMode, kLedcChannel, on ? activeHighDuty : 0U));
-        check(ledc_update_duty(kLedcMode, kLedcChannel));
+        if (!check("Setting LED duty", ledc_set_duty(kLedcMode, kLedcChannel, on ? activeHighDuty : 0U)) ||
+            !check("Updating LED duty", ledc_update_duty(kLedcMode, kLedcChannel)))
+        {
+            available = false;
+        }
     }
 
     void StatusLed::setWifiWaiting(bool active) { wifiWaiting = active; }

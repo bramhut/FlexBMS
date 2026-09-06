@@ -298,8 +298,20 @@ namespace FlexBms::FirmwareUpdate
         }
     }
 
-    bool isAvailable() { return Wifi::allowsBmsServices() && !Wifi::isAccessPointActive() && !uploadOpen && status.phase != Phase::Installing; }
-    bool isAvailable(Target target) { return isAvailable() && (target != Target::Stm32 || !stm32EraseMayHaveStarted); }
+    bool isAvailable()
+    {
+        // The Gateway image must remain recoverable from the local setup AP.
+        // STM32 updates are restricted separately in isAvailable(Target),
+        // because they require the station LAN and a working BMS UART path.
+        return (Wifi::allowsBmsServices() || Wifi::isAccessPointActive()) && !uploadOpen && status.phase != Phase::Installing;
+    }
+
+    bool isAvailable(Target target)
+    {
+        if (!isAvailable()) return false;
+        if (target == Target::Stm32 && (Wifi::isAccessPointActive() || !Wifi::allowsBmsServices() || stm32EraseMayHaveStarted)) return false;
+        return true;
+    }
     const Status &getStatus() { return status; }
     bool consumeStatusChanged() { const bool changed = statusChanged; statusChanged = false; return changed; }
     bool ownsUart() { return uartOwned; }

@@ -25,6 +25,7 @@ namespace FlexBms
         void synchronizeToStm32Uptime(uint32_t uptimeMs);
 
     private:
+        bool available = true;
         bool wifiWaiting = true;
         bool mqttUnavailable = false;
         bool uartLinkLost = false;

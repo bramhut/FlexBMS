@@ -12,9 +12,11 @@ const uploading = ref(false)
 const currentTarget = ref<FirmwareTarget | null>(null)
 const sawGatewayDisconnect = ref(false)
 const gatewayRestartKey = 'flexbms.gateway-update-pending'
-const canUpdate = computed(() => props.connected && props.capabilities.firmware_update && props.gateway?.wifi_state === 'connected' && !props.gateway?.setup_ap.active)
+const setupApActive = computed(() => Boolean(props.gateway?.setup_ap.active))
+const canUpdate = computed(() => props.connected && props.capabilities.firmware_update && (props.gateway?.wifi_state === 'connected' || setupApActive.value))
+const canUpdateStm32 = computed(() => canUpdate.value && !setupApActive.value && props.gateway?.wifi_state === 'connected')
 const update = computed(() => props.gateway?.firmware_update)
-const selectedTargets = computed(() => (['stm32', 'gateway'] as FirmwareTarget[]).filter(target => selected.value[target]))
+const selectedTargets = computed(() => (['stm32', 'gateway'] as FirmwareTarget[]).filter(target => selected.value[target] && (target === 'gateway' || canUpdateStm32.value)))
 
 type FlowStep = { stage: FirmwareUpdateStage; label: string }
 const flowSteps = computed<FlowStep[]>(() => update.value?.target === 'stm32'
@@ -111,7 +113,7 @@ async function installSelected(): Promise<void> {
   if (!canUpdate.value || !bundle.value || selectedTargets.value.length === 0 || uploading.value) return
   uploading.value = true; result.value = ''
   try {
-    if (selected.value.stm32) {
+    if (selected.value.stm32 && canUpdateStm32.value) {
       if (!await upload('stm32')) return
       result.value = 'Programming STM32 BMS...'
       if (!await waitForStm32()) return
@@ -129,13 +131,13 @@ async function installSelected(): Promise<void> {
 
 <template>
   <section v-if="capabilities.firmware_update || update?.phase !== 'idle'" class="panel firmware-update-panel">
-    <div class="panel-heading"><div><h2>Firmware update</h2></div><p>Station LAN only. Wired release flashing remains the recovery path.</p></div>
-    <p v-if="!canUpdate" class="warning-text">Firmware updates are available only while the Gateway is connected to its station network.</p>
+    <div class="panel-heading"><div><h2>Firmware update</h2></div><p>Gateway recovery is also available through the local setup AP. STM32 updates require the station LAN.</p></div>
+    <p v-if="!canUpdate" class="warning-text">Firmware updates require a Gateway Wi-Fi or setup-AP connection.</p>
     <label class="bundle-picker">FlexBMS update bundle<input type="file" accept=".fbu" :disabled="!canUpdate || uploading" @change="chooseBundle($event)"></label>
     <template v-if="bundle">
       <p class="muted">Bundle version {{ bundle.version }}. Select the controllers to update.</p>
       <div v-for="target in (['stm32', 'gateway'] as FirmwareTarget[])" :key="target" class="firmware-target">
-        <label class="firmware-choice"><input v-model="selected[target]" type="checkbox" :disabled="uploading"> <span><b>{{ targetName(target) }}</b><small>{{ bundle.images[target].version }} - {{ bundle.images[target].image_bytes.toLocaleString() }} bytes</small></span></label>
+        <label class="firmware-choice"><input v-model="selected[target]" type="checkbox" :disabled="uploading || (target === 'stm32' && !canUpdateStm32)"> <span><b>{{ targetName(target) }}</b><small>{{ bundle.images[target].version }} - {{ bundle.images[target].image_bytes.toLocaleString() }} bytes</small></span></label>
       </div>
       <button class="danger" :disabled="!canUpdate || selectedTargets.length === 0 || uploading" @click="installSelected">{{ uploading ? `${currentTarget ? `Uploading ${targetName(currentTarget)}...` : 'Installing...'}` : `Install ${selectedTargets.length === 2 ? 'selected firmware' : targetName(selectedTargets[0])}` }}</button>
     </template>

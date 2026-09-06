@@ -29,18 +29,42 @@ namespace
     int64_t lastValidFrameUs = 0;
     bool linkWasHealthy = false;
     bool uartLinkTimedOut = false;
+    bool bmsUartReady = false;
 
-    void check(esp_err_t result)
+    bool configureUart()
     {
+        uart_config_t config{};
+        config.baud_rate = kBaudRate;
+        config.data_bits = UART_DATA_8_BITS;
+        config.parity = UART_PARITY_DISABLE;
+        config.stop_bits = UART_STOP_BITS_1;
+        config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+        config.rx_flow_ctrl_thresh = 0;
+        config.source_clk = UART_SCLK_DEFAULT;
+        esp_err_t result = uart_param_config(kBmsUart, &config);
         if (result != ESP_OK)
         {
-            ESP_LOGE(kLogTag, "fatal UART setup error: %s", esp_err_to_name(result));
-            abort();
+            ESP_LOGE(kLogTag, "UART setup unavailable; keeping network recovery active: %s", esp_err_to_name(result));
+            return false;
         }
+        result = uart_set_pin(kBmsUart, kBmsTxGpio, kBmsRxGpio, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+        if (result != ESP_OK)
+        {
+            ESP_LOGE(kLogTag, "UART pins unavailable; keeping network recovery active: %s", esp_err_to_name(result));
+            return false;
+        }
+        result = uart_driver_install(kBmsUart, 2048, 2048, 0, nullptr, 0);
+        if (result != ESP_OK)
+        {
+            ESP_LOGE(kLogTag, "UART driver unavailable; keeping network recovery active: %s", esp_err_to_name(result));
+            return false;
+        }
+        return true;
     }
 
     void sendHeartbeat()
     {
+        if (!bmsUartReady) return;
         FlexBms::UartV1::Frame heartbeat{.type = FlexBms::UartV1::MessageType::Heartbeat, .sequence = 0U, .length = 0U};
         std::array<uint8_t, FlexBms::UartV1::kMaxFrameBytes> bytes{};
         const size_t length = FlexBms::UartV1::encode(heartbeat, bytes.data(), bytes.size());
@@ -52,7 +76,7 @@ namespace
 
     bool sendService(FlexBms::GatewayApi::Service service, const uint8_t *arguments, uint8_t argumentLength, uint8_t sequence)
     {
-        if (argumentLength > FlexBms::UartV1::kMaxPayloadBytes - 1U)
+        if (!bmsUartReady || argumentLength > FlexBms::UartV1::kMaxPayloadBytes - 1U)
         {
             return false;
         }
@@ -154,39 +178,19 @@ namespace
         }
     }
 
-    void configureUart()
-    {
-        uart_config_t config{};
-        config.baud_rate = kBaudRate;
-        config.data_bits = UART_DATA_8_BITS;
-        config.parity = UART_PARITY_DISABLE;
-        config.stop_bits = UART_STOP_BITS_1;
-        config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
-        config.rx_flow_ctrl_thresh = 0;
-        config.source_clk = UART_SCLK_DEFAULT;
-        check(uart_param_config(kBmsUart, &config));
-        check(uart_set_pin(kBmsUart, kBmsTxGpio, kBmsRxGpio, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-        check(uart_driver_install(kBmsUart, 2048, 2048, 0, nullptr, 0));
-    }
 }
 
 extern "C" void app_main(void)
 {
     if (!FlexBms::UartV1::verifyCodec())
     {
-        ESP_LOGE(kLogTag, "UART v1 codec self-test failed");
-        abort();
+        ESP_LOGE(kLogTag, "UART v1 codec self-test failed; continuing with network recovery available");
     }
     if (!FlexBms::GatewayApi::verifyBrowserApi())
     {
-        ESP_LOGE(kLogTag, "Gateway browser API self-test failed");
-        abort();
+        ESP_LOGE(kLogTag, "Gateway browser API self-test failed; continuing with firmware recovery available");
     }
 
-    configureUart();
-    FlexBms::StatusLed statusLed;
-    statusLed.setup();
-    ESP_LOGI(kLogTag, "UART v1 ready: UART1, GPIO2 TX -> STM32 PA10, GPIO3 RX <- STM32 PA9");
     const bool wifiStarted = FlexBms::Wifi::start();
     if (!wifiStarted)
     {
@@ -197,13 +201,21 @@ extern "C" void app_main(void)
         ESP_LOGW(kLogTag, "NTP time synchronisation unavailable for this boot");
     }
 
+    const bool gatewayApiStarted = FlexBms::GatewayApi::start(sendService);
+    const bool mqttStarted = FlexBms::Mqtt::start(sendMqttRunRequest);
+    bmsUartReady = configureUart();
+    if (bmsUartReady)
+    {
+        ESP_LOGI(kLogTag, "UART v1 ready: UART1, GPIO2 TX -> STM32 PA10, GPIO3 RX <- STM32 PA9");
+    }
+    FlexBms::StatusLed statusLed;
+    statusLed.setup();
+
     FlexBms::UartV1::StreamDecoder decoder;
     FlexBms::UartV1::Frame frame{};
     std::array<uint8_t, 128U> receiveBuffer{};
     int64_t nextHeartbeatUs = esp_timer_get_time();
     lastValidFrameUs = nextHeartbeatUs;
-    const bool gatewayApiStarted = FlexBms::GatewayApi::start(sendService);
-    const bool mqttStarted = FlexBms::Mqtt::start(sendMqttRunRequest);
     bool gatewayBootConfirmed = !FlexBms::FirmwareUpdate::isGatewayBootPendingVerification();
     const int64_t gatewayBootConfirmationDeadlineUs = esp_timer_get_time() + 60'000'000LL;
     if (!gatewayApiStarted)
@@ -217,7 +229,7 @@ extern "C" void app_main(void)
 
     while (true)
     {
-        if (!FlexBms::FirmwareUpdate::ownsUart())
+        if (bmsUartReady && !FlexBms::FirmwareUpdate::ownsUart())
         {
             const int received = uart_read_bytes(kBmsUart, receiveBuffer.data(), receiveBuffer.size(), pdMS_TO_TICKS(50));
             for (int index = 0; index < received; ++index)
@@ -251,12 +263,12 @@ extern "C" void app_main(void)
         }
 
         const int64_t nowUs = esp_timer_get_time();
-        if (!FlexBms::FirmwareUpdate::ownsUart() && nowUs >= nextHeartbeatUs)
+        if (bmsUartReady && !FlexBms::FirmwareUpdate::ownsUart() && nowUs >= nextHeartbeatUs)
         {
             sendHeartbeat();
             nextHeartbeatUs = nowUs + kHeartbeatPeriodUs;
         }
-        const bool linkTimedOut = !FlexBms::FirmwareUpdate::ownsUart() && nowUs - lastValidFrameUs >= kGatewayLossUs;
+        const bool linkTimedOut = bmsUartReady && !FlexBms::FirmwareUpdate::ownsUart() && nowUs - lastValidFrameUs >= kGatewayLossUs;
         if (linkTimedOut && !uartLinkTimedOut)
         {
             linkWasHealthy = false;
