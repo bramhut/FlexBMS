@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ServiceView from './ServiceView.vue'
 import RecentChangesList from './RecentChangesList.vue'
-import { bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, formatEnergy, hvReasonNames, hvStateName, icCelsius, ntcCelsius, setBits, socPercent, warningDisplayNames } from '@/shared/model'
+import { bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, formatEnergy, formatPower, hvReasonNames, hvStateName, icCelsius, ntcCelsius, powerW, setBits, socPercent, warningDisplayNames } from '@/shared/model'
 import { serviceResultLabel } from '@/shared/service'
 import { advancingUnixTime, advancingUptimeMs, formatUptime } from '@/shared/time'
 import type { BccDiagnosticReport, BmsTransport, Capabilities, GatewayStatus, RecordedControllerEvent, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
@@ -82,6 +82,10 @@ const currentValue = computed(() => {
   if (!props.status?.current_sensing_enabled) return 'Disabled'
   return props.snapshot ? measurement(`${currentA(props.snapshot.pack.pack_current_raw).toFixed(2)} A`) : '—'
 })
+const powerValue = computed(() => {
+  if (!props.status?.current_sensing_enabled) return 'Disabled'
+  return props.snapshot ? measurement(formatPower(powerW(props.snapshot.pack.pack_voltage_uV, props.snapshot.pack.pack_current_raw))) : '—'
+})
 const hvDisplay = computed(() => {
   const status = props.status
   if (!status) return { detail: 'Waiting', ready: false }
@@ -160,9 +164,10 @@ onBeforeUnmount(() => { window.clearInterval(clockTimer) })
           <div class="primary-metrics">
             <div class="primary-metric"><span>Pack</span><b>{{ snapshot ? measurement(`${cellVoltageV(snapshot.pack.pack_voltage_uV).toFixed(2)} V`) : '—' }}</b></div>
             <div class="primary-metric" :class="{ unavailable: !status?.current_sensing_enabled }"><span>Current</span><b>{{ currentValue }}</b><small>{{ status?.current_sensing_enabled ? 'Positive is charging' : 'Development configuration' }}</small></div>
-            <div class="primary-metric" :class="{ unavailable: !status?.soc_valid }"><span>SoC</span><b>{{ socValue }}</b><small>Last calibration: {{ socCalibration }}</small></div>
+            <div class="primary-metric" :class="{ unavailable: !status?.current_sensing_enabled }"><span>Power</span><b>{{ powerValue }}</b></div>
           </div>
-          <div class="hv-metrics">
+          <div class="energy-metrics">
+            <div class="primary-metric" :class="{ unavailable: !status?.soc_valid }"><span>SoC</span><b>{{ socValue }}</b><small>Last calibration: {{ socCalibration }}</small></div>
             <div class="primary-metric" :class="{ unavailable: !snapshot?.energy?.valid }"><span>Energy charged</span><b>{{ chargedEnergyValue }}</b><small>Persistent total</small></div>
             <div class="primary-metric" :class="{ unavailable: !snapshot?.energy?.valid }"><span>Energy discharged</span><b>{{ dischargedEnergyValue }}</b><small>Persistent total</small></div>
           </div>

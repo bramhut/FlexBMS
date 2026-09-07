@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { bmsStatusSummary, currentA, formatEnergy, icCelsius, isFresh, ntcCelsius, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
+import { bmsStatusSummary, currentA, formatEnergy, formatPower, icCelsius, isFresh, ntcCelsius, powerW, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
 import { reconnectDelayMs } from '../src/shared/reconnect.ts'
 import { serviceResultLabel } from '../src/shared/service.ts'
 import { advancingUnixTime, advancingUptimeMs, formatUptime } from '../src/shared/time.ts'
@@ -18,6 +18,14 @@ test('energy display selects a useful unit for the current quantity', () => {
   assert.equal(formatEnergy('12345678'), '12.35 Wh')
   assert.equal(formatEnergy('1234567890'), '1.235 kWh')
   assert.equal(formatEnergy('123', false), 'Unavailable')
+})
+test('power display selects W or four-significant-digit kW', () => {
+  assert.equal(powerW(320_820_000, 2284), 320.82 * (2284 / 64))
+  assert.equal(formatPower(999.6), '1000 W')
+  assert.equal(formatPower(1_234.56), '1.235 kW')
+  assert.equal(formatPower(12_345.6), '12.35 kW')
+  assert.equal(formatPower(123_456), '123.5 kW')
+  assert.equal(formatPower(1234, false), 'Unavailable')
 })
 test('stale snapshots never render measurements as live zeroes', () => {
   assert.equal(isFresh(null), false)

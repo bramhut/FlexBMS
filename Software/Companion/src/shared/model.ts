@@ -2,6 +2,7 @@ import type { Snapshot, Status } from '../transports/Transport'
 
 export const cellVoltageV = (raw: number) => raw / 1_000_000
 export const currentA = (raw: number) => raw / 64
+export const powerW = (voltageUv: number, currentRaw: number) => cellVoltageV(voltageUv) * currentA(currentRaw)
 export const socPercent = (raw: number) => 100 * (raw / 65535 * 3 - 1)
 export const ntcCelsius = (raw: number) => raw / 65535 * 120 - 20
 // The STM32 BCC driver exports IC temperature as centikelvin.
@@ -22,6 +23,11 @@ export const formatEnergy = (microWh: string | number | bigint | undefined, vali
   if (value < 1_000_000n) return formatEnergyScaled(value, 1_000n, 2n, 'mWh')
   if (value < 1_000_000_000n) return formatEnergyScaled(value, 1_000_000n, 2n, 'Wh')
   return formatEnergyScaled(value, 1_000_000_000n, 3n, 'kWh')
+}
+export const formatPower = (watts: number | undefined, valid = true): string => {
+  if (!valid || watts === undefined || !Number.isFinite(watts)) return 'Unavailable'
+  if (Math.abs(watts) < 1_000) return `${Math.round(watts)} W`
+  return `${(watts / 1_000).toPrecision(4)} kW`
 }
 export const isFresh = (snapshot: Snapshot | null) => snapshot !== null && snapshot.status.measurements_fresh
 export const valueOrStale = (value: string, fresh: boolean) => fresh ? value : 'Stale'
