@@ -34,6 +34,9 @@ test('stale snapshots never render measurements as live zeroes', () => {
 test('OFF-state voltage mismatch has an operator-facing warning label', () => {
   assert.equal(warningDisplayNames[2], 'Pack-voltage mismatch (HV off)')
 })
+test('transient BCC communication has an operator-facing warning label', () => {
+  assert.equal(warningDisplayNames[3], 'BCC communication retry')
+})
 test('target capabilities disable unavailable functions', () => {
   const capabilities = unavailableCapabilities()
   assert.equal(capabilities.raw_terminal, false)

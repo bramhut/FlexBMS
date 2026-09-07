@@ -45,6 +45,8 @@ using std::vector;
 #define BCC_T_VPWR_READY_MS 5U
 #define CID_INITIALIZATION_MAX_FAILURES 3U
 
+constexpr uint8_t kCommunicationFailureTripCount = 3U;
+
 namespace SlaveController
 {
     namespace
@@ -109,6 +111,9 @@ namespace SlaveController
         SemaphoreHandle_t measurementSnapshotMutex = nullptr;
         MeasurementSnapshot latestMeasurementSnapshot{};
         BatteryCanSnapshot latestBatteryCanSnapshot{};
+        BatteryCanSnapshot lastValidBatteryCanSnapshot{};
+        bool hasValidBatteryCanSnapshot = false;
+        uint8_t consecutiveCommunicationFailures = 0U;
         std::atomic<bool> chargeTemperatureInhibit{false};
         double publishedChargeCurrentLimitA = 0.0;
         double publishedDischargeCurrentLimitA = 0.0;
@@ -226,7 +231,10 @@ namespace SlaveController
             }
             taskENTER_CRITICAL();
             latestBatteryCanSnapshot = {};
+            lastValidBatteryCanSnapshot = {};
             taskEXIT_CRITICAL();
+            hasValidBatteryCanSnapshot = false;
+            consecutiveCommunicationFailures = 0U;
             publishedChargeCurrentLimitA = 0.0;
             publishedDischargeCurrentLimitA = 0.0;
             currentLimitUpdatedAtMs = 0U;
@@ -485,12 +493,18 @@ namespace SlaveController
 
         bool startMeasurements()
         {
-            bool success = true;
-
             // Pause CB for all slaves
             for (auto &slave : mSlaves)
             {
-                slave.CB_Pause(true);
+                if (slave.CB_Pause(true) != BCC_STATUS_SUCCESS)
+                {
+                    PRINTF_WARN("[SC] Slave (CID: %u) failed on: pause balancing\n", slave.getCID());
+                    for (auto &resumeSlave : mSlaves)
+                    {
+                        (void)resumeSlave.CB_Pause(false);
+                    }
+                    return false;
+                }
             }
 
             // It is recommended to wait for at least 3ms before starting the ADC conversion
@@ -499,7 +513,11 @@ namespace SlaveController
 
             if (BCC::meas_StartConversionGlobal() != BCC_STATUS_SUCCESS)
             {
-                success = false;
+                for (auto &slave : mSlaves)
+                {
+                    (void)slave.CB_Pause(false);
+                }
+                return false;
             }
 
             // Wait for the conversion to finish
@@ -508,29 +526,36 @@ namespace SlaveController
                 if (slave.meas_WaitOnConversion(BCC_ADC_AVG) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: wait on conversion\n", slave.getCID());
-                    success = false;
+                    for (auto &resumeSlave : mSlaves)
+                    {
+                        (void)resumeSlave.CB_Pause(false);
+                    }
+                    return false;
                 }
             }
 
             // Resume CB
             for (auto &slave : mSlaves)
             {
-                slave.CB_Pause(false);
+                if (slave.CB_Pause(false) != BCC_STATUS_SUCCESS)
+                {
+                    PRINTF_WARN("[SC] Slave (CID: %u) failed on: resume balancing\n", slave.getCID());
+                    return false;
+                }
             }
 
-            return success;
+            return true;
         };
 
         bool faultDetection()
         {
             uint16_t combinedFaults[BCC_STAT_CNT] = {0};
-            bool faultStatusSuccessful = true;
             for (auto &slave : mSlaves)
             {
                 if (slave.fault_GetStatus(combinedFaults) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get fault status\n", slave.getCID());
-                    faultStatusSuccessful = false;
+                    return false;
                 }
 
                 // TODO Log all fault registers in FLASH or something
@@ -549,7 +574,7 @@ namespace SlaveController
                 {
                     PRINTF_WARN("[SC] Current measurement failed on CID %u\n",
                                 mSlaves[currentMeasurementSlaveIdx].getCID());
-                    faultStatusSuccessful = false;
+                    return false;
                 }
                 else
                 {
@@ -564,11 +589,6 @@ namespace SlaveController
                 packCurrent = 0.0;
                 overCurrentActive = false;
                 updateFault(OVERCURRENT_LIMIT, false);
-            }
-
-            if (!faultStatusSuccessful)
-            {
-                return false;
             }
 
             cellOverVoltageActive = combinedFaults[BCC_FS_CELL_OV] != 0;
@@ -609,12 +629,15 @@ namespace SlaveController
             static uint32_t loopCount = 0;
 
             // Only fetch measurements every x loops
-            if (!forceRead && (loopCount++ % settings.BMS_MEASUREMENT_PERIOD_FACTOR) != 0)
+            // Once a measurement pass has failed, the next communication
+            // attempt must perform a real read; otherwise the period divider
+            // would keep returning the previous invalid state and consume all
+            // three retries without testing recovery.
+            if (!forceRead && completeMeasurementSetValid &&
+                (loopCount++ % settings.BMS_MEASUREMENT_PERIOD_FACTOR) != 0)
             {
-                return completeMeasurementSetValid;
+                return true;
             }
-
-            bool success = true;
 
             // PRINTF_INFO("[SC] Fetching measurements\n");
             for (auto &slave : mSlaves)
@@ -623,7 +646,7 @@ namespace SlaveController
                 if ((status = slave.meas_GetRawValues()) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get raw values\n", slave.getCID());
-                    success = false;
+                    return false;
                 }
             }
 
@@ -646,24 +669,21 @@ namespace SlaveController
                 if (mSlaves[i].meas_GetCellVoltages(cellVoltages[i]) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get cell voltages\n", mSlaves[i].getCID());
-                    success = false;
-                    continue;
+                    return false;
                 }
 
                 // Get the NTC temperatures
                 if (mSlaves[i].meas_GetNTCTemperatures(NTCtemperatures[i], settings.NTC_RESISTANCE, settings.NTC_BETA) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get NTC temperatures\n", mSlaves[i].getCID());
-                    success = false;
-                    continue;
+                    return false;
                 }
 
                 // Also get the IC temperature
                 if (mSlaves[i].meas_GetIcTemperature(&ICtemperatures[i]) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get IC temperature\n", mSlaves[i].getCID());
-                    success = false;
-                    continue;
+                    return false;
                 }
 
                 // Update some cell voltage stats
@@ -710,13 +730,10 @@ namespace SlaveController
                                         ? 0U
                                         : static_cast<uint16_t>(ntcTemperatureSum / NTCtemperatureCount);
 
-            if (success)
-            {
-                packVoltage.store(measuredPackVoltage, std::memory_order_release);
-            }
+            packVoltage.store(measuredPackVoltage, std::memory_order_release);
 
-            completeMeasurementSetValid = success;
-            return success;
+            completeMeasurementSetValid = true;
+            return true;
         }
 
         bool doCommunicationCheck(bool faultStatusSuccessful)
@@ -728,9 +745,78 @@ namespace SlaveController
                 communicationFault = true;
             }
 
-            updateFault(COMMUNICATION_TIMEOUT, communicationFault);
-            communicationFaultActive = communicationFault;
-            return communicationFault;
+            if (!communicationFault)
+            {
+                consecutiveCommunicationFailures = 0U;
+                communicationFaultActive = false;
+                FaultManager::setWarning(FaultManager::Warning::BccCommunicationRetry, false);
+                updateFault(COMMUNICATION_TIMEOUT, false);
+                return false;
+            }
+
+            if (consecutiveCommunicationFailures < kCommunicationFailureTripCount)
+            {
+                ++consecutiveCommunicationFailures;
+            }
+            communicationFaultActive = true;
+
+            if (consecutiveCommunicationFailures < kCommunicationFailureTripCount)
+            {
+                FaultManager::setWarning(FaultManager::Warning::BccCommunicationRetry, true);
+                // A transient communication loss is not yet a BMS fault.
+                updateFault(COMMUNICATION_TIMEOUT, false);
+                PRINTF_WARN("[SC] BCC communication retry %u/%u\n",
+                            consecutiveCommunicationFailures,
+                            kCommunicationFailureTripCount);
+                return false;
+            }
+
+            FaultManager::setWarning(FaultManager::Warning::BccCommunicationRetry, false);
+            updateFault(COMMUNICATION_TIMEOUT, true);
+            PRINTF_ERR("[SC] BCC communication failed %u consecutive times\n",
+                       kCommunicationFailureTripCount);
+            return true;
+        }
+
+        void publishHeldBatteryCanSnapshot()
+        {
+            // Telemetry is stale, but the inverter-facing command remains the
+            // last valid one until the retry threshold trips.  The snapshot
+            // remains valid so GoodWe CAN continues transmitting the retained
+            // current limits and the communication warning.
+            publishedMeasurementsFresh.store(false, std::memory_order_release);
+            if (!hasValidBatteryCanSnapshot)
+            {
+                return;
+            }
+
+            BatteryCanSnapshot snapshot = lastValidBatteryCanSnapshot;
+            snapshot.measurementsFresh = false;
+            snapshot.communicationFault = true;
+
+            // Known higher-level safety changes still override the retained
+            // BCC values immediately.
+            const bool hvConnected = PCC::getPCCState() == PCC::RUN;
+            const bool commonSafeNow = currentState == RUNNING &&
+                                       hvConnected &&
+                                       FaultManager::canEnableHv();
+            snapshot.commonSafe = snapshot.commonSafe && commonSafeNow;
+            snapshot.chargeAllowed = snapshot.chargeAllowed &&
+                                     snapshot.commonSafe &&
+                                     !chargeTemperatureInhibit.load(std::memory_order_relaxed);
+            snapshot.dischargeAllowed = snapshot.dischargeAllowed && snapshot.commonSafe;
+            if (!snapshot.chargeAllowed)
+            {
+                snapshot.chargeCurrentA = 0.0;
+            }
+            if (!snapshot.dischargeAllowed)
+            {
+                snapshot.dischargeCurrentA = 0.0;
+            }
+
+            taskENTER_CRITICAL();
+            latestBatteryCanSnapshot = snapshot;
+            taskEXIT_CRITICAL();
         }
 
         void publishBatteryCanSnapshot(uint32_t publishedSequence)
@@ -874,6 +960,11 @@ namespace SlaveController
             }
             taskENTER_CRITICAL();
             latestBatteryCanSnapshot = snapshot;
+            if (snapshot.valid && !snapshot.communicationFault)
+            {
+                lastValidBatteryCanSnapshot = snapshot;
+                hasValidBatteryCanSnapshot = true;
+            }
             taskEXIT_CRITICAL();
         }
 
@@ -889,7 +980,7 @@ namespace SlaveController
                     snapshot.hvActive | snapshot.hvLatched) == 0U;
         }
 
-        void performCellBalancing()
+        bool performCellBalancing()
         {
             // Already get the values from the settings and convert them to microvolts
             const uint32_t minBalancingVoltage = settings.MIN_BALANCING_VOLTAGE * 1000000U;
@@ -905,18 +996,25 @@ namespace SlaveController
             {
                 if (outputsKnown && !outputsEnabled)
                 {
-                    return;
+                    return true;
                 }
 
                 bool disabled = true;
                 for (auto &slave : mSlaves)
                 {
-                    disabled = slave.CB_Enable(false) == BCC_STATUS_SUCCESS && disabled;
+                    if (slave.CB_Enable(false) != BCC_STATUS_SUCCESS)
+                    {
+                        disabled = false;
+                        break;
+                    }
                 }
                 outputsEnabled = false;
                 outputsKnown = disabled;
-                updateFault(CELL_BALANCING_FAULT, !disabled);
-                return;
+                if (disabled)
+                {
+                    updateFault(CELL_BALANCING_FAULT, false);
+                }
+                return disabled;
             }
 
             // Enable the drivers only after every safety gate is true.
@@ -925,16 +1023,19 @@ namespace SlaveController
                 bool enabled = true;
                 for (auto &slave : mSlaves)
                 {
-                    enabled = slave.CB_Enable(true) == BCC_STATUS_SUCCESS && enabled;
+                    if (slave.CB_Enable(true) != BCC_STATUS_SUCCESS)
+                    {
+                        enabled = false;
+                        break;
+                    }
                 }
                 outputsEnabled = enabled;
                 outputsKnown = enabled;
-                updateFault(CELL_BALANCING_FAULT, !enabled);
-                if (!enabled) return;
+                if (!enabled) return false;
+                updateFault(CELL_BALANCING_FAULT, false);
             }
 
             // Perform cell balancing if necessary
-            bool commandSuccessful = true;
             for (size_t i = 0; i < getNumOfSlaves(); i++)
             {
                 for (size_t j = 0; j < mSlaves[i].getCellCount(); j++)
@@ -951,13 +1052,15 @@ namespace SlaveController
                     // If the cell is above the minimum difference voltage (w.r.t the lowest cell voltage), start balancing
                     if (isAboveMinDiffVoltage)
                     {
-                        commandSuccessful =
-                            mSlaves[i].CB_SetIndividualCell(j, true, cBalancingTime) == BCC_STATUS_SUCCESS &&
-                            commandSuccessful;
+                        if (mSlaves[i].CB_SetIndividualCell(j, true, cBalancingTime) != BCC_STATUS_SUCCESS)
+                        {
+                            return false;
+                        }
                     }
                 }
             }
-            updateFault(CELL_BALANCING_FAULT, !commandSuccessful);
+            updateFault(CELL_BALANCING_FAULT, false);
+            return true;
         }
 
         uint16_t diagnosticFailureMask(const BCC_Diagnostics::diags_t &result)
@@ -1066,9 +1169,56 @@ namespace SlaveController
             // PRINTF_ERR("[SC] Running loop in state: %d\n", (currentState));
             // ADC conversions
             const bool conversionSuccessful = startMeasurements();
+            if (!conversionSuccessful)
+            {
+                completeMeasurementSetValid = false;
+                if (doCommunicationCheck(false))
+                {
+                    // A live TPL loss invalidates CID assignment and/or
+                    // monitor configuration. Safe-off has already occurred
+                    // through the FaultManager on the third failed attempt.
+                    PRINTF_WARN("[SC] Communication lost; restarting TPL initialization\n");
+                    setState(DEVICE_INITIALIZATION);
+                    initializationRetryNotBeforeMs = millis();
+                }
+                else
+                {
+                    publishHeldBatteryCanSnapshot();
+                }
+                return;
+            }
+
             const bool measurementsSuccessful = getMeasurements();
-            completeMeasurementSetValid = conversionSuccessful && measurementsSuccessful;
-            performCellBalancing();
+            completeMeasurementSetValid = measurementsSuccessful;
+            if (!measurementsSuccessful)
+            {
+                if (doCommunicationCheck(false))
+                {
+                    PRINTF_WARN("[SC] Communication lost; restarting TPL initialization\n");
+                    setState(DEVICE_INITIALIZATION);
+                    initializationRetryNotBeforeMs = millis();
+                }
+                else
+                {
+                    publishHeldBatteryCanSnapshot();
+                }
+                return;
+            }
+
+            if (!performCellBalancing())
+            {
+                if (doCommunicationCheck(false))
+                {
+                    PRINTF_WARN("[SC] Communication lost; restarting TPL initialization\n");
+                    setState(DEVICE_INITIALIZATION);
+                    initializationRetryNotBeforeMs = millis();
+                }
+                else
+                {
+                    publishHeldBatteryCanSnapshot();
+                }
+                return;
+            }
 
             // Handle register requests from Companion
             handleRegisterRequests();
@@ -1083,6 +1233,11 @@ namespace SlaveController
                 PRINTF_WARN("[SC] Communication lost; restarting TPL initialization\n");
                 setState(DEVICE_INITIALIZATION);
                 initializationRetryNotBeforeMs = millis();
+            }
+            else if (communicationFaultActive)
+            {
+                publishHeldBatteryCanSnapshot();
+                return;
             }
 
             const uint32_t publishedSequence = completeMeasurementSetValid
@@ -1311,17 +1466,32 @@ namespace SlaveController
                         {
                             faultStatusSuccessful = faultDetection();
                         }
-                        doCommunicationCheck(faultStatusSuccessful);
-
-                        setState(RUNNING);
-                        FaultManager::setStartupComplete(true);
-                        const uint32_t publishedSequence = completeMeasurementSetValid
-                                                                ? measurementSequence.load(std::memory_order_relaxed) + 1U
-                                                                : measurementSequence.load(std::memory_order_relaxed);
-                        publishBatteryCanSnapshot(publishedSequence);
-                        if (completeMeasurementSetValid)
+                        const bool communicationHardFault = doCommunicationCheck(faultStatusSuccessful);
+                        if (communicationHardFault)
                         {
-                            measurementSequence.store(publishedSequence, std::memory_order_release);
+                            PRINTF_WARN("[SC] Communication lost during startup; retrying TPL initialization\n");
+                            setState(DEVICE_INITIALIZATION);
+                            initializationRetryNotBeforeMs = millis();
+                        }
+                        else
+                        {
+                            setState(RUNNING);
+                            FaultManager::setStartupComplete(true);
+                            const uint32_t publishedSequence = completeMeasurementSetValid
+                                                                    ? measurementSequence.load(std::memory_order_relaxed) + 1U
+                                                                    : measurementSequence.load(std::memory_order_relaxed);
+                            if (communicationFaultActive)
+                            {
+                                publishHeldBatteryCanSnapshot();
+                            }
+                            else
+                            {
+                                publishBatteryCanSnapshot(publishedSequence);
+                            }
+                            if (completeMeasurementSetValid && !communicationFaultActive)
+                            {
+                                measurementSequence.store(publishedSequence, std::memory_order_release);
+                            }
                         }
                     }
                 }
