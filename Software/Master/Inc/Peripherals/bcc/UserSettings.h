@@ -23,10 +23,22 @@ struct StaticSlaveTemplate_t
     uint8_t AMPHOUR_BACKUP_REG;
 };
 
+struct InverterLimits_t
+{
+    // LiFePO4 soft operating envelope. The BCC safety limits below remain the
+    // independent hard trip thresholds.
+    double CHARGE_DERATING_START_CELL_VOLTAGE; // [V] full CCL at and below this voltage
+    double CHARGE_TARGET_CELL_VOLTAGE;         // [V] pack CVL and zero CCL at this max-cell voltage
+    double DISCHARGE_TARGET_CELL_VOLTAGE;      // [V] pack DVL and full DCL at and above this voltage
+    double DISCHARGE_STOP_CELL_VOLTAGE;        // [V] zero DCL at this min-cell voltage
+    double CURRENT_LIMIT_RECOVERY_RATE;        // [fraction of configured maximum per second]
+};
+
 struct StaticSettings_t
 {
     StaticSlaveTemplate_t SLAVE_TEMPLATE;
     SafetyLimits_t SAFETY_LIMITS;
+    InverterLimits_t INVERTER_LIMITS;
     double NTC_RESISTANCE;
     double NTC_BETA;
 
@@ -53,6 +65,13 @@ struct StaticSettings_t
 const StaticSettings_t DEFAULT_STATIC_SETTINGS = {
     .SLAVE_TEMPLATE = {.DEVICE_TYPE = BCC_DEVICE_MC33771C, .CELL_COUNT = 12, .NTC_COUNT = 4, .AMPHOUR_BACKUP_REG = 4},
     .SAFETY_LIMITS = {.OVERVOLTAGE_LIMIT = 3.6, .UNDERVOLTAGE_LIMIT = 2.5, .OVERTEMPERATURE_LIMIT = 60, .UNDERTEMPERATURE_LIMIT = 5, .CHARGE_CURRENT_LIMIT = 63, .DISCHARGE_CURRENT_LIMIT = 63, .COMMUNICATION_TIMEOUT = 500},
+    .INVERTER_LIMITS = {
+        .CHARGE_DERATING_START_CELL_VOLTAGE = 3.400,
+        .CHARGE_TARGET_CELL_VOLTAGE = 3.500,
+        .DISCHARGE_TARGET_CELL_VOLTAGE = 2.900,
+        .DISCHARGE_STOP_CELL_VOLTAGE = 2.800,
+        .CURRENT_LIMIT_RECOVERY_RATE = 0.10,
+    },
     .NTC_RESISTANCE = 10000,
     .NTC_BETA = 3950,
 

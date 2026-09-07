@@ -548,7 +548,15 @@ not. A fresh snapshot with a common fault keeps the
 status frames alive but forces both directional current limits to zero. The
 configured under-temperature threshold is charge-only: it sets the charge
 current limit to zero while leaving discharge available if all common safety
-conditions remain healthy. Pack voltage uses the BCC cell-voltage sum. The
+conditions remain healthy. For the EVE MB31 LiFePO4 pack, the inverter-facing
+charge target is fixed at 3.500 V per cell and charge current derates linearly
+from the configured maximum at 3.400 V maximum-cell voltage to zero at 3.500 V.
+The discharge-voltage target is 2.900 V per cell and discharge current derates
+linearly from the configured maximum at 2.900 V minimum-cell voltage to zero at
+2.800 V. Lower current limits take effect immediately; increases recover at
+10% of the configured maximum per second. These are soft, directional inverter
+limits and do not replace or latch the independent 3.600 V overvoltage and
+2.500 V undervoltage BMS trips. Pack voltage uses the BCC cell-voltage sum. The
 Candidate A module count defaults to six and SoH defaults to 100% until a real
 SoH source exists. If no retained SoC calibration is available, the transmitter
 still publishes the coherent measurements and advertises 30% SoC until the
@@ -778,7 +786,9 @@ deliberately disabled in the single-slave development configuration, so current 
 there. Production enables it only on CID 1. Full-charge calibration requires fresh measurements with
 no active BMS error, every cell at or above 3.450 V, current from -0.100 A through C/50 (6.28 A for the
 314 Ah default), continuously for 300 s. Any failed condition restarts the timer; calibration sets SoC to
-100%. Coulomb counting is bounded at 0% and 100%, allowing a subsequent discharge to lower SoC
+100%. The 3.500 V-per-cell inverter charge target deliberately remains above the 3.450 V minimum-cell
+qualification threshold, so calibration stays reachable while maximum-cell current derating and
+balancing prevent normal charging from reaching the 3.600 V hard trip. Coulomb counting is bounded at 0% and 100%, allowing a subsequent discharge to lower SoC
 normally without retaining an out-of-range value. When valid UTC is available, the STM32 persists that instant in integrity-protected backup
 registers and reports it in `soc_last_calibration_unix_s`; it otherwise reports no calibration time.
 

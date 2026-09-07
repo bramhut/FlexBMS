@@ -14,6 +14,7 @@
 #include "main.h"
 #include "FaultManager.h"
 #include "EnergyCounter.h"
+#include "Peripherals/BatteryLimits.h"
 #include "Watchdog.h"
 #include "pcc.h"
 #include "bcc/SlaveController.h"
@@ -109,6 +110,10 @@ namespace SlaveController
         MeasurementSnapshot latestMeasurementSnapshot{};
         BatteryCanSnapshot latestBatteryCanSnapshot{};
         std::atomic<bool> chargeTemperatureInhibit{false};
+        double publishedChargeCurrentLimitA = 0.0;
+        double publishedDischargeCurrentLimitA = 0.0;
+        uint32_t currentLimitUpdatedAtMs = 0U;
+        bool currentLimitRecoveryInitialized = false;
 
         bool cellOverVoltageActive = false;
         bool cellUnderVoltageActive = false;
@@ -222,6 +227,10 @@ namespace SlaveController
             taskENTER_CRITICAL();
             latestBatteryCanSnapshot = {};
             taskEXIT_CRITICAL();
+            publishedChargeCurrentLimitA = 0.0;
+            publishedDischargeCurrentLimitA = 0.0;
+            currentLimitUpdatedAtMs = 0U;
+            currentLimitRecoveryInitialized = false;
         }
 
         void updateFullSocCalibration(const double current)
@@ -762,14 +771,56 @@ namespace SlaveController
 
             snapshot.packVoltageUv = packVoltage.load(std::memory_order_acquire);
             snapshot.packCurrentA = packCurrent;
-            snapshot.chargeVoltageV = settings.SAFETY_LIMITS.OVERVOLTAGE_LIMIT * getCellCount();
-            snapshot.dischargeVoltageV = settings.SAFETY_LIMITS.UNDERVOLTAGE_LIMIT * getCellCount();
-            snapshot.chargeCurrentA = settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT;
-            snapshot.dischargeCurrentA = settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT;
+            const uint16_t cellCount = getCellCount();
+            const BatteryLimits::Config inverterLimits{
+                .chargeDeratingStartCellV = settings.INVERTER_LIMITS.CHARGE_DERATING_START_CELL_VOLTAGE,
+                .chargeTargetCellV = settings.INVERTER_LIMITS.CHARGE_TARGET_CELL_VOLTAGE,
+                .dischargeTargetCellV = settings.INVERTER_LIMITS.DISCHARGE_TARGET_CELL_VOLTAGE,
+                .dischargeStopCellV = settings.INVERTER_LIMITS.DISCHARGE_STOP_CELL_VOLTAGE,
+                .recoveryFractionPerSecond = settings.INVERTER_LIMITS.CURRENT_LIMIT_RECOVERY_RATE,
+            };
+            const BatteryLimits::Limits requestedLimits = BatteryLimits::calculate(
+                inverterLimits,
+                cellCount,
+                minCellVoltage / 1'000'000.0,
+                maxCellVoltage / 1'000'000.0,
+                settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT,
+                settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT);
+
+            const uint32_t now = millis();
+            const uint32_t elapsedMs = currentLimitRecoveryInitialized
+                                           ? now - currentLimitUpdatedAtMs
+                                           : 0U;
+            currentLimitUpdatedAtMs = now;
+            currentLimitRecoveryInitialized = true;
+
+            const double requestedChargeCurrentA = snapshot.valid && snapshot.chargeAllowed
+                                                       ? requestedLimits.chargeCurrentA
+                                                       : 0.0;
+            const double requestedDischargeCurrentA = snapshot.valid && snapshot.dischargeAllowed
+                                                          ? requestedLimits.dischargeCurrentA
+                                                          : 0.0;
+            publishedChargeCurrentLimitA = BatteryLimits::applyRecoverySlew(
+                publishedChargeCurrentLimitA,
+                requestedChargeCurrentA,
+                settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT,
+                inverterLimits.recoveryFractionPerSecond,
+                elapsedMs);
+            publishedDischargeCurrentLimitA = BatteryLimits::applyRecoverySlew(
+                publishedDischargeCurrentLimitA,
+                requestedDischargeCurrentA,
+                settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT,
+                inverterLimits.recoveryFractionPerSecond,
+                elapsedMs);
+
+            snapshot.chargeVoltageV = requestedLimits.chargeVoltageV;
+            snapshot.dischargeVoltageV = requestedLimits.dischargeVoltageV;
+            snapshot.chargeCurrentA = publishedChargeCurrentLimitA;
+            snapshot.dischargeCurrentA = publishedDischargeCurrentLimitA;
             snapshot.averageTemperatureC = NTCtemperatureCount == 0U
                                               ? 0.0
                                               : BCC_TEMPRAW_TO_TEMP(averageNTCtemperature);
-            snapshot.cellCount = getCellCount();
+            snapshot.cellCount = cellCount;
 
             measurement.valid = snapshot.valid;
             measurement.measurementsFresh = snapshot.measurementsFresh;

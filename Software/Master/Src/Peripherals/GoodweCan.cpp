@@ -112,13 +112,22 @@ namespace GoodweCan
             }
         }
 
-        uint16_t toUnsignedDeci(double value)
+        uint16_t toUnsignedDeciFloor(double value)
         {
             if (!std::isfinite(value) || value <= 0.0)
             {
                 return 0U;
             }
-            return static_cast<uint16_t>(std::clamp(std::lround(value * 10.0), 0L, 65535L));
+            return static_cast<uint16_t>(std::clamp(std::floor(value * 10.0), 0.0, 65535.0));
+        }
+
+        uint16_t toUnsignedDeciCeil(double value)
+        {
+            if (!std::isfinite(value) || value <= 0.0)
+            {
+                return 0U;
+            }
+            return static_cast<uint16_t>(std::clamp(std::ceil(value * 10.0), 0.0, 65535.0));
         }
 
         int16_t toSignedDeci(double value)
@@ -162,10 +171,12 @@ namespace GoodweCan
                                   ? snapshot.socPercent
                                   : static_cast<uint16_t>(GOODWE_CAN_UNAVAILABLE_SOC_PERCENT);
             data.sohPercent = static_cast<uint16_t>(GOODWE_CAN_SOH_PERCENT);
-            data.chargeVoltageDeciV = toUnsignedDeci(snapshot.chargeVoltageV);
-            data.dischargeVoltageDeciV = toUnsignedDeci(snapshot.dischargeVoltageV);
-            data.chargeCurrentDeciA = toUnsignedDeci(snapshot.chargeCurrentA);
-            data.dischargeCurrentDeciA = toUnsignedDeci(snapshot.dischargeCurrentA);
+            // Quantize toward the safe side: never round a maximum upward or
+            // a minimum downward on the inverter-facing wire format.
+            data.chargeVoltageDeciV = toUnsignedDeciFloor(snapshot.chargeVoltageV);
+            data.dischargeVoltageDeciV = toUnsignedDeciCeil(snapshot.dischargeVoltageV);
+            data.chargeCurrentDeciA = toUnsignedDeciFloor(snapshot.chargeCurrentA);
+            data.dischargeCurrentDeciA = toUnsignedDeciFloor(snapshot.dischargeCurrentA);
             data.packVoltageDeciV = static_cast<uint16_t>(std::clamp(
                 std::lround(static_cast<double>(snapshot.packVoltageUv) / 100000.0), 0L, 65535L));
             data.packCurrentDeciA = toSignedDeci(snapshot.packCurrentA);
