@@ -1,5 +1,6 @@
 #include "FaultManager.h"
 
+#include "BccBreadcrumb.h"
 #include "FreeRTOS.h"
 #include "main.h"
 #include "pcc.h"
@@ -58,6 +59,9 @@ namespace FaultManager
 
     void setup()
     {
+        // Capture this before BCC setup can overwrite the breadcrumb with a
+        // new transfer. It is only exposed when the reset cause is watchdog.
+        BccBreadcrumb::captureOnBoot();
         taskENTER_CRITICAL();
         bmsActive = 0U;
         bmsLatched = 0U;

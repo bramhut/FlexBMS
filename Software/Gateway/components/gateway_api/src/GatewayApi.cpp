@@ -569,6 +569,10 @@ namespace FlexBms::GatewayApi
             cJSON_AddNumberToObject(root, "hv_latched_errors", status.hvLatchedErrors);
             cJSON_AddNumberToObject(root, "warnings", status.warnings);
             cJSON_AddNumberToObject(root, "uptime_ms", status.uptimeMs);
+            if ((status.flags & (1U << 9U)) != 0U)
+            {
+                cJSON_AddNumberToObject(root, "watchdog_breadcrumb", status.watchdogBreadcrumb);
+            }
             cJSON_AddBoolToObject(root, "measurements_fresh", (status.flags & (1U << 3U)) != 0U);
             cJSON_AddBoolToObject(root, "run_request", (status.flags & (1U << 2U)) != 0U);
             cJSON_AddBoolToObject(root, "balancing_enabled", (status.flags & (1U << 5U)) != 0U);

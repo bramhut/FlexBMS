@@ -1,5 +1,6 @@
 #include "BmsUart.h"
 
+#include "BccBreadcrumb.h"
 #include "BoardIO.h"
 #include "FirmwareVersion.h"
 #include "FaultManager.h"
@@ -571,6 +572,10 @@ namespace BmsUart
             if (measurement.currentSensingEnabled) flags |= 1U << 7U;
             uint32_t socCalibrationUnixTime = 0U;
             if (SlaveController::getLastSoCCalibrationUnixTime(socCalibrationUnixTime)) flags |= 1U << 8U;
+            const bool watchdogRecordAvailable =
+                (faultSnapshot.warnings & (1UL << static_cast<uint8_t>(FaultManager::Warning::WatchdogReset))) != 0U &&
+                BccBreadcrumb::hasLastResetRecord();
+            if (watchdogRecordAvailable) flags |= 1U << 9U;
 
             payload[0] = static_cast<uint8_t>(faultSnapshot.bmsState);
             payload[1] = static_cast<uint8_t>(PCC::getPCCState());
@@ -583,12 +588,17 @@ namespace BmsUart
             writeLe32(payload + 21U, faultSnapshot.warnings);
             writeLe32(payload + 25U, HAL_GetTick());
             writeLe32(payload + 29U, socCalibrationUnixTime);
+            if (watchdogRecordAvailable)
+            {
+                writeLe32(payload + 33U, BccBreadcrumb::getLastResetRecord());
+                return 37U;
+            }
             return 33U;
         }
 
         void sendStatus()
         {
-            std::array<uint8_t, 33U> payload = {};
+            std::array<uint8_t, 37U> payload = {};
             broadcastFrame(STATUS, 0U, payload.data(), makeStatusPayload(payload.data()));
         }
 

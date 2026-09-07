@@ -10,6 +10,7 @@
  ******************************************************************************/
 
 #include "bcc/bcc_communication.h"
+#include "BccBreadcrumb.h"
 #include "cmsis_os.h" // Needed for assert
 #include "SPIwrapper.h"
 
@@ -235,12 +236,21 @@ namespace BCC_Communication
         auto lock = osKernelLock(); // Lock the kernel to prevent a context switch
         BCC_MCU_Assert(txBuf != NULL);
         BCC_MCU_Assert(rxTrCnt > 0);
+        BccBreadcrumb::recordTransferStart(
+            txBuf[BCC_MSG_IDX_CID], txBuf[BCC_MSG_IDX_ADDR],
+            txBuf[BCC_MSG_IDX_CNT_CMD] & 0x03U, rxTrCnt);
+
+        const auto finish = [&](bcc_status_t status)
+        {
+            BccBreadcrumb::recordTransferComplete();
+            osKernelRestoreLock(lock);
+            return status;
+        };
 
         // Start RX SPI
         if (!mSpiRX.receive(mRxBuf, rxTrCnt * 6))
         {
-            osKernelRestoreLock(lock); // Unlock the kernel
-            return BCC_STATUS_COM_NULL;
+            return finish(BCC_STATUS_COM_NULL);
         }
 
         // Send data to transceiver
@@ -248,9 +258,7 @@ namespace BCC_Communication
         {
             PRINTF_WARN("[BCC_COMM] TX timeout\n");
             mSpiRX.abort();
-
-            osKernelRestoreLock(lock); // Unlock the kernel
-            return BCC_STATUS_COM_TIMEOUT;
+            return finish(BCC_STATUS_COM_TIMEOUT);
         }
 
         // Wait for data to be available in the RX buffer
@@ -263,17 +271,14 @@ namespace BCC_Communication
             {
                 PRINTF_WARN("[BCC_COMM] RX timeout\n");
                 mSpiRX.abort();
-
-                osKernelRestoreLock(lock); // Unlock the kernel
-                return BCC_STATUS_COM_TIMEOUT;
+                return finish(BCC_STATUS_COM_TIMEOUT);
             }
         }
 
         
 
         // Succes! Data is now available in the RX buffer
-        osKernelRestoreLock(lock); // Unlock the kernel
-        return BCC_STATUS_SUCCESS;
+        return finish(BCC_STATUS_SUCCESS);
     }
 
     /*FUNCTION**********************************************************************

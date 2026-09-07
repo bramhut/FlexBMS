@@ -40,6 +40,16 @@ export const hvReasonNames = ['HV_SENSOR_DIAGNOSTIC', 'BATTERY_VOLTAGE_MISMATCH'
 export const warningNames = ['WATCHDOG_RESET', 'STARTUP_DIAGNOSTICS_BYPASSED', 'BATTERY_VOLTAGE_MISMATCH_OFF']
 export const warningDisplayNames = ['Watchdog reset', 'Startup diagnostics bypassed', 'Pack-voltage mismatch (HV off)']
 export const setBits = (mask: number, labels: string[]) => labels.filter((label, bit) => (mask & (1 << bit)) !== 0 ? label : false)
+export const describeWatchdogBreadcrumb = (value: number | undefined): string | undefined => {
+  if (value === undefined || (value >>> 28) !== 0xB) return undefined
+  const pending = (value & (1 << 27)) !== 0
+  const sequence = (value >>> 19) & 0xff
+  const cid = (value >>> 13) & 0x3f
+  const address = (value >>> 6) & 0x7f
+  const command = (value >>> 4) & 0x03
+  const rxCount = value & 0x0f
+  return `${pending ? 'In-flight' : 'Completed'} BCC transfer · CID ${cid} · register 0x${address.toString(16).padStart(2, '0').toUpperCase()} · command ${command} · RX ${rxCount} · sequence ${sequence}`
+}
 export const bmsStatusSummary = (status: Status | null): string => {
   if (!status) return 'Waiting for BMS status over the selected transport.'
   if (status.measurements_fresh) return 'Fresh BMS measurements are available.'

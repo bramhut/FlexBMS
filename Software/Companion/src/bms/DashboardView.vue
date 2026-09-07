@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ServiceView from './ServiceView.vue'
 import RecentChangesList from './RecentChangesList.vue'
-import { bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, formatEnergy, formatPower, hvReasonNames, hvStateName, icCelsius, ntcCelsius, powerW, setBits, socPercent, warningDisplayNames } from '@/shared/model'
+import { bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, describeWatchdogBreadcrumb, formatEnergy, formatPower, hvReasonNames, hvStateName, icCelsius, ntcCelsius, powerW, setBits, socPercent, warningDisplayNames } from '@/shared/model'
 import { serviceResultLabel } from '@/shared/service'
 import { advancingUnixTime, advancingUptimeMs, formatUptime } from '@/shared/time'
 import type { BccDiagnosticReport, BmsTransport, Capabilities, GatewayStatus, RecordedControllerEvent, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
@@ -66,6 +66,7 @@ const attentionItems = computed<AttentionItem[]>(() => {
     label: name,
     domain: 'System',
     state: 'warning',
+    ...(name === 'Watchdog reset' ? { detail: describeWatchdogBreadcrumb(status.watchdog_breadcrumb) ?? 'Warning · System' } : {}),
   }))
   return items
 })
