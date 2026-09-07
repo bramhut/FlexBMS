@@ -25,6 +25,8 @@ namespace
     constexpr int kBaudRate = 1'000'000;
     constexpr int64_t kHeartbeatPeriodUs = 500'000;
     constexpr int64_t kGatewayLossUs = 1'500'000;
+    constexpr int64_t kGatewayBootStableStationUs = 10'000'000;
+    constexpr int64_t kGatewayBootConfirmationTimeoutUs = 180'000'000;
 
     int64_t lastValidFrameUs = 0;
     bool linkWasHealthy = false;
@@ -217,14 +219,16 @@ extern "C" void app_main(void)
     int64_t nextHeartbeatUs = esp_timer_get_time();
     lastValidFrameUs = nextHeartbeatUs;
     bool gatewayBootConfirmed = !FlexBms::FirmwareUpdate::isGatewayBootPendingVerification();
-    const int64_t gatewayBootConfirmationDeadlineUs = esp_timer_get_time() + 60'000'000LL;
+    int64_t gatewayStationConnectedSinceUs = 0;
+    int64_t gatewayNextConfirmationAttemptUs = 0;
+    const int64_t gatewayBootConfirmationDeadlineUs = esp_timer_get_time() + kGatewayBootConfirmationTimeoutUs;
     if (!gatewayApiStarted)
     {
         ESP_LOGE(kLogTag, "Gateway HTTP/WebSocket service failed to start");
     }
     if (!wifiStarted || !gatewayApiStarted || !mqttStarted)
     {
-        FlexBms::FirmwareUpdate::restartPendingGatewayImage();
+        FlexBms::FirmwareUpdate::restartPendingGatewayImage(FlexBms::FirmwareUpdate::GatewayRollbackReason::StartupFailure);
     }
 
     while (true)
@@ -281,17 +285,30 @@ extern "C" void app_main(void)
         FlexBms::Wifi::tick();
         FlexBms::Mqtt::tick(FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected);
         if (FlexBms::Mqtt::consumeStatusChanged()) FlexBms::GatewayApi::publishGatewayStatus();
-        if (!gatewayBootConfirmed && FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected)
+        if (!gatewayBootConfirmed)
         {
-            // A pending OTA image is trusted only once the LAN Companion is
-            // reachable again, not merely after the Wi-Fi driver initialises.
-            FlexBms::FirmwareUpdate::markGatewayBootHealthy();
-            gatewayBootConfirmed = true;
-        }
-        if (!gatewayBootConfirmed && nowUs >= gatewayBootConfirmationDeadlineUs)
-        {
-            ESP_LOGE(kLogTag, "Gateway did not regain station connectivity after OTA; rolling back pending image");
-            FlexBms::FirmwareUpdate::restartPendingGatewayImage();
+            if (FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected)
+            {
+                if (gatewayStationConnectedSinceUs == 0) gatewayStationConnectedSinceUs = nowUs;
+                if (nowUs - gatewayStationConnectedSinceUs >= kGatewayBootStableStationUs &&
+                    nowUs >= gatewayNextConfirmationAttemptUs)
+                {
+                    const bool confirmedNow = FlexBms::FirmwareUpdate::markGatewayBootHealthy();
+                    gatewayBootConfirmed = confirmedNow;
+                    if (confirmedNow) FlexBms::GatewayApi::publishGatewayStatus();
+                    if (!gatewayBootConfirmed) gatewayNextConfirmationAttemptUs = nowUs + 1'000'000;
+                }
+            }
+            else
+            {
+                gatewayStationConnectedSinceUs = 0;
+            }
+
+            if (!gatewayBootConfirmed && nowUs >= gatewayBootConfirmationDeadlineUs)
+            {
+                ESP_LOGE(kLogTag, "Gateway did not maintain station connectivity after OTA; rolling back pending image");
+                FlexBms::FirmwareUpdate::restartPendingGatewayImage(FlexBms::FirmwareUpdate::GatewayRollbackReason::StationTimeout);
+            }
         }
         FlexBms::TimeSync::setStationConnected(FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected);
         if (FlexBms::Wifi::consumeStatusChanged())

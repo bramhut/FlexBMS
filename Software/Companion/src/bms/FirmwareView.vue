@@ -15,6 +15,18 @@ const gatewayVersion = computed(() => {
   // bundle. It is transport identity, not part of the release shown to users.
   return version?.split('+', 1)[0] ?? 'Unavailable on a direct USB connection'
 })
+const lastGatewayRollback = computed(() => {
+  const rollback = props.gateway?.last_ota_rollback
+  if (!rollback?.valid) return ''
+  const attempted = rollback.attempted_version ? ` ${rollback.attempted_version}` : ''
+  const reason = rollback.reason === 'station_timeout'
+    ? 'station Wi-Fi did not remain connected before the validation deadline'
+    : 'an essential Gateway service failed during startup'
+  const disconnect = rollback.wifi_disconnect_reason_valid && rollback.wifi_disconnect_reason !== undefined
+    ? ` Last Wi-Fi disconnect reason: ${rollback.wifi_disconnect_reason}.`
+    : ''
+  return `Gateway firmware${attempted} was rolled back because ${reason}.${disconnect}`
+})
 const canReadStm32Version = computed(() => props.connected && props.capabilities.get_device_info && (props.gateway === undefined || props.gateway.uart_state === 'healthy'))
 const stm32VersionText = computed(() => {
   if (!props.connected) return 'Connect to read version.'
@@ -53,6 +65,7 @@ watch([() => props.connected, () => props.capabilities.get_device_info, () => pr
         <div><dt>STM32 BMS</dt><dd>{{ stm32VersionText }}</dd></div>
       </dl>
       <p v-if="gateway?.gateway_partition" class="firmware-partition">Running Gateway partition: <b>{{ gateway.gateway_partition }}</b></p>
+      <p v-if="lastGatewayRollback" class="warning-text">{{ lastGatewayRollback }}</p>
       <template v-if="canReadStm32Version">
       <button :disabled="!connected || !capabilities.get_device_info || reading" @click="refreshVersions">{{ reading ? 'Reading…' : 'Refresh versions' }}</button>
       </template>

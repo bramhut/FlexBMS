@@ -8,6 +8,7 @@
 #include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "nvs.h"
 
 #include <algorithm>
 #include <array>
@@ -32,6 +33,12 @@ namespace FlexBms::FirmwareUpdate
         constexpr int64_t kStm32RomStartDelayUs = 200'000;
         constexpr int64_t kStm32HeartbeatTimeoutUs = 10'000'000;
         constexpr uint8_t kAck = 0x79U;
+        constexpr const char *kNvsNamespace = "fw_update";
+        constexpr const char *kPendingVersionKey = "pending_ver";
+        constexpr const char *kRollbackVersionKey = "rollback_ver";
+        constexpr const char *kRollbackReasonKey = "rollback_why";
+        constexpr const char *kRollbackWifiValidKey = "wifi_valid";
+        constexpr const char *kRollbackWifiReasonKey = "wifi_reason";
 
         enum class Stm32Operation : uint8_t { Idle, RomBootloader, Erase, Program, Verify, StartApplication, AwaitHeartbeat };
 
@@ -60,6 +67,60 @@ namespace FlexBms::FirmwareUpdate
         uint32_t stm32ReadbackCrc = 0xFFFFFFFFU;
         char version[48]{};
         char detail[96]{};
+
+        bool persistPendingGatewayVersion(const char *attemptedVersion)
+        {
+            nvs_handle_t handle{};
+            esp_err_t result = nvs_open(kNvsNamespace, NVS_READWRITE, &handle);
+            const bool opened = result == ESP_OK;
+            if (result == ESP_OK) result = nvs_set_str(handle, kPendingVersionKey, attemptedVersion);
+            if (result == ESP_OK) result = nvs_commit(handle);
+            if (opened) nvs_close(handle);
+            if (result != ESP_OK) ESP_LOGW("flexbms_update", "Could not persist pending Gateway version: %s", esp_err_to_name(result));
+            return result == ESP_OK;
+        }
+
+        void clearGatewayUpdateRecord()
+        {
+            nvs_handle_t handle{};
+            if (nvs_open(kNvsNamespace, NVS_READWRITE, &handle) != ESP_OK) return;
+            (void)nvs_erase_key(handle, kPendingVersionKey);
+            (void)nvs_erase_key(handle, kRollbackVersionKey);
+            (void)nvs_erase_key(handle, kRollbackReasonKey);
+            (void)nvs_erase_key(handle, kRollbackWifiValidKey);
+            (void)nvs_erase_key(handle, kRollbackWifiReasonKey);
+            (void)nvs_commit(handle);
+            nvs_close(handle);
+        }
+
+        void persistGatewayRollback(GatewayRollbackReason reason)
+        {
+            nvs_handle_t handle{};
+            esp_err_t result = nvs_open(kNvsNamespace, NVS_READWRITE, &handle);
+            if (result != ESP_OK)
+            {
+                ESP_LOGW("flexbms_update", "Could not open Gateway rollback record: %s", esp_err_to_name(result));
+                return;
+            }
+
+            std::array<char, 48U> attemptedVersion{};
+            size_t versionLength = attemptedVersion.size();
+            result = nvs_get_str(handle, kPendingVersionKey, attemptedVersion.data(), &versionLength);
+            if (result == ESP_ERR_NVS_NOT_FOUND)
+            {
+                attemptedVersion[0] = '\0';
+                result = ESP_OK;
+            }
+            uint8_t wifiReason = 0U;
+            const bool hasWifiReason = Wifi::getLastDisconnectReason(wifiReason);
+            if (result == ESP_OK) result = nvs_set_str(handle, kRollbackVersionKey, attemptedVersion.data());
+            if (result == ESP_OK) result = nvs_set_u8(handle, kRollbackReasonKey, static_cast<uint8_t>(reason));
+            if (result == ESP_OK) result = nvs_set_u8(handle, kRollbackWifiValidKey, hasWifiReason ? 1U : 0U);
+            if (result == ESP_OK) result = nvs_set_u8(handle, kRollbackWifiReasonKey, wifiReason);
+            if (result == ESP_OK) result = nvs_commit(handle);
+            nvs_close(handle);
+            if (result != ESP_OK) ESP_LOGW("flexbms_update", "Could not persist Gateway rollback record: %s", esp_err_to_name(result));
+        }
 
         uint32_t crc32Update(uint32_t crc, const uint8_t *data, size_t length)
         {
@@ -371,6 +432,7 @@ namespace FlexBms::FirmwareUpdate
             const esp_partition_t *partition = esp_ota_get_next_update_partition(nullptr);
             if (otaHandle == 0U || esp_ota_end(otaHandle) != ESP_OK || esp_ota_set_boot_partition(partition) != ESP_OK) { otaHandle = 0U; fail("Gateway OTA validation failed"); return false; }
             otaHandle = 0U;
+            (void)persistPendingGatewayVersion(version);
             setStatus(Phase::Installing, Stage::Restart, "Restarting Gateway");
             restartAtUs = esp_timer_get_time() + 1'000'000;
         }
@@ -534,22 +596,58 @@ namespace FlexBms::FirmwareUpdate
         return running != nullptr && esp_ota_get_state_partition(running, &imageState) == ESP_OK && imageState == ESP_OTA_IMG_PENDING_VERIFY;
     }
 
-    void markGatewayBootHealthy()
+    bool markGatewayBootHealthy()
     {
-        if (!isGatewayBootPendingVerification()) return;
+        if (!isGatewayBootPendingVerification()) return true;
         const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
         if (result != ESP_OK && result != ESP_ERR_NOT_SUPPORTED)
         {
             ESP_LOGW("flexbms_update", "Could not confirm Gateway OTA image: %s", esp_err_to_name(result));
+            return false;
         }
+        clearGatewayUpdateRecord();
+        ESP_LOGI("flexbms_update", "Gateway OTA image confirmed after stable station connectivity");
+        return true;
     }
 
-    void restartPendingGatewayImage()
+    void restartPendingGatewayImage(GatewayRollbackReason reason)
     {
         if (isGatewayBootPendingVerification())
         {
+            persistGatewayRollback(reason);
             ESP_LOGE("flexbms_update", "Gateway startup incomplete; rebooting pending image for bootloader rollback");
             esp_restart();
         }
+    }
+
+    bool getLastGatewayRollback(GatewayRollbackInfo &info)
+    {
+        info = {};
+        nvs_handle_t handle{};
+        if (nvs_open(kNvsNamespace, NVS_READONLY, &handle) != ESP_OK) return false;
+        uint8_t reason = 0U;
+        uint8_t wifiValid = 0U;
+        size_t versionLength = info.attemptedVersion.size();
+        const bool read = nvs_get_u8(handle, kRollbackReasonKey, &reason) == ESP_OK &&
+                          nvs_get_str(handle, kRollbackVersionKey, info.attemptedVersion.data(), &versionLength) == ESP_OK &&
+                          nvs_get_u8(handle, kRollbackWifiValidKey, &wifiValid) == ESP_OK &&
+                          nvs_get_u8(handle, kRollbackWifiReasonKey, &info.wifiDisconnectReason) == ESP_OK;
+        nvs_close(handle);
+        if (!read || (reason != static_cast<uint8_t>(GatewayRollbackReason::StartupFailure) &&
+                      reason != static_cast<uint8_t>(GatewayRollbackReason::StationTimeout))) return false;
+        info.valid = true;
+        info.reason = static_cast<GatewayRollbackReason>(reason);
+        info.hasWifiDisconnectReason = wifiValid != 0U;
+        return true;
+    }
+
+    const char *gatewayRollbackReasonName(GatewayRollbackReason reason)
+    {
+        switch (reason)
+        {
+        case GatewayRollbackReason::StartupFailure: return "startup_failure";
+        case GatewayRollbackReason::StationTimeout: return "station_timeout";
+        }
+        return "unknown";
     }
 }

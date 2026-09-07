@@ -464,11 +464,26 @@ namespace FlexBms::GatewayApi
             cJSON_AddNumberToObject(root, "gateway_uptime_ms", static_cast<double>(esp_timer_get_time() / 1000LL));
             const esp_partition_t *runningPartition = esp_ota_get_running_partition();
             if (runningPartition != nullptr) cJSON_AddStringToObject(root, "gateway_partition", runningPartition->label);
+            cJSON_AddBoolToObject(root, "gateway_ota_pending_verification", FirmwareUpdate::isGatewayBootPendingVerification());
             cJSON_AddStringToObject(root, "wifi_state", wifiState());
             uint8_t wifiDisconnectReason = 0U;
             const bool hasWifiDisconnectReason = Wifi::getLastDisconnectReason(wifiDisconnectReason);
             cJSON_AddBoolToObject(root, "wifi_last_disconnect_reason_valid", hasWifiDisconnectReason);
             cJSON_AddNumberToObject(root, "wifi_last_disconnect_reason", wifiDisconnectReason);
+            FirmwareUpdate::GatewayRollbackInfo rollback{};
+            cJSON *rollbackJson = cJSON_AddObjectToObject(root, "last_ota_rollback");
+            const bool hasRollback = FirmwareUpdate::getLastGatewayRollback(rollback);
+            cJSON_AddBoolToObject(rollbackJson, "valid", hasRollback);
+            if (hasRollback)
+            {
+                cJSON_AddStringToObject(rollbackJson, "attempted_version", rollback.attemptedVersion.data());
+                cJSON_AddStringToObject(rollbackJson, "reason", FirmwareUpdate::gatewayRollbackReasonName(rollback.reason));
+                cJSON_AddBoolToObject(rollbackJson, "wifi_disconnect_reason_valid", rollback.hasWifiDisconnectReason);
+                if (rollback.hasWifiDisconnectReason)
+                {
+                    cJSON_AddNumberToObject(rollbackJson, "wifi_disconnect_reason", rollback.wifiDisconnectReason);
+                }
+            }
             if (Wifi::getState() != Wifi::State::Provisioning && Wifi::getState() != Wifi::State::Unavailable)
             {
                 cJSON_AddStringToObject(root, "wifi_ssid", Wifi::getStationSsid());

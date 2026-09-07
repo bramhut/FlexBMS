@@ -653,8 +653,12 @@ detailed transport, local-network, and recovery design is in
 After a station reconnect, the Gateway withdraws and re-announces
 `flexbms.local`; a temporary mDNS failure is retried. Gateway OTA boots the
 inactive slot as pending and confirms it only after the local HTTP/WebSocket
-service starts and a station address returns. If that cannot happen within one
-minute, the ESP-IDF bootloader returns to the previous slot. Companion compares
+service starts and a station address remains stable for ten seconds. Saved
+credentials are attempted directly first; bounded station retries continue even
+while the recovery AP is active. If stable connectivity cannot be established
+within three minutes, the ESP-IDF bootloader returns to the previous slot. The
+attempted version, rollback reason, and last Wi-Fi disconnect reason are retained
+for Companion diagnostics. Companion compares
 a content-derived web bundle identity and reloads its non-cacheable HTML shell
 automatically when a new bundle responds.
 

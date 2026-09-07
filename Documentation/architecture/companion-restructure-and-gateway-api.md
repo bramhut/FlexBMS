@@ -334,7 +334,7 @@ The Gateway sends these server-to-browser messages:
 | `bms_status` | `status` | Current UART v1 `STATUS`, sent even while measurements are stale. |
 | `snapshot` | `status`, `pack`, optional `hv_voltages`, `cells`, `temperatures` | Complete current source-unit BMS view. `status` includes `measurements_fresh`. |
 | `event` | `event_id`, `value`, `gateway_uptime_ms` | Direct representation of a UART v1 event; informational only. |
-| `gateway_status` | `gateway_uptime_ms`, `gateway_partition`, `wifi_state`, optional `wifi_ssid`, `setup_ap`, `uart_state`, `mqtt_state`, `mqtt`, `time_sync`, `diagnostic_log` | Local Gateway state, uptime, running OTA partition, MQTT configuration/status, setup AP details, NTP state, and diagnostic-log availability. |
+| `gateway_status` | `gateway_uptime_ms`, `gateway_partition`, `gateway_ota_pending_verification`, `wifi_state`, optional `wifi_ssid`, `last_ota_rollback`, `setup_ap`, `uart_state`, `mqtt_state`, `mqtt`, `time_sync`, `diagnostic_log` | Local Gateway state, uptime, running OTA partition and verification state, last rollback diagnostics, MQTT configuration/status, setup AP details, NTP state, and diagnostic-log availability. |
 | `service_result` | `request_id`, `service`, `result`, optional `data` | Result for exactly one browser service request. |
 | `wifi_configuration_result` | `request_id`, `result` | Accepted or failed local credential persistence/restart request. |
 | `mqtt_configuration_result` | `request_id`, `result` | Accepted or failed local MQTT credential persistence/reconnect request. |
@@ -350,6 +350,16 @@ persisted across a Gateway reboot. SNTP uses `0.nl.pool.ntp.org` through
 since the Gateway most recently booted. It is diagnostic telemetry only and
 returns to a small value after a Gateway restart. Companion may advance it
 locally between Gateway-status messages; direct USB mode has no Gateway value.
+
+`gateway_ota_pending_verification` is true while the running OTA image is still
+eligible for ESP-IDF rollback. A new image is confirmed only after essential
+services start and station Wi-Fi remains connected for ten seconds. Direct
+saved-network connection and bounded retries continue in AP+STA recovery mode;
+failure to establish stable station connectivity within three minutes causes a
+rollback. `last_ota_rollback` always contains `valid`. When valid, it also
+contains `attempted_version`, `reason` (`startup_failure` or `station_timeout`),
+`wifi_disconnect_reason_valid`, and an optional numeric
+`wifi_disconnect_reason`. A successful Gateway OTA clears the previous record.
 
 Companion keeps the latest twelve `event` messages in browser memory. The
 persistent Activity panel shows the newest three and its bottom `Show all`

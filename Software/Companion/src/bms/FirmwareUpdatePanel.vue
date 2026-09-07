@@ -12,6 +12,7 @@ const uploading = ref(false)
 const currentTarget = ref<FirmwareTarget | null>(null)
 const sawGatewayDisconnect = ref(false)
 const gatewayRestartKey = 'flexbms.gateway-update-pending'
+const gatewayRestartObservationMs = 5 * 60 * 1000
 const setupApActive = computed(() => Boolean(props.gateway?.setup_ap.active))
 const canUpdate = computed(() => props.connected && props.capabilities.firmware_update && (props.gateway?.wifi_state === 'connected' || setupApActive.value))
 const canUpdateStm32 = computed(() => canUpdate.value && !setupApActive.value && props.gateway?.wifi_state === 'connected')
@@ -48,29 +49,32 @@ function flowState(index: number): 'complete' | 'active' | 'pending' | 'failed' 
 }
 function selectedFile(event: Event): File | undefined { return (event.target as HTMLInputElement).files?.[0] }
 function targetName(target: FirmwareTarget): string { return target === 'gateway' ? 'ESP32 Gateway' : 'STM32 BMS' }
-function recordGatewayRestart(): void {
+function recordGatewayRestart(expectedVersion: string): void {
   const gateway = props.gateway
   if (!gateway) return
-  sessionStorage.setItem(gatewayRestartKey, JSON.stringify({ partition: gateway.gateway_partition, uptimeMs: gateway.gateway_uptime_ms, acceptedAtMs: Date.now() }))
+  sessionStorage.setItem(gatewayRestartKey, JSON.stringify({ partition: gateway.gateway_partition, uptimeMs: gateway.gateway_uptime_ms, expectedVersion, acceptedAtMs: Date.now() }))
 }
 watch(() => props.connected, connected => {
   if (!connected && sessionStorage.getItem(gatewayRestartKey)) sawGatewayDisconnect.value = true
 })
-watch([() => props.connected, () => props.gateway?.gateway_partition, () => props.gateway?.gateway_uptime_ms], ([connected, partition, uptimeMs]) => {
+watch([() => props.connected, () => props.gateway?.gateway_partition, () => props.gateway?.gateway_uptime_ms, () => props.gateway?.gateway_ota_pending_verification], ([connected, partition, uptimeMs, pendingVerification]) => {
   const raw = sessionStorage.getItem(gatewayRestartKey)
-  if (!raw || !connected || typeof uptimeMs !== 'number') return
+  if (!raw || !connected || typeof uptimeMs !== 'number' || pendingVerification === true) return
   try {
-    const pending = JSON.parse(raw) as { partition?: string; uptimeMs?: number; acceptedAtMs: number }
+    const pending = JSON.parse(raw) as { partition?: string; uptimeMs?: number; expectedVersion?: string; acceptedAtMs: number }
     const changedPartition = typeof partition === 'string' && typeof pending.partition === 'string' && partition !== pending.partition
     const restartedByUptime = typeof pending.uptimeMs === 'number' && uptimeMs < pending.uptimeMs
     // Old Gateways did not publish uptime/partition. In that upgrade path, a
     // reconnect after the expected socket close is the only available proof.
-    const restartedAfterDisconnect = sawGatewayDisconnect.value && Date.now() - pending.acceptedAtMs < 120000
-    const firstUpgradeFreshBoot = pending.partition === undefined && typeof props.gateway?.gateway_build_id === 'string' && uptimeMs < 120000 && Date.now() - pending.acceptedAtMs < 120000
+    const restartedAfterDisconnect = sawGatewayDisconnect.value && Date.now() - pending.acceptedAtMs < gatewayRestartObservationMs
+    const firstUpgradeFreshBoot = pending.partition === undefined && typeof props.gateway?.gateway_build_id === 'string' && uptimeMs < gatewayRestartObservationMs && Date.now() - pending.acceptedAtMs < gatewayRestartObservationMs
     if (changedPartition || restartedByUptime || restartedAfterDisconnect || firstUpgradeFreshBoot) {
       sessionStorage.removeItem(gatewayRestartKey)
       sawGatewayDisconnect.value = false
-      result.value = 'Gateway restarted and Companion reconnected. Confirm the new Gateway version above.'
+      const runningVersion = props.gateway?.gateway_version?.split('+', 1)[0]
+      result.value = pending.expectedVersion && runningVersion && runningVersion !== pending.expectedVersion
+        ? `Gateway restarted on ${runningVersion}; expected ${pending.expectedVersion}. The update was rolled back or did not complete.`
+        : 'Gateway restarted and Companion reconnected. Confirm the new Gateway version above.'
     }
   } catch { sessionStorage.removeItem(gatewayRestartKey) }
 })
@@ -120,7 +124,7 @@ async function installSelected(): Promise<void> {
     }
     if (selected.value.gateway) {
       if (!await upload('gateway')) return
-      recordGatewayRestart()
+      recordGatewayRestart(bundle.value.images.gateway.version)
       result.value = 'Gateway image accepted. Waiting for the Gateway to restart and Companion to reconnect...'
     }
     if (!selected.value.gateway) result.value = 'Selected firmware installed.'

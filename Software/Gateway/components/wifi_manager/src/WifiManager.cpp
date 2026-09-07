@@ -38,6 +38,13 @@ namespace FlexBms::Wifi
         constexpr int64_t kInitialRecoveryDelayUs = 30LL * 1000LL * 1000LL;
         constexpr int64_t kRecoveryAccessPointUs = 10LL * 60LL * 1000LL * 1000LL;
         constexpr int64_t kRecoveryStationGapUs = 60LL * 1000LL * 1000LL;
+        constexpr std::array<int64_t, 5U> kStationRetryDelaysUs = {
+            2LL * 1000LL * 1000LL,
+            5LL * 1000LL * 1000LL,
+            10LL * 1000LL * 1000LL,
+            20LL * 1000LL * 1000LL,
+            30LL * 1000LL * 1000LL,
+        };
         constexpr int64_t kScanCooldownUs = 10LL * 1000LL * 1000LL;
         constexpr int64_t kScanCompletionTimeoutUs = 12LL * 1000LL * 1000LL;
         constexpr int64_t kMdnsRetryUs = 5LL * 1000LL * 1000LL;
@@ -90,6 +97,9 @@ namespace FlexBms::Wifi
         std::atomic<bool> hasLastDisconnectReason{false};
         int64_t stationWindowStartedUs = 0;
         int64_t stationRecoveryDelayUs = kInitialRecoveryDelayUs;
+        int64_t nextStationRetryUs = 0;
+        size_t stationRetryDelayIndex = 0U;
+        bool resetAuthenticationFailuresBeforeRetry = false;
         int64_t accessPointStartedUs = 0;
         int64_t nextRecoveryStopAttemptUs = 0;
         int64_t lastScanStartedUs = -kScanCooldownUs;
@@ -448,6 +458,21 @@ namespace FlexBms::Wifi
                    std::strncmp(reinterpret_cast<const char *>(record.ssid), ssid, kMaxSsidBytes) == 0;
         }
 
+        void scheduleStationRetry(int64_t now)
+        {
+            if (nextStationRetryUs != 0 || state.load() == State::Connected) return;
+            const size_t index = std::min(stationRetryDelayIndex, kStationRetryDelaysUs.size() - 1U);
+            nextStationRetryUs = now + kStationRetryDelaysUs[index];
+            if (stationRetryDelayIndex + 1U < kStationRetryDelaysUs.size()) ++stationRetryDelayIndex;
+        }
+
+        void resetStationRetrySchedule()
+        {
+            nextStationRetryUs = 0;
+            stationRetryDelayIndex = 0U;
+            resetAuthenticationFailuresBeforeRetry = false;
+        }
+
         bool startCandidate(const Credentials &candidate, CandidateKind kind, size_t fallbackNetwork = kNoFallbackNetwork)
         {
             wifi_config_t config{};
@@ -462,11 +487,14 @@ namespace FlexBms::Wifi
             activeCredentials = candidate;
             activeCandidate = kind;
             activeFallbackNetwork = fallbackNetwork;
-            setState(State::Connecting);
+            if (!accessPointActive.load()) setState(State::Connecting);
             ESP_LOGI(kLogTag, "Connecting to selected %s network", kind == CandidateKind::Primary ? "primary" : "fallback");
             if (esp_wifi_connect() != ESP_OK)
             {
                 ESP_LOGE(kLogTag, "Starting Wi-Fi connection failed");
+                activeCandidate = CandidateKind::None;
+                activeFallbackNetwork = kNoFallbackNetwork;
+                scheduleStationRetry(esp_timer_get_time());
                 return false;
             }
             return true;
@@ -529,11 +557,12 @@ namespace FlexBms::Wifi
                 scanPending.store(false, std::memory_order_release);
                 scanPurpose.store(ScanPurpose::None, std::memory_order_release);
                 logError("Scanning for configured Wi-Fi networks", result);
-                (void)startAccessPoint(primaryConfigured);
+                if (!primaryConfigured && !accessPointActive.load()) (void)startAccessPoint(false);
+                else scheduleStationRetry(now);
                 return;
             }
-            stationWindowStartedUs = now;
-            setState(State::Connecting);
+            if (stationWindowStartedUs == 0) stationWindowStartedUs = now;
+            if (!accessPointActive.load()) setState(State::Connecting);
             ESP_LOGI(kLogTag, "Scanning for primary and fallback Wi-Fi networks");
         }
 
@@ -555,7 +584,18 @@ namespace FlexBms::Wifi
             if (!selectVisibleNetwork(scanRecords, received))
             {
                 ESP_LOGW(kLogTag, "No visible primary or fallback Wi-Fi network");
-                (void)startAccessPoint(primaryConfigured);
+                if (!primaryConfigured && !accessPointActive.load())
+                {
+                    (void)startAccessPoint(false);
+                }
+                else
+                {
+                    // All currently eligible candidates have been exhausted.
+                    // Allow the next bounded retry to reconsider transient
+                    // authentication failures.
+                    resetAuthenticationFailuresBeforeRetry = true;
+                    scheduleStationRetry(esp_timer_get_time());
+                }
             }
         }
 
@@ -578,12 +618,16 @@ namespace FlexBms::Wifi
                         fallbackAuthenticationFailed[activeFallbackNetwork] = true;
                     }
                 }
-                if (state.load() == State::Connected)
+                const bool wasConnected = state.load() == State::Connected;
+                if (wasConnected)
                 {
                     // A later link loss starts a new priority cycle: retry the
                     // saved NVS network before any fallback again.
                     primaryAuthenticationFailed = false;
                     fallbackAuthenticationFailed.fill(false);
+                    resetStationRetrySchedule();
+                    stationWindowStartedUs = esp_timer_get_time();
+                    stationRecoveryDelayUs = kInitialRecoveryDelayUs;
                 }
                 activeCandidate = CandidateKind::None;
                 activeFallbackNetwork = kNoFallbackNetwork;
@@ -600,8 +644,8 @@ namespace FlexBms::Wifi
                 else
                 {
                     setState(State::Connecting);
-                    startNetworkSelection();
                 }
+                scheduleStationRetry(esp_timer_get_time());
             }
             else if (eventBase == WIFI_EVENT && eventId == WIFI_EVENT_SCAN_DONE)
             {
@@ -618,6 +662,9 @@ namespace FlexBms::Wifi
             {
                 if (accessPointActive.load()) (void)stopAccessPoint();
                 setState(State::Connected);
+                resetStationRetrySchedule();
+                primaryAuthenticationFailed = false;
+                fallbackAuthenticationFailed.fill(false);
                 const auto *event = static_cast<const ip_event_got_ip_t *>(eventData);
                 ESP_LOGI(kLogTag, "Wi-Fi connected, IP " IPSTR, IP2STR(&event->ip_info.ip));
                 mdnsRefreshRequested.store(true);
@@ -676,7 +723,17 @@ namespace FlexBms::Wifi
             stationRecoveryDelayUs = kInitialRecoveryDelayUs;
             setState(State::Connecting);
             ESP_LOGI(kLogTag, "Wi-Fi station started");
-            startNetworkSelection();
+            // Saved credentials are the primary path and do not need a scan
+            // before the first attempt. Scanning remains useful on retries to
+            // discover configured fallback networks.
+            if (primaryConfigured)
+            {
+                if (!startCandidate(primaryCredentials, CandidateKind::Primary)) scheduleStationRetry(stationWindowStartedUs);
+            }
+            else
+            {
+                startNetworkSelection();
+            }
             return true;
         }
     }
@@ -712,19 +769,33 @@ namespace FlexBms::Wifi
             {
                 scanPending.store(false, std::memory_order_release);
                 scanPurpose.store(ScanPurpose::None, std::memory_order_release);
-                (void)startAccessPoint(primaryConfigured);
+                if (!primaryConfigured && !accessPointActive.load()) (void)startAccessPoint(false);
+                else scheduleStationRetry(now);
             }
             else
             {
                 finishScan(false);
             }
         }
+        if (state.load() != State::Connected && nextStationRetryUs != 0 && now >= nextStationRetryUs &&
+            !scanPending.load(std::memory_order_acquire))
+        {
+            nextStationRetryUs = 0;
+            if (resetAuthenticationFailuresBeforeRetry)
+            {
+                primaryAuthenticationFailed = false;
+                fallbackAuthenticationFailed.fill(false);
+                resetAuthenticationFailuresBeforeRetry = false;
+            }
+            startNetworkSelection();
+        }
+
         const State current = state.load();
         if (current == State::Connecting)
         {
             if (stationWindowStartedUs != 0 && now - stationWindowStartedUs >= stationRecoveryDelayUs)
             {
-                (void)startAccessPoint(true);
+                if (startAccessPoint(true)) scheduleStationRetry(now);
             }
         }
         else if (current == State::Recovery && now - accessPointStartedUs >= kRecoveryAccessPointUs)
@@ -741,6 +812,7 @@ namespace FlexBms::Wifi
                 nextRecoveryStopAttemptUs = 0;
                 stationWindowStartedUs = now;
                 stationRecoveryDelayUs = kRecoveryStationGapUs;
+                nextStationRetryUs = 0;
                 startNetworkSelection();
             }
             else

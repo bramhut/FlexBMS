@@ -109,10 +109,10 @@ do not use the ESP-IDF default `0x10000` offset with this partition layout.
 
 ## Wi-Fi setup, fallback, and recovery
 
-The saved NVS credentials are always the primary network. Before connecting,
-the Gateway scans; it selects the visible saved SSID first, then the first
-visible entry in its ordered local fallback list. This avoids connection
-attempts to SSIDs that are not currently in range. A candidate with an
+The saved NVS credentials are always the primary network and are tried directly
+at startup without waiting for a scan. After a failed attempt, the Gateway scans
+and selects the visible saved SSID first, then the first visible entry in its
+ordered local fallback list. A candidate with an
 authentication failure is skipped for the rest of that selection cycle. Once
 connected, the Gateway stays on that network. If that connection later drops,
 it starts a fresh cycle and evaluates the saved NVS network before fallbacks
@@ -141,10 +141,12 @@ standard NVS, acknowledges the request, and restarts Gateway networking into
 station mode. If the saved network is unavailable, fallback selection and then
 recovery provisioning are used.
 
-After 30 seconds without a station IP, the Gateway starts the same AP in
-AP+STA recovery mode for ten minutes. It then stops the AP for a one-minute
-station-only selection interval and repeats until connected. A station IP
-stops the AP immediately.
+Failed station attempts are retried with bounded 2, 5, 10, 20, and 30 second
+backoffs. After 30 seconds without a station IP, the Gateway starts the same AP
+in AP+STA recovery mode for ten minutes and continues station retries while the
+AP remains available. It then stops the AP for a one-minute station-only
+selection interval and repeats until connected. A station IP stops the AP
+immediately.
 
 After DHCP assigns a station address, the Gateway announces the hostname
 `flexbms.local` with mDNS. It does not advertise mDNS during the setup or
@@ -244,4 +246,11 @@ controls. No account, signature, cloud, or automatic retry path is used; retain
 After an accepted Gateway upload, Companion waits for the Gateway to reboot and
 reconnect. A fresh Gateway bundle is identified by its content-derived build ID,
 so the browser automatically reloads the non-cacheable HTML shell when needed;
-a manual hard refresh is not required.
+a manual hard refresh is not required. The new image remains pending until its
+essential services have started and it has held a station IP for ten seconds.
+Transient connection failures use the normal bounded retry sequence, including
+while the recovery AP is active. If stable station connectivity is not achieved
+within three minutes, or an essential service cannot start, the Gateway records
+the attempted version and Wi-Fi disconnect reason and reboots for ESP-IDF
+rollback. Companion does not report update success while verification remains
+pending and identifies a returned older version as a rollback.
