@@ -15,6 +15,7 @@
 #include "FaultManager.h"
 #include "EnergyCounter.h"
 #include "Watchdog.h"
+#include "pcc.h"
 #include "bcc/SlaveController.h"
 #include "bcc/bcc_diagnostics.h"
 #include "bcc/UserSettings.h"
@@ -738,7 +739,13 @@ namespace SlaveController
                              snapshot.measurementsFresh &&
                              NTCtemperatureCount != 0U;
 
+            // BMS health alone must not advertise usable charge/discharge
+            // current to the inverter.  Keep publishing the battery limits
+            // and status while the contactor is open, but make the effective
+            // current limits zero until the HV path is actually in RUN.
+            const bool hvConnected = PCC::getPCCState() == PCC::RUN;
             snapshot.commonSafe = currentState == RUNNING &&
+                                  hvConnected &&
                                   FaultManager::canEnableHv() &&
                                   snapshot.measurementsFresh;
             snapshot.chargeAllowed = snapshot.commonSafe &&

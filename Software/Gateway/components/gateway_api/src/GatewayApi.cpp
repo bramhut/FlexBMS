@@ -465,6 +465,10 @@ namespace FlexBms::GatewayApi
             const esp_partition_t *runningPartition = esp_ota_get_running_partition();
             if (runningPartition != nullptr) cJSON_AddStringToObject(root, "gateway_partition", runningPartition->label);
             cJSON_AddStringToObject(root, "wifi_state", wifiState());
+            uint8_t wifiDisconnectReason = 0U;
+            const bool hasWifiDisconnectReason = Wifi::getLastDisconnectReason(wifiDisconnectReason);
+            cJSON_AddBoolToObject(root, "wifi_last_disconnect_reason_valid", hasWifiDisconnectReason);
+            cJSON_AddNumberToObject(root, "wifi_last_disconnect_reason", wifiDisconnectReason);
             if (Wifi::getState() != Wifi::State::Provisioning && Wifi::getState() != Wifi::State::Unavailable)
             {
                 cJSON_AddStringToObject(root, "wifi_ssid", Wifi::getStationSsid());

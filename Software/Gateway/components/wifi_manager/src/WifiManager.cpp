@@ -86,9 +86,12 @@ namespace FlexBms::Wifi
         std::atomic<bool> scanPending{false};
         std::atomic<bool> scanReady{false};
         std::atomic<ScanPurpose> scanPurpose{ScanPurpose::None};
+        std::atomic<uint8_t> lastDisconnectReason{0U};
+        std::atomic<bool> hasLastDisconnectReason{false};
         int64_t stationWindowStartedUs = 0;
         int64_t stationRecoveryDelayUs = kInitialRecoveryDelayUs;
         int64_t accessPointStartedUs = 0;
+        int64_t nextRecoveryStopAttemptUs = 0;
         int64_t lastScanStartedUs = -kScanCooldownUs;
         std::atomic<int64_t> scanStartedUs{0};
         Credentials primaryCredentials{};
@@ -372,6 +375,7 @@ namespace FlexBms::Wifi
             accessPoint.active = true;
             accessPointActive.store(true);
             accessPointStartedUs = esp_timer_get_time();
+            nextRecoveryStopAttemptUs = 0;
             startCaptiveDns();
             setState(recovery ? State::Recovery : State::Provisioning);
             ESP_LOGW(kLogTag, "%s AP started; connect to %s and open http://%s", recovery ? "Wi-Fi recovery" : "Wi-Fi setup",
@@ -498,6 +502,14 @@ namespace FlexBms::Wifi
                     return startCandidate(candidate, CandidateKind::Fallback, fallback);
                 }
             }
+
+            // A scan is only a discovery aid. Do not make a missed beacon,
+            // hidden SSID, or a temporary scan failure prevent a connection
+            // attempt with the credentials already stored in NVS.
+            if (primaryConfigured && !primaryAuthenticationFailed)
+            {
+                return startCandidate(primaryCredentials, CandidateKind::Primary);
+            }
             return false;
         }
 
@@ -506,6 +518,7 @@ namespace FlexBms::Wifi
             if (state.load() == State::Connected || scanPending.load(std::memory_order_acquire)) return;
 
             wifi_scan_config_t config{};
+            config.show_hidden = true;
             const int64_t now = esp_timer_get_time();
             scanPurpose.store(ScanPurpose::NetworkSelection, std::memory_order_release);
             scanPending.store(true, std::memory_order_release);
@@ -550,11 +563,13 @@ namespace FlexBms::Wifi
         {
             if (eventBase == WIFI_EVENT && eventId == WIFI_EVENT_STA_START)
             {
-                setState(State::Connecting);
+                setState(accessPointActive.load() ? State::Recovery : State::Connecting);
             }
             else if (eventBase == WIFI_EVENT && eventId == WIFI_EVENT_STA_DISCONNECTED)
             {
                 const auto *event = static_cast<const wifi_event_sta_disconnected_t *>(eventData);
+                lastDisconnectReason.store(event->reason, std::memory_order_release);
+                hasLastDisconnectReason.store(true, std::memory_order_release);
                 if (isAuthenticationFailure(event->reason))
                 {
                     if (activeCandidate == CandidateKind::Primary) primaryAuthenticationFailed = true;
@@ -572,10 +587,21 @@ namespace FlexBms::Wifi
                 }
                 activeCandidate = CandidateKind::None;
                 activeFallbackNetwork = kNoFallbackNetwork;
-                setState(State::Connecting);
                 mdnsRefreshRequested.store(true);
                 ESP_LOGW(kLogTag, "Wi-Fi disconnected (reason %u); selecting a visible network", event->reason);
-                if (!accessPointActive.load()) startNetworkSelection();
+                if (accessPointActive.load())
+                {
+                    // A station disconnect while the recovery AP is active
+                    // must not turn Recovery into Connecting. Doing so makes
+                    // the normal connection timeout restart the AP timer and
+                    // can prevent the 10-minute retry from ever firing.
+                    setState(State::Recovery);
+                }
+                else
+                {
+                    setState(State::Connecting);
+                    startNetworkSelection();
+                }
             }
             else if (eventBase == WIFI_EVENT && eventId == WIFI_EVENT_SCAN_DONE)
             {
@@ -703,11 +729,25 @@ namespace FlexBms::Wifi
         }
         else if (current == State::Recovery && now - accessPointStartedUs >= kRecoveryAccessPointUs)
         {
+            if (nextRecoveryStopAttemptUs != 0 && now < nextRecoveryStopAttemptUs) return;
+
+            // A failed authentication must not blacklist the saved network
+            // across recovery cycles. It may have been a transient AP or
+            // handshake failure, and the next cycle must try it again.
+            primaryAuthenticationFailed = false;
+            fallbackAuthenticationFailed.fill(false);
             if (stopAccessPoint())
             {
+                nextRecoveryStopAttemptUs = 0;
                 stationWindowStartedUs = now;
                 stationRecoveryDelayUs = kRecoveryStationGapUs;
                 startNetworkSelection();
+            }
+            else
+            {
+                // Keep the AP available and retry the mode transition instead
+                // of silently abandoning the recovery cycle.
+                nextRecoveryStopAttemptUs = now + 1'000'000LL;
             }
         }
     }
@@ -730,6 +770,13 @@ namespace FlexBms::Wifi
         activeCredentials = replacement;
         primaryConfigured = true;
         return scheduleRestart();
+    }
+
+    bool getLastDisconnectReason(uint8_t &reason)
+    {
+        if (!hasLastDisconnectReason.load(std::memory_order_acquire)) return false;
+        reason = lastDisconnectReason.load(std::memory_order_acquire);
+        return true;
     }
 
     ScanRequestResult requestScan()

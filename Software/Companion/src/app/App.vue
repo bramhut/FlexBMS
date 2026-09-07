@@ -93,7 +93,7 @@ onBeforeUnmount(() => { offBmsStatus(); offSnapshot(); offEvent(); offState(); s
   <nav>
     <button :class="{ active: active === 'dashboard' }" @click="active = 'dashboard'">BMS dashboard</button>
     <button :class="{ active: active === 'diagnostics' }" @click="active = 'diagnostics'; recentChangesOpen = false">Diagnostics</button>
-    <button v-if="capabilities.runtime_configuration" :class="{ active: active === 'configuration' }" @click="active = 'configuration'; recentChangesOpen = false">Configuration</button>
+    <button v-if="capabilities.runtime_configuration || capabilities.wifi_configuration || capabilities.mqtt_configuration" :class="{ active: active === 'configuration' }" @click="active = 'configuration'; recentChangesOpen = false">Configuration</button>
     <button :class="{ active: active === 'firmware' }" @click="active = 'firmware'; recentChangesOpen = false">Firmware</button>
   </nav>
   <DashboardView v-if="active === 'dashboard'" :snapshot="snapshot" :status="bmsStatus" :transport="transport" :capabilities="capabilities" :connected="state === 'connected'" :gateway="gateway" :recent-events="recentEvents" :diagnostic-reports="diagnosticReports" :device-time-unix-s="deviceTimeUnixS" :device-time-sampled-at="deviceTimeSampledAt" @show-all="recentChangesOpen = true" />

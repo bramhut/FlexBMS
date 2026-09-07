@@ -53,6 +53,10 @@ namespace FlexBms::Wifi
     bool allowsBmsServices();
     bool configure(const char *ssid, const char *password);
 
+    // Returns the most recent ESP-IDF station disconnect reason, when one has
+    // been reported since boot. The password is never exposed.
+    bool getLastDisconnectReason(uint8_t &reason);
+
     ScanRequestResult requestScan();
     bool consumeScanResults(ScanResults &results);
 }

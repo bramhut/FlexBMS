@@ -37,6 +37,11 @@ const mqttPassword = ref('')
 const mqttResult = ref('')
 const mqttSaving = ref(false)
 
+const wifiDisconnectReason = computed(() => {
+  if (!props.gateway?.wifi_last_disconnect_reason_valid) return null
+  return props.gateway.wifi_last_disconnect_reason ?? null
+})
+
 const configurationStatus = computed(() => {
   if (configurationReason.value === 'valid') return `Active configuration (version ${configurationExpectedVersion.value ?? 'unknown'}).`
   if (configurationReason.value === 'version_mismatch') return `NO_CONFIG: stored version ${configurationStoredVersion.value ?? 'unknown'} is not supported by this firmware (expected ${configurationExpectedVersion.value ?? 'unknown'}).`
@@ -196,6 +201,7 @@ watch([() => props.connected, () => props.capabilities.runtime_configuration], (
       <div class="panel-heading"><div><h2>Networking</h2></div><p>Configure the Gateway network connection and Home Assistant MQTT integration.</p></div>
       <div class="configuration-subsection">
         <div class="subsection-heading"><h3>Wi-Fi</h3><p>State: {{ gateway?.wifi_state ?? 'unavailable' }}<span v-if="gateway?.wifi_ssid"> · {{ gateway.wifi_ssid }}</span></p></div>
+        <p v-if="wifiDisconnectReason !== null" class="muted">Last station disconnect reason: ESP-IDF code {{ wifiDisconnectReason }}.</p>
         <p v-if="gateway?.setup_ap.active" class="muted">Setup AP {{ gateway.setup_ap.ssid }} is active. Open http://{{ gateway.setup_ap.address }}.</p>
         <p v-if="gateway?.setup_ap.active" class="muted">The setup AP is open temporarily. Monitoring and Wi-Fi setup are available there; BMS service controls are disabled.</p>
         <div class="button-row"><button :disabled="!capabilities.wifi_configuration || wifiScanning" @click="scanWifi">{{ wifiScanning ? 'Scanning…' : 'Scan nearby networks' }}</button></div>
