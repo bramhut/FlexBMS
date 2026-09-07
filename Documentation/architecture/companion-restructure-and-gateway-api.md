@@ -412,8 +412,10 @@ sent after `hello` when a status is already known and after every valid UART
 bits while waiting for a complete fresh measurement set.
 
 `cells` contains exactly twelve `cell_voltage_uV` values for each reported
-slave. `temperatures` contains exactly four `ntc_raw` values for each reported
-slave. `measurements_fresh` and `run_request` duplicate UART `STATUS` flag
+slave. `balance_mask` contains the verified selection for the current balancing
+pulse, not the instantaneous bleed-switch state, and remains set during brief
+measurement pauses. `temperatures` contains exactly four `ntc_raw` values for
+each reported slave. `measurements_fresh` and `run_request` duplicate UART `STATUS` flag
 bits 3 and 2 respectively for direct UI gating; `flags` remains present as the
 source bitmask. A `snapshot` is sent immediately after `hello` only when a
 complete fresh view is already available, and after every complete fresh UART

@@ -82,6 +82,7 @@ namespace FlexBms::UartV1
     struct Cell
     {
         uint8_t slaveIndex{};
+        // Scheduled balancing-pulse selection, not instantaneous switch state.
         uint16_t balanceMask{};
         std::array<uint32_t, 12U> voltageUv{};
     };

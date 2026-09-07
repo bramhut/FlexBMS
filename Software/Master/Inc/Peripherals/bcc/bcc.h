@@ -562,6 +562,12 @@ public:
      */
     bcc_status_t CB_Enable(const bool enable);
 
+    /* Clear every CBx_CFG register. CB_DRVEN must be disabled first. */
+    bcc_status_t CB_ClearAllChannels();
+
+    /* Read the physical driver status and return it as a logical-cell mask. */
+    bcc_status_t CB_GetActiveCellMask(uint16_t *activeCellMask);
+
     /*!
      * @brief This function enables or disables cell balancing for a specified channel
      * (0-13) and sets its timer.

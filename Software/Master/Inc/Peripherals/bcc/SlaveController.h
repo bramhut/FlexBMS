@@ -108,6 +108,8 @@ namespace SlaveController
         std::vector<std::vector<uint32_t>> cellVoltages{};
         std::vector<std::vector<uint16_t>> ntcTemperatures{};
         std::vector<uint16_t> icTemperatures{};
+        // Cells selected for the current balancing pulse. Brief measurement
+        // pauses do not clear these masks; they are not instantaneous CB_DRV_STS.
         std::vector<uint16_t> balancingMasks{};
     };
 

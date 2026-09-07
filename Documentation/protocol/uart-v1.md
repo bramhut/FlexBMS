@@ -183,7 +183,10 @@ slave_index:u8 | balance_mask:u16 | cell_voltage_uV[12]:u32
 `slave_in_module = slave_index & 1`. Balance bits 0--11 represent cells 0--11;
 bits 12--15 are zero. Each slave has exactly 12 cells. With one development
 slave, only index 0 is sent; it maps to module 0/slave 0 and does not imply a
-partner frame.
+partner frame. `balance_mask` reports the cells selected for the current
+balancing pulse after the BCC driver-status check succeeds. It is deliberately
+stable across brief measurement pauses and therefore does not represent the
+instantaneous state of the bleed switches.
 
 ### `TEMPERATURE` — 11 bytes per configured slave
 

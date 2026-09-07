@@ -14,6 +14,7 @@
 #include "main.h"
 #include "FaultManager.h"
 #include "EnergyCounter.h"
+#include "Peripherals/BatteryBalancing.h"
 #include "Peripherals/BatteryLimits.h"
 #include "Watchdog.h"
 #include "pcc.h"
@@ -88,6 +89,11 @@ namespace SlaveController
         // Automatic balancing is enabled by default. This remains an additional
         // user-controlled gate and never overrides normal safety conditions.
         std::atomic<bool> balancingEnabled{true};
+        std::array<uint16_t, RuntimeConfiguration::MAX_SLAVES> activeBalancingMasks{};
+        std::array<uint8_t, RuntimeConfiguration::MAX_SLAVES> balancingSelectionStartIndices{};
+        bool balancingHardwareStateKnown = false;
+        bool balancingCycleActive = false;
+        uint32_t balancingCycleEndMs = 0U;
         bool startupDiagnosticsEnabled = true;
         std::array<DiagnosticReport, RuntimeConfiguration::MAX_SLAVES> diagnosticReports{};
         size_t diagnosticReportCount = 0U;
@@ -154,6 +160,17 @@ namespace SlaveController
         /*******************************************************************************
          * Private functions
          ******************************************************************************/
+
+        bool disableCellBalancing(bool clearChannelConfiguration);
+
+        void resetBalancingControllerState(bool hardwareKnownDisabled = false)
+        {
+            activeBalancingMasks.fill(0U);
+            balancingSelectionStartIndices.fill(0U);
+            balancingHardwareStateKnown = hardwareKnownDisabled;
+            balancingCycleActive = false;
+            balancingCycleEndMs = 0U;
+        }
 
         double shuntResistanceOhms()
         {
@@ -293,6 +310,10 @@ namespace SlaveController
         {
             if (state != RUNNING)
             {
+                // Do not wait for another RUN-loop iteration to turn the
+                // balancing MOSFETs off. The hardware timer remains the final
+                // fallback if communication with a BCC has already failed.
+                (void)disableCellBalancing(false);
                 completeMeasurementSetValid = false;
                 invalidateBatteryCanSnapshot();
             }
@@ -476,6 +497,17 @@ namespace SlaveController
                 }
             }
 
+            // CBx_CFG survives a CB_DRVEN disable, so explicitly establish an
+            // empty channel selection after every register initialization.
+            for (auto &slave : mSlaves)
+            {
+                if (slave.CB_Enable(false) != BCC_STATUS_SUCCESS ||
+                    slave.CB_ClearAllChannels() != BCC_STATUS_SUCCESS)
+                {
+                    return false;
+                }
+            }
+
             // Clear fault bits
             if ((status = BCC::regWriteGlobal(MC33771C_CELL_OV_FLT_OFFSET, 0x0000U)) != BCC_STATUS_SUCCESS ||
                 (status = BCC::regWriteGlobal(MC33771C_CELL_UV_FLT_OFFSET, 0x0000U)) != BCC_STATUS_SUCCESS ||
@@ -488,6 +520,8 @@ namespace SlaveController
                 return false;
             }
 
+            // SYS_CFG1 and CBx_CFG now contain known disabled values.
+            resetBalancingControllerState(true);
             return true;
         };
 
@@ -976,40 +1010,141 @@ namespace SlaveController
                    currentState == RUNNING &&
                    completeMeasurementSetValid &&
                    measurementsAreFresh() &&
+                   currentMeasurementConfigured &&
+                   BatteryBalancing::currentAllowsBalancing(
+                       packCurrent,
+                       batteryCapacityAh(),
+                       settings.BALANCING_MIN_CURRENT,
+                       settings.BALANCING_MAX_CURRENT_C) &&
                    (snapshot.bmsActive | snapshot.bmsLatched |
                     snapshot.hvActive | snapshot.hvLatched) == 0U;
         }
 
+        bool disableCellBalancing(bool clearChannelConfiguration)
+        {
+            bool successful = true;
+            for (auto &slave : mSlaves)
+            {
+                const bool driverDisabled = slave.CB_Enable(false) == BCC_STATUS_SUCCESS;
+                successful = driverDisabled && successful;
+                if (driverDisabled && clearChannelConfiguration)
+                {
+                    successful = slave.CB_ClearAllChannels() == BCC_STATUS_SUCCESS && successful;
+                }
+            }
+
+            activeBalancingMasks.fill(0U);
+            balancingCycleActive = false;
+            balancingCycleEndMs = 0U;
+            // Without clearing CBx_CFG, a future CB_DRVEN enable must first
+            // assume that stale channel selections remain in the BCC.
+            balancingHardwareStateKnown = successful && clearChannelConfiguration;
+            return successful;
+        }
+
+        bool balancingCycleHasEnded(uint32_t now)
+        {
+            return static_cast<int32_t>(now - balancingCycleEndMs) >= 0;
+        }
+
+        uint32_t balancingPulseDurationMs()
+        {
+            return cBalancingTime == 0U
+                       ? 30'000U
+                       : static_cast<uint32_t>(cBalancingTime) * 60'000U;
+        }
+
+        bool configureBalancingCycle(
+            const std::array<uint16_t, RuntimeConfiguration::MAX_SLAVES> &desiredMasks,
+            const std::array<uint8_t, RuntimeConfiguration::MAX_SLAVES> &nextStartIndices)
+        {
+            // NXP requires CBx_CFG to be programmed while CB_DRVEN is off.
+            // Clearing every channel prevents an earlier selection from
+            // restarting when the global driver is enabled again.
+            if (!disableCellBalancing(true))
+            {
+                return false;
+            }
+
+            bool anyCellSelected = false;
+            for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
+            {
+                const uint16_t desiredMask = desiredMasks[slaveIndex];
+                anyCellSelected = desiredMask != 0U || anyCellSelected;
+                for (uint8_t cellIndex = 0U;
+                     cellIndex < mSlaves[slaveIndex].getCellCount();
+                     ++cellIndex)
+                {
+                    if ((desiredMask & (1U << cellIndex)) != 0U &&
+                        mSlaves[slaveIndex].CB_SetIndividualCell(
+                            cellIndex, true, cBalancingTime) != BCC_STATUS_SUCCESS)
+                    {
+                        (void)disableCellBalancing(false);
+                        return false;
+                    }
+                }
+            }
+
+            if (!anyCellSelected)
+            {
+                balancingSelectionStartIndices = nextStartIndices;
+                updateFault(CELL_BALANCING_FAULT, false);
+                return true;
+            }
+
+            for (auto &slave : mSlaves)
+            {
+                if (slave.CB_Enable(true) != BCC_STATUS_SUCCESS)
+                {
+                    (void)disableCellBalancing(false);
+                    return false;
+                }
+            }
+
+            // The specified maximum driver turn-on time is 450 us.
+            delay(1U);
+            bool statusMatches = true;
+            for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
+            {
+                uint16_t activeMask = 0U;
+                if (mSlaves[slaveIndex].CB_GetActiveCellMask(&activeMask) != BCC_STATUS_SUCCESS)
+                {
+                    (void)disableCellBalancing(false);
+                    return false;
+                }
+                statusMatches = activeMask == desiredMasks[slaveIndex] && statusMatches;
+            }
+
+            if (!statusMatches)
+            {
+                PRINTF_ERR("[SC] Cell-balancing driver status did not match the requested mask\n");
+                updateFault(CELL_BALANCING_FAULT, true);
+                (void)disableCellBalancing(true);
+                // Communication succeeded; this is a balancing-hardware fault,
+                // not a reason to consume a communication retry.
+                return true;
+            }
+
+            activeBalancingMasks = desiredMasks;
+            balancingSelectionStartIndices = nextStartIndices;
+            balancingHardwareStateKnown = true;
+            balancingCycleActive = true;
+            balancingCycleEndMs = millis() + balancingPulseDurationMs();
+            updateFault(CELL_BALANCING_FAULT, false);
+            return true;
+        }
+
         bool performCellBalancing()
         {
-            // Already get the values from the settings and convert them to microvolts
-            const uint32_t minBalancingVoltage = settings.MIN_BALANCING_VOLTAGE * 1000000U;
-            const uint32_t minDiffVoltage = settings.MIN_BALANCING_DIFF_VOLTAGE * 1000000U;
-
-            static bool outputsEnabled = false;
-            static bool outputsKnown = false;
-            const bool balancingAllowed = isBalancingAllowed();
-
-            // Explicitly disable the drivers once before balancing can start,
-            // and whenever any gate becomes false.
-            if (!balancingAllowed)
+            if (!isBalancingAllowed())
             {
-                if (outputsKnown && !outputsEnabled)
+                if (balancingHardwareStateKnown && !balancingCycleActive)
                 {
+                    updateFault(CELL_BALANCING_FAULT, false);
                     return true;
                 }
 
-                bool disabled = true;
-                for (auto &slave : mSlaves)
-                {
-                    if (slave.CB_Enable(false) != BCC_STATUS_SUCCESS)
-                    {
-                        disabled = false;
-                        break;
-                    }
-                }
-                outputsEnabled = false;
-                outputsKnown = disabled;
+                const bool disabled = disableCellBalancing(true);
                 if (disabled)
                 {
                     updateFault(CELL_BALANCING_FAULT, false);
@@ -1017,50 +1152,50 @@ namespace SlaveController
                 return disabled;
             }
 
-            // Enable the drivers only after every safety gate is true.
-            if (!outputsKnown || !outputsEnabled)
+            const uint32_t now = millis();
+            if (balancingCycleActive && !balancingCycleHasEnded(now))
             {
-                bool enabled = true;
-                for (auto &slave : mSlaves)
-                {
-                    if (slave.CB_Enable(true) != BCC_STATUS_SUCCESS)
-                    {
-                        enabled = false;
-                        break;
-                    }
-                }
-                outputsEnabled = enabled;
-                outputsKnown = enabled;
-                if (!enabled) return false;
+                return true;
+            }
+
+            const uint32_t minimumVoltageUv = static_cast<uint32_t>(
+                settings.MIN_BALANCING_VOLTAGE * 1'000'000.0);
+            const uint32_t startDifferenceUv = static_cast<uint32_t>(
+                settings.MIN_BALANCING_DIFF_VOLTAGE * 1'000'000.0);
+            const uint32_t stopDifferenceUv = static_cast<uint32_t>(
+                settings.STOP_BALANCING_DIFF_VOLTAGE * 1'000'000.0);
+            std::array<uint16_t, RuntimeConfiguration::MAX_SLAVES> desiredMasks{};
+            std::array<uint8_t, RuntimeConfiguration::MAX_SLAVES> nextStartIndices =
+                balancingSelectionStartIndices;
+            bool anyCellSelected = false;
+
+            for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
+            {
+                const BatteryBalancing::Selection selection = BatteryBalancing::selectCells(
+                    std::span<const uint32_t>(cellVoltages[slaveIndex].data(),
+                                              cellVoltages[slaveIndex].size()),
+                    minCellVoltage,
+                    minimumVoltageUv,
+                    startDifferenceUv,
+                    stopDifferenceUv,
+                    activeBalancingMasks[slaveIndex],
+                    balancingSelectionStartIndices[slaveIndex],
+                    settings.MAX_SIMULTANEOUS_BALANCING_CELLS_PER_SLAVE);
+                desiredMasks[slaveIndex] = selection.mask;
+                nextStartIndices[slaveIndex] = selection.nextStartIndex;
+                anyCellSelected = selection.mask != 0U || anyCellSelected;
+            }
+
+            // Avoid rewriting every CBx_CFG register on each 50 ms loop while
+            // the known-safe desired state remains "all channels off".
+            if (!anyCellSelected && balancingHardwareStateKnown && !balancingCycleActive)
+            {
+                balancingSelectionStartIndices = nextStartIndices;
                 updateFault(CELL_BALANCING_FAULT, false);
+                return true;
             }
 
-            // Perform cell balancing if necessary
-            for (size_t i = 0; i < getNumOfSlaves(); i++)
-            {
-                for (size_t j = 0; j < mSlaves[i].getCellCount(); j++)
-                {
-                    bool isAboveMinBalancingVoltage = cellVoltages[i][j] > minBalancingVoltage;
-                    bool isAboveMinDiffVoltage = (cellVoltages[i][j] - minCellVoltage) > minDiffVoltage;
-
-                    // Make sure that the cell is above the minimum balancing voltage
-                    if (!isAboveMinBalancingVoltage)
-                    {
-                        continue;
-                    }
-
-                    // If the cell is above the minimum difference voltage (w.r.t the lowest cell voltage), start balancing
-                    if (isAboveMinDiffVoltage)
-                    {
-                        if (mSlaves[i].CB_SetIndividualCell(j, true, cBalancingTime) != BCC_STATUS_SUCCESS)
-                        {
-                            return false;
-                        }
-                    }
-                }
-            }
-            updateFault(CELL_BALANCING_FAULT, false);
-            return true;
+            return configureBalancingCycle(desiredMasks, nextStartIndices);
         }
 
         uint16_t diagnosticFailureMask(const BCC_Diagnostics::diags_t &result)
@@ -1205,27 +1340,15 @@ namespace SlaveController
                 return;
             }
 
-            if (!performCellBalancing())
-            {
-                if (doCommunicationCheck(false))
-                {
-                    PRINTF_WARN("[SC] Communication lost; restarting TPL initialization\n");
-                    setState(DEVICE_INITIALIZATION);
-                    initializationRetryNotBeforeMs = millis();
-                }
-                else
-                {
-                    publishHeldBatteryCanSnapshot();
-                }
-                return;
-            }
-
             // Handle register requests from Companion
             handleRegisterRequests();
 
             const bool faultStatusSuccessful = faultDetection();
+            // Select balancing channels only after this cycle's current and
+            // fault status are known. A failed fault read skips balancing.
+            const bool balancingSuccessful = faultStatusSuccessful && performCellBalancing();
 
-            if (doCommunicationCheck(faultStatusSuccessful))
+            if (doCommunicationCheck(faultStatusSuccessful && balancingSuccessful))
             {
                 // A live TPL loss invalidates CID assignment and/or monitor
                 // configuration.  Safe-off has already occurred through the
@@ -1528,6 +1651,23 @@ namespace SlaveController
 
             if (!validateRuntimeConfiguration(persisted.values))
             {
+                return false;
+            }
+
+            if (settings.MIN_BALANCING_VOLTAGE <
+                    settings.INVERTER_LIMITS.CHARGE_DERATING_START_CELL_VOLTAGE ||
+                settings.MIN_BALANCING_VOLTAGE >=
+                    settings.INVERTER_LIMITS.CHARGE_TARGET_CELL_VOLTAGE ||
+                settings.MIN_BALANCING_DIFF_VOLTAGE <= 0.0 ||
+                settings.STOP_BALANCING_DIFF_VOLTAGE < 0.0 ||
+                settings.STOP_BALANCING_DIFF_VOLTAGE >=
+                    settings.MIN_BALANCING_DIFF_VOLTAGE ||
+                settings.BALANCING_MAX_CURRENT_C <= 0.0 ||
+                settings.MAX_SIMULTANEOUS_BALANCING_CELLS_PER_SLAVE == 0U ||
+                settings.MAX_SIMULTANEOUS_BALANCING_CELLS_PER_SLAVE >
+                    settings.SLAVE_TEMPLATE.CELL_COUNT)
+            {
+                PRINTF_ERR("[SC] CONFIG ERR: Invalid static cell-balancing envelope!\n");
                 return false;
             }
 

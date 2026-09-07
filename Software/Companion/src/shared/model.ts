@@ -40,6 +40,25 @@ export const hvReasonNames = ['HV_SENSOR_DIAGNOSTIC', 'BATTERY_VOLTAGE_MISMATCH'
 export const warningNames = ['WATCHDOG_RESET', 'STARTUP_DIAGNOSTICS_BYPASSED', 'BATTERY_VOLTAGE_MISMATCH_OFF', 'BCC_COMMUNICATION_RETRY']
 export const warningDisplayNames = ['Watchdog reset', 'Startup diagnostics bypassed', 'Pack-voltage mismatch (HV off)', 'BCC communication retry']
 export const setBits = (mask: number, labels: string[]) => labels.filter((label, bit) => (mask & (1 << bit)) !== 0 ? label : false)
+export type BalancingDisplay = { label: string; state: 'waiting' | 'disabled' | 'idle' | 'active' | 'fault' }
+export const balancingDisplay = (status: Status | null, cells: Snapshot['cells'] | null): BalancingDisplay => {
+  const balancingFault = 1 << 8
+  if (!status) return { label: 'Waiting', state: 'waiting' }
+  if (((status.bms_active_errors | status.bms_latched_errors) & balancingFault) !== 0) return { label: 'Fault', state: 'fault' }
+  if (!status.balancing_enabled) return { label: 'Disabled', state: 'disabled' }
+  if (!status.measurements_fresh || cells === null) return { label: 'Waiting', state: 'waiting' }
+
+  let activeCells = 0
+  for (const cell of cells) {
+    let mask = cell.balance_mask & 0x0fff
+    while (mask !== 0) {
+      activeCells += mask & 1
+      mask >>>= 1
+    }
+  }
+  if (activeCells === 0) return { label: 'Idle', state: 'idle' }
+  return { label: `Active · ${activeCells} cell${activeCells === 1 ? '' : 's'}`, state: 'active' }
+}
 export const describeWatchdogBreadcrumb = (value: number | undefined): string | undefined => {
   if (value === undefined || (value >>> 28) !== 0xB) return undefined
   const pending = (value & (1 << 27)) !== 0

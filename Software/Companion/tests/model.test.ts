@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { bmsStatusSummary, currentA, formatEnergy, formatPower, icCelsius, isFresh, ntcCelsius, powerW, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
+import { balancingDisplay, bmsStatusSummary, currentA, formatEnergy, formatPower, icCelsius, isFresh, ntcCelsius, powerW, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
 import { reconnectDelayMs } from '../src/shared/reconnect.ts'
 import { serviceResultLabel } from '../src/shared/service.ts'
 import { advancingUnixTime, advancingUptimeMs, formatUptime } from '../src/shared/time.ts'
@@ -36,6 +36,17 @@ test('OFF-state voltage mismatch has an operator-facing warning label', () => {
 })
 test('transient BCC communication has an operator-facing warning label', () => {
   assert.equal(warningDisplayNames[3], 'BCC communication retry')
+})
+test('balancing summary distinguishes disabled, idle, active, and fault states', () => {
+  const status = { bms_state: 2, hv_state: 4, flags: 0, slave_count: 2, bms_active_errors: 0, bms_latched_errors: 0, hv_active_errors: 0, hv_latched_errors: 0, warnings: 0, uptime_ms: 0, measurements_fresh: true, run_request: true, balancing_enabled: true, soc_valid: true, current_sensing_enabled: true }
+  const cells = [
+    { slave_index: 0, balance_mask: 0x0005, cell_voltage_uV: Array(12).fill(3_400_000) },
+    { slave_index: 1, balance_mask: 0x0802, cell_voltage_uV: Array(12).fill(3_400_000) },
+  ]
+  assert.deepEqual(balancingDisplay({ ...status, balancing_enabled: false }, cells), { label: 'Disabled', state: 'disabled' })
+  assert.deepEqual(balancingDisplay(status, cells.map(cell => ({ ...cell, balance_mask: 0 }))), { label: 'Idle', state: 'idle' })
+  assert.deepEqual(balancingDisplay(status, cells), { label: 'Active · 4 cells', state: 'active' })
+  assert.deepEqual(balancingDisplay({ ...status, bms_latched_errors: 1 << 8 }, cells), { label: 'Fault', state: 'fault' })
 })
 test('target capabilities disable unavailable functions', () => {
   const capabilities = unavailableCapabilities()

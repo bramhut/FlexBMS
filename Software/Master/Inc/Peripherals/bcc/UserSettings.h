@@ -50,9 +50,13 @@ struct StaticSettings_t
     uint32_t SOC_FULL_CALIBRATION_DWELL_MS;    // [ms] conditions must remain true continuously
 
     // Balancing
-    double MIN_BALANCING_VOLTAGE;      // [V] The minimum voltage for a cell to be considered for balancing
-    double MIN_BALANCING_DIFF_VOLTAGE; // [V] The minimum voltage difference between two cells for balancing to be considered
-    bool IMPROVED_BALANCING_ACCURACY;  // If true, the balancing trigger time is shorter, decreasing undershoots but possbily increasing TPL bus bandwidth
+    double MIN_BALANCING_VOLTAGE;       // [V] minimum cell voltage for top balancing
+    double MIN_BALANCING_DIFF_VOLTAGE;  // [V] difference from pack minimum that starts balancing
+    double STOP_BALANCING_DIFF_VOLTAGE; // [V] difference that stops an already-selected cell
+    double BALANCING_MIN_CURRENT;        // [A] tolerated discharge/noise current
+    double BALANCING_MAX_CURRENT_C;      // [C] maximum charge current during balancing
+    uint8_t MAX_SIMULTANEOUS_BALANCING_CELLS_PER_SLAVE;
+    bool IMPROVED_BALANCING_ACCURACY; // If true, use a 30-second balancing pulse
 
     // Timing
     uint32_t BMS_MAIN_LOOP_PERIOD;          // [ms] The minimum time that the main SlaveController loop takes.
@@ -83,8 +87,12 @@ const StaticSettings_t DEFAULT_STATIC_SETTINGS = {
     .SOC_FULL_CALIBRATION_DWELL_MS = 300'000U,
 
     // Balancing
-    .MIN_BALANCING_VOLTAGE = 3.3,
-    .MIN_BALANCING_DIFF_VOLTAGE = 0.02,
+    .MIN_BALANCING_VOLTAGE = 3.400,
+    .MIN_BALANCING_DIFF_VOLTAGE = 0.010,
+    .STOP_BALANCING_DIFF_VOLTAGE = 0.005,
+    .BALANCING_MIN_CURRENT = -0.100,
+    .BALANCING_MAX_CURRENT_C = 1.0 / 10.0,
+    .MAX_SIMULTANEOUS_BALANCING_CELLS_PER_SLAVE = 6U,
     .IMPROVED_BALANCING_ACCURACY = true,    
 
     // Timing

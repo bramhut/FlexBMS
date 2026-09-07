@@ -815,6 +815,9 @@ slave_index:u8 | balance_mask:u16 | cell_voltage_uV[12]:u32
 `slave_in_module = slave_index & 1`. Balance-mask bit 0 represents cell 0 through bit 11 for
 cell 11; bits 12--15 are zero. Each slave always has twelve cells. In a single-slave development
 chain, only index 0 is sent; it maps to module 0, slave 0, and no partner frame is implied.
+`balance_mask` reports the cells selected for the current balancing pulse after the BCC
+driver-status check succeeds. It remains stable across brief measurement pauses and therefore
+does not represent the instantaneous state of the bleed switches.
 
 `TEMPERATURE` is 11 bytes, once per configured slave:
 
@@ -966,8 +969,17 @@ HV supervisor. `firmware_version` is packed as
 the value in runtime configuration. It applies immediately after the flash write succeeds and
 does not reboot the STM32. An enabled value does not guarantee that any cell is balancing: the
 STM32 still requires a running, fault-free BMS, fresh measurements, and its configured
-cell-voltage thresholds. A disabled value inhibits the BCC balancing drivers on the next BCC
-loop. New configuration defaults enable balancing. The configuration schema version is 3.
+cell-voltage and current thresholds. For the MB31 pack, top balancing starts at 3.400 V and a
+10 mV difference from the pack-wide minimum cell. A selected cell continues down to a 5 mV
+difference, providing hysteresis. Balancing is permitted only from -0.100 A through C/10
+(31.4 A at 314 Ah), so meaningful discharge inhibits it. Thirty-second pulses are used and no
+more than six cells per slave are selected at once; selection priority rotates each pulse to
+avoid starvation while limiting one module board to approximately 3.1 W of bleed-resistor heat.
+Before each pulse, the STM32 disables the global drivers, clears every retained CB channel,
+programs the complete desired mask, and enables the global drivers last. It then verifies the
+actual driver-status mask. Leaving the running/eligible state disables balancing immediately.
+A disabled value inhibits the BCC balancing drivers on the next BCC loop. New configuration
+defaults enable balancing. The configuration schema version is 3.
 Version-2 records are accepted with startup diagnostics enabled as the safe legacy default and
 are upgraded to version 3 when next saved through `SET_CONFIG`. `startup_diagnostics` defaults
 to 1; setting it to 0 skips only the startup BCC diagnostics routine for debugging or bench

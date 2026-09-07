@@ -1640,6 +1640,53 @@ bcc_status_t BCC::CB_Enable(const bool enable)
                             : MC33771C_SYS_CFG1_CB_DRVEN(MC33771C_SYS_CFG1_CB_DRVEN_DISABLED_ENUM_VAL));
 }
 
+bcc_status_t BCC::CB_ClearAllChannels()
+{
+    const uint8_t channelCount = BCC_MAX_CELLS_DEV(mDevice);
+    for (uint8_t channelIndex = 0U; channelIndex < channelCount; ++channelIndex)
+    {
+        const bcc_status_t status = regWrite(
+            MC33771C_CB1_CFG_OFFSET + channelIndex,
+            MC33771C_CB1_CFG_CB_EN(MC33771C_CB1_CFG_CB_EN_DISABLED_ENUM_VAL) |
+                MC33771C_CB1_CFG_CB_TIMER(0U));
+        if (status != BCC_STATUS_SUCCESS)
+        {
+            return status;
+        }
+    }
+
+    memset(mCBTimerEnd, 0, sizeof(mCBTimerEnd));
+    memset(mBalancingList, 0, sizeof(mBalancingList));
+    mAnyCellBalancing = false;
+    return BCC_STATUS_SUCCESS;
+}
+
+bcc_status_t BCC::CB_GetActiveCellMask(uint16_t *activeCellMask)
+{
+    if (activeCellMask == nullptr)
+    {
+        return BCC_STATUS_PARAM_RANGE;
+    }
+
+    uint16_t driverStatus = 0U;
+    const bcc_status_t status = regRead(MC33771C_CB_DRV_STS_OFFSET, 1U, &driverStatus);
+    if (status != BCC_STATUS_SUCCESS)
+    {
+        return status;
+    }
+
+    uint16_t logicalMask = 0U;
+    for (uint8_t cellIndex = 0U; cellIndex < getCellCount(); ++cellIndex)
+    {
+        if ((driverStatus & (1U << getChannelIndex(cellIndex))) != 0U)
+        {
+            logicalMask |= static_cast<uint16_t>(1U << cellIndex);
+        }
+    }
+    *activeCellMask = logicalMask;
+    return BCC_STATUS_SUCCESS;
+}
+
 /*!
  * @brief This function enables or disables cell balancing for a specified cell
  * and sets its timer.

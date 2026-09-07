@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ServiceView from './ServiceView.vue'
 import RecentChangesList from './RecentChangesList.vue'
-import { bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, describeWatchdogBreadcrumb, formatEnergy, formatPower, hvReasonNames, hvStateName, icCelsius, ntcCelsius, powerW, setBits, socPercent, warningDisplayNames } from '@/shared/model'
+import { balancingDisplay, bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, describeWatchdogBreadcrumb, formatEnergy, formatPower, hvReasonNames, hvStateName, icCelsius, ntcCelsius, powerW, setBits, socPercent, warningDisplayNames } from '@/shared/model'
 import { serviceResultLabel } from '@/shared/service'
 import { advancingUnixTime, advancingUptimeMs, formatUptime } from '@/shared/time'
 import type { BccDiagnosticReport, BmsTransport, Capabilities, GatewayStatus, RecordedControllerEvent, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
@@ -97,6 +97,7 @@ const hvDisplay = computed(() => {
   const ready = (status.flags & (1 << 0)) !== 0
   return { detail: `${state} · ${ready ? 'Ready' : 'Not ready'}`, ready }
 })
+const balancing = computed(() => balancingDisplay(props.status, props.snapshot?.cells ?? null))
 const socValue = computed(() => props.snapshot && props.status?.soc_valid ? measurement(`${socPercent(props.snapshot.pack.soc_raw).toFixed(1)} %`) : 'Unavailable')
 const chargedEnergyValue = computed(() => props.snapshot?.energy ? measurement(formatEnergy(props.snapshot.energy.charged_energy_uWh, props.snapshot.energy.valid)) : 'Unavailable')
 const dischargedEnergyValue = computed(() => props.snapshot?.energy ? measurement(formatEnergy(props.snapshot.energy.discharged_energy_uWh, props.snapshot.energy.valid)) : 'Unavailable')
@@ -152,6 +153,7 @@ onBeforeUnmount(() => { window.clearInterval(clockTimer) })
             <div class="state-chips">
               <span class="state-chip"><b>BMS</b>{{ status ? bmsStateName(status.bms_state) : 'Waiting' }}</span>
               <span class="state-chip" :class="{ ready: hvDisplay.ready }"><b>HV</b>{{ hvDisplay.detail }}</span>
+              <span class="state-chip" :data-state="balancing.state"><b>Balancing</b>{{ balancing.label }}</span>
             </div>
             <div class="context-control">
               <label class="ios-switch"><input v-model="requested" type="checkbox" role="switch" :disabled="!capabilities.set_run_request || changingRunRequest" @change="setRunRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Run</span></label>
@@ -191,7 +193,7 @@ onBeforeUnmount(() => { window.clearInterval(clockTimer) })
       </section>
     </section>
 
-    <section class="panel"><div class="panel-heading cell-panel-heading"><div><h2>Cell voltages and balancing</h2></div><div class="context-control"><p v-if="!fresh">Values remain hidden until a complete fresh snapshot arrives.</p></div></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th v-for="index in 12" :key="index">C{{ index }}</th></tr></thead><tbody><tr v-for="cell in snapshot.cells" :key="cell.slave_index"><th>Slave {{ cell.slave_index }}</th><td v-for="(value, index) in cell.cell_voltage_uV" :key="index" :class="{ balancing: (cell.balance_mask & (1 << index)) !== 0 }">{{ cellVoltageV(value).toFixed(3) }} V<span v-if="(cell.balance_mask & (1 << index)) !== 0"> balancing</span></td></tr></tbody></table></div></section>
+    <section class="panel"><div class="panel-heading cell-panel-heading"><div><h2>Cell voltages and balancing</h2></div><div class="context-control"><p v-if="!fresh">Values remain hidden until a complete fresh snapshot arrives.</p><p v-else>Selected cells remain marked during brief measurement pauses.</p></div></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th v-for="index in 12" :key="index">C{{ index }}</th></tr></thead><tbody><tr v-for="cell in snapshot.cells" :key="cell.slave_index"><th>Slave {{ cell.slave_index }}</th><td v-for="(value, index) in cell.cell_voltage_uV" :key="index" :class="{ balancing: (cell.balance_mask & (1 << index)) !== 0 }">{{ cellVoltageV(value).toFixed(3) }} V<span v-if="(cell.balance_mask & (1 << index)) !== 0"> balancing</span></td></tr></tbody></table></div></section>
 
     <section class="panel"><div class="panel-heading"><div><h2>Temperatures</h2></div></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th>NTC 0</th><th>NTC 1</th><th>NTC 2</th><th>NTC 3</th><th>IC</th></tr></thead><tbody><tr v-for="temperature in snapshot.temperatures" :key="temperature.slave_index"><th>Slave {{ temperature.slave_index }}</th><td v-for="(value, index) in temperature.ntc_raw" :key="index">{{ ntcCelsius(value).toFixed(1) }} °C</td><td>{{ icCelsius(temperature.ic_temp_raw).toFixed(1) }} °C</td></tr></tbody></table></div></section>
 
