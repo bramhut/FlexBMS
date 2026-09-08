@@ -1,4 +1,5 @@
 #include "Peripherals/EnergyCounter.h"
+#include "Peripherals/BccBreadcrumb.h"
 
 #include <cstdint>
 
@@ -33,7 +34,9 @@ namespace
                EnergyCounter::kDischargedEnergyBackupRegister == 12U &&
                EnergyCounter::kChecksumBackupRegister == 16U &&
                EnergyCounter::kMarkerBackupRegister == 17U &&
-               EnergyCounter::kMarkerBackupRegister < 18U;
+               EnergyCounter::kMarkerBackupRegister < BccBreadcrumb::kBackupRegister &&
+               BccBreadcrumb::kBackupRegister == 18U &&
+               BccBreadcrumb::kWatchdogBackupRegister == 19U;
     }
 
     constexpr bool backupRecordValidationPasses()

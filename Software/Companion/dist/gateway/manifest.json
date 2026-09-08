@@ -1,12 +1,12 @@
 {
   "format": 1,
-  "companion_version": "0.1.52",
-  "build_id": "80fb7244b377baf0",
+  "companion_version": "0.1.54",
+  "build_id": "ebefa50c4921be9e",
   "files": [
     {
-      "path": "assets/index-B2XoQe4J.js",
-      "bytes": 120951,
-      "sha256": "f5eda70b1a44d93fc2bdf81c6c37ae4e03f9ecc49c0645158333475cd268bf14"
+      "path": "assets/index-C7qhyB-g.js",
+      "bytes": 121793,
+      "sha256": "52c4394baf8690a6183c098be88ddf14afbc9a33537e829d3bad3070979468b4"
     },
     {
       "path": "assets/index-dX-5hDqR.css",
@@ -16,8 +16,8 @@
     {
       "path": "index.html",
       "bytes": 378,
-      "sha256": "541196e924b85d6ae87e0347d7e442fe130433892655d66ce35c1df7417433c4"
+      "sha256": "6cac00cbbc2bada9e389405cb5dd10ca6cb80cc2a763b21dad781b4c71a373e1"
     }
   ],
-  "total_bytes": 137965
+  "total_bytes": 138807
 }

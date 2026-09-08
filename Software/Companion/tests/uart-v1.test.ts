@@ -56,3 +56,13 @@ test('UART v1 status omits the SOC calibration time without its validity flag', 
   assert.equal(status?.current_sensing_enabled, true)
   assert.equal(status?.soc_last_calibration_unix_s, undefined)
 })
+
+test('UART v1 status decodes transfer and watchdog diagnostic breadcrumbs', () => {
+  const payload = new Uint8Array(41)
+  payload.set([2, 4, 0x00, 0x06, 8])
+  writeLe32(payload, 33, 0xB4A10052)
+  writeLe32(payload, 37, 0xCA921294)
+  const status = decodeStatus(payload)
+  assert.equal(status?.watchdog_breadcrumb, 0xB4A10052)
+  assert.equal(status?.watchdog_diagnostic, 0xCA921294)
+})

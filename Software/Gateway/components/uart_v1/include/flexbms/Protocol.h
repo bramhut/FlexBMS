@@ -50,6 +50,7 @@ namespace FlexBms::UartV1
         uint32_t uptimeMs{};
         uint32_t socLastCalibrationUnixS{};
         uint32_t watchdogBreadcrumb{};
+        uint32_t watchdogDiagnostic{};
     };
 
     struct Pack

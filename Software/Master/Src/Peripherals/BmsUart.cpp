@@ -181,6 +181,7 @@ namespace BmsUart
         Link currentResponseLink = Link::Uart;
         EventCache eventCache;
         uint32_t lastSeenMeasurement = 0U;
+        SlaveController::MeasurementFrame uartMeasurementFrame{};
 
         uint16_t readLe16(const uint8_t *data)
         {
@@ -558,7 +559,7 @@ namespace BmsUart
         uint16_t makeStatusPayload(uint8_t *payload)
         {
             const FaultManager::Snapshot faultSnapshot = FaultManager::getSnapshot();
-            const SlaveController::MeasurementSnapshot measurement = SlaveController::getMeasurementSnapshot();
+            const SlaveController::BatteryCanSnapshot batterySnapshot = SlaveController::getBatteryCanSnapshot();
             const bool measurementsFresh = SlaveController::areMeasurementsFresh();
             uint16_t flags = 0U;
             if (SlaveController::isHVReady()) flags |= 1U << 0U;
@@ -568,14 +569,18 @@ namespace BmsUart
             if (hasValidGatewayFrame.load(std::memory_order_acquire) &&
                 HAL_GetTick() - lastValidGatewayFrameMs.load(std::memory_order_acquire) < GATEWAY_LOSS_MS) flags |= 1U << 4U;
             if (SlaveController::isBalancingEnabled()) flags |= 1U << 5U;
-            if (measurement.socValid) flags |= 1U << 6U;
-            if (measurement.currentSensingEnabled) flags |= 1U << 7U;
+            if (batterySnapshot.socValid) flags |= 1U << 6U;
+            if (batterySnapshot.currentSensingEnabled) flags |= 1U << 7U;
             uint32_t socCalibrationUnixTime = 0U;
             if (SlaveController::getLastSoCCalibrationUnixTime(socCalibrationUnixTime)) flags |= 1U << 8U;
             const bool watchdogRecordAvailable =
                 (faultSnapshot.warnings & (1UL << static_cast<uint8_t>(FaultManager::Warning::WatchdogReset))) != 0U &&
                 BccBreadcrumb::hasLastResetRecord();
+            const bool watchdogDiagnosticAvailable =
+                (faultSnapshot.warnings & (1UL << static_cast<uint8_t>(FaultManager::Warning::WatchdogReset))) != 0U &&
+                BccBreadcrumb::hasLastWatchdogRecord();
             if (watchdogRecordAvailable) flags |= 1U << 9U;
+            if (watchdogDiagnosticAvailable) flags |= 1U << 10U;
 
             payload[0] = static_cast<uint8_t>(faultSnapshot.bmsState);
             payload[1] = static_cast<uint8_t>(PCC::getPCCState());
@@ -591,18 +596,23 @@ namespace BmsUart
             if (watchdogRecordAvailable)
             {
                 writeLe32(payload + 33U, BccBreadcrumb::getLastResetRecord());
-                return 37U;
             }
+            if (watchdogDiagnosticAvailable)
+            {
+                writeLe32(payload + 37U, BccBreadcrumb::getLastWatchdogRecord());
+                return 41U;
+            }
+            if (watchdogRecordAvailable) return 37U;
             return 33U;
         }
 
         void sendStatus()
         {
-            std::array<uint8_t, 37U> payload = {};
+            std::array<uint8_t, 41U> payload = {};
             broadcastFrame(STATUS, 0U, payload.data(), makeStatusPayload(payload.data()));
         }
 
-        void sendPack(const SlaveController::MeasurementSnapshot &measurement)
+        void sendPack(const SlaveController::MeasurementSummary &measurement)
         {
             std::array<uint8_t, 24U> payload = {};
             writeLe32(payload.data(), measurement.packVoltageUv);
@@ -661,30 +671,25 @@ namespace BmsUart
             broadcastFrame(HV_VOLTAGES, 0U, payload.data(), payload.size());
         }
 
-        void sendCellsAndTemperatures(const SlaveController::MeasurementSnapshot &measurement)
+        void sendCellsAndTemperatures(const SlaveController::MeasurementFrame &measurement)
         {
-            const auto &allCells = measurement.cellVoltages;
-            const auto &allNtc = measurement.ntcTemperatures;
-            const auto &allIc = measurement.icTemperatures;
-            const size_t slaveCount = SlaveController::getNumOfSlaves();
+            const size_t slaveCount = measurement.monitorCount;
 
             // A bench chain may contain one monitor; emit exactly the configured count.
             for (size_t slaveIndex = 0U; slaveIndex < slaveCount; ++slaveIndex)
             {
-                if (slaveIndex >= allCells.size() || slaveIndex >= allNtc.size() || slaveIndex >= allIc.size() ||
-                    allCells[slaveIndex].size() < 12U || allNtc[slaveIndex].size() < 4U)
+                const SlaveController::MonitorMeasurements &monitor = measurement.monitors[slaveIndex];
+                if (monitor.cellCount < 12U || monitor.ntcCount < 4U)
                 {
                     return;
                 }
 
                 std::array<uint8_t, 51U> cellPayload = {};
                 cellPayload[0] = static_cast<uint8_t>(slaveIndex);
-                writeLe16(cellPayload.data() + 1U, slaveIndex < measurement.balancingMasks.size()
-                                                        ? measurement.balancingMasks[slaveIndex]
-                                                        : 0U);
+                writeLe16(cellPayload.data() + 1U, monitor.balancingMask);
                 for (size_t cellIndex = 0U; cellIndex < 12U; ++cellIndex)
                 {
-                    writeLe32(cellPayload.data() + 3U + cellIndex * 4U, allCells[slaveIndex][cellIndex]);
+                    writeLe32(cellPayload.data() + 3U + cellIndex * 4U, monitor.cellVoltagesUv[cellIndex]);
                 }
                 broadcastFrame(CELL, 0U, cellPayload.data(), cellPayload.size());
 
@@ -692,9 +697,9 @@ namespace BmsUart
                 temperaturePayload[0] = static_cast<uint8_t>(slaveIndex);
                 for (size_t ntcIndex = 0U; ntcIndex < 4U; ++ntcIndex)
                 {
-                    writeLe16(temperaturePayload.data() + 1U + ntcIndex * 2U, allNtc[slaveIndex][ntcIndex]);
+                    writeLe16(temperaturePayload.data() + 1U + ntcIndex * 2U, monitor.ntcTemperaturesRaw[ntcIndex]);
                 }
-                writeLe16(temperaturePayload.data() + 9U, allIc[slaveIndex]);
+                writeLe16(temperaturePayload.data() + 9U, monitor.icTemperatureRaw);
                 broadcastFrame(TEMPERATURE, 0U, temperaturePayload.data(), temperaturePayload.size());
             }
         }
@@ -934,7 +939,7 @@ namespace BmsUart
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
                     return;
                 }
-                std::array<uint8_t, 33U> status = {};
+                std::array<uint8_t, 41U> status = {};
                 sendServiceResponse(frame.link, frame.sequence, serviceId, OK, status.data(), makeStatusPayload(status.data()));
                 return;
             }
@@ -1229,14 +1234,13 @@ namespace BmsUart
                     lastStatusMs = now;
                 }
                 if (now - lastSnapshotMs >= SNAPSHOT_PERIOD_MS &&
-                    SlaveController::isNewDataAvailable(lastSeenMeasurement))
+                    SlaveController::tryGetNewMeasurementFrame(lastSeenMeasurement, uartMeasurementFrame))
                 {
                     sendStatus();
                     sendHvVoltages();
-                    const SlaveController::MeasurementSnapshot measurement = SlaveController::getMeasurementSnapshot();
-                    sendPack(measurement);
+                    sendPack(uartMeasurementFrame.summary);
                     sendEnergy();
-                    sendCellsAndTemperatures(measurement);
+                    sendCellsAndTemperatures(uartMeasurementFrame);
                     lastSnapshotMs = now;
                 }
                 osDelay(10U);

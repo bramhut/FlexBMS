@@ -66,7 +66,7 @@ const attentionItems = computed<AttentionItem[]>(() => {
     label: name,
     domain: 'System',
     state: 'warning',
-    ...(name === 'Watchdog reset' ? { detail: describeWatchdogBreadcrumb(status.watchdog_breadcrumb) ?? 'Warning · System' } : {}),
+    ...(name === 'Watchdog reset' ? { detail: describeWatchdogBreadcrumb(status.watchdog_breadcrumb, status.watchdog_diagnostic) ?? 'Warning · System' } : {}),
   }))
   return items
 })

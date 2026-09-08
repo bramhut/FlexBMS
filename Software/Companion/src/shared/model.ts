@@ -59,15 +59,38 @@ export const balancingDisplay = (status: Status | null, cells: Snapshot['cells']
   if (activeCells === 0) return { label: 'Idle', state: 'idle' }
   return { label: `Active · ${activeCells} cell${activeCells === 1 ? '' : 's'}`, state: 'active' }
 }
-export const describeWatchdogBreadcrumb = (value: number | undefined): string | undefined => {
-  if (value === undefined || (value >>> 28) !== 0xB) return undefined
-  const pending = (value & (1 << 27)) !== 0
-  const sequence = (value >>> 19) & 0xff
-  const cid = (value >>> 13) & 0x3f
-  const address = (value >>> 6) & 0x7f
-  const command = (value >>> 4) & 0x03
-  const rxCount = value & 0x0f
-  return `${pending ? 'In-flight' : 'Completed'} BCC transfer · CID ${cid} · register 0x${address.toString(16).padStart(2, '0').toUpperCase()} · command ${command} · RX ${rxCount} · sequence ${sequence}`
+export const describeWatchdogBreadcrumb = (transfer: number | undefined, diagnostic?: number): string | undefined => {
+  const details: string[] = []
+  if (diagnostic !== undefined && (diagnostic >>> 28) === 0xC) {
+    const monitoringActive = (diagnostic & (1 << 27)) !== 0
+    const stalledSources = (diagnostic >>> 25) & 0x03
+    const bccPhases = ['Uninitialized', 'Loop start', 'Device initialization', 'Register initialization', 'Diagnostics', 'Measurement start', 'Measurement read', 'Register requests', 'Fault detection', 'Balancing', 'Presence check', 'Snapshot publication', 'Energy update', 'Delay', 'Critical']
+    const pccPhases = ['Uninitialized', 'Idle', 'Waiting for PCC state lock', 'Running']
+    const source = !monitoringActive
+      ? 'Monitoring had not started'
+      : stalledSources === 1
+        ? 'Main/PCC progress stopped'
+        : stalledSources === 2
+          ? 'BCC progress stopped'
+          : stalledSources === 3
+            ? 'Main/PCC and BCC progress stopped'
+            : 'No worker-specific stall classified; scheduler, interrupt, or global stall possible'
+    const bccPhase = (diagnostic >>> 20) & 0x1f
+    const pccPhase = (diagnostic >>> 16) & 0x0f
+    const pccSequence = (diagnostic >>> 8) & 0xff
+    const bccSequence = diagnostic & 0xff
+    details.push(`${source} · PCC ${pccPhases[pccPhase] ?? `phase ${pccPhase}`} (sequence ${pccSequence}) · BCC ${bccPhases[bccPhase] ?? `phase ${bccPhase}`} (sequence ${bccSequence})`)
+  }
+  if (transfer !== undefined && (transfer >>> 28) === 0xB) {
+    const pending = (transfer & (1 << 27)) !== 0
+    const sequence = (transfer >>> 19) & 0xff
+    const cid = (transfer >>> 13) & 0x3f
+    const address = (transfer >>> 6) & 0x7f
+    const command = (transfer >>> 4) & 0x03
+    const rxCount = transfer & 0x0f
+    details.push(`${pending ? 'In-flight' : 'Completed'} BCC transfer · CID ${cid} · register 0x${address.toString(16).padStart(2, '0').toUpperCase()} · command ${command} · RX ${rxCount} · sequence ${sequence}`)
+  }
+  return details.length > 0 ? details.join(' · ') : undefined
 }
 export const bmsStatusSummary = (status: Status | null): string => {
   if (!status) return 'Waiting for BMS status over the selected transport.'

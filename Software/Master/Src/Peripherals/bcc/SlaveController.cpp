@@ -14,6 +14,7 @@
 #include "main.h"
 #include "FaultManager.h"
 #include "EnergyCounter.h"
+#include "BccBreadcrumb.h"
 #include "Peripherals/BatteryBalancing.h"
 #include "Peripherals/BatteryLimits.h"
 #include "Watchdog.h"
@@ -28,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <span>
 
 #define DEBUG_LVL 2
 #include "Debug.h"
@@ -114,8 +116,11 @@ namespace SlaveController
         bool completeMeasurementSetValid = false;
         std::atomic<bool> publishedMeasurementsFresh{false};
         std::atomic<bool> publishedMeasurementValid{false};
-        SemaphoreHandle_t measurementSnapshotMutex = nullptr;
-        MeasurementSnapshot latestMeasurementSnapshot{};
+        constexpr TickType_t kMeasurementFrameLockTimeout = pdMS_TO_TICKS(2U);
+        StaticSemaphore_t measurementFrameMutexStorage{};
+        SemaphoreHandle_t measurementFrameMutex = nullptr;
+        MeasurementFrame workingMeasurementFrame{};
+        MeasurementFrame latestMeasurementFrame{};
         BatteryCanSnapshot latestBatteryCanSnapshot{};
         BatteryCanSnapshot lastValidBatteryCanSnapshot{};
         bool hasValidBatteryCanSnapshot = false;
@@ -134,16 +139,13 @@ namespace SlaveController
         bool communicationFaultActive = false;
         bool internalFaultActive = false;
 
-        vector<uint16_t> ICtemperatures; // Vector of IC temperatures
         uint16_t minICtemperature = UINT16_MAX;
         uint16_t maxICtemperature = 0;
-        vector<vector<uint16_t>> NTCtemperatures; // 2D vector of NTC temperatures
         uint16_t minNTCtemperature = UINT16_MAX;
         uint16_t maxNTCtemperature = 0;
         uint16_t averageNTCtemperature = 0;
         uint32_t NTCtemperatureCount = 0;
 
-        vector<vector<uint32_t>> cellVoltages; // 2D vector of cell voltages
         uint32_t minCellVoltage = UINT32_MAX;
         uint32_t maxCellVoltage = 0;
         // Published only after a complete measurement pass. PCC reads this
@@ -197,25 +199,29 @@ namespace SlaveController
             return BCC_AMPHOUR_TO_SOC(ampHour, batteryCapacityAh());
         }
 
-        class MeasurementSnapshotLock
+        class MeasurementFrameLock
         {
         public:
-            MeasurementSnapshotLock()
+            explicit MeasurementFrameLock(TickType_t timeout)
             {
-                if (measurementSnapshotMutex != nullptr)
+                if (measurementFrameMutex != nullptr)
                 {
-                    (void)xSemaphoreTake(measurementSnapshotMutex, portMAX_DELAY);
-                    ownsLock = true;
+                    ownsLock = xSemaphoreTake(measurementFrameMutex, timeout) == pdTRUE;
                 }
             }
 
-            ~MeasurementSnapshotLock()
+            ~MeasurementFrameLock()
             {
-                if (ownsLock) (void)xSemaphoreGive(measurementSnapshotMutex);
+                if (ownsLock) (void)xSemaphoreGive(measurementFrameMutex);
             }
 
-            MeasurementSnapshotLock(const MeasurementSnapshotLock &) = delete;
-            MeasurementSnapshotLock &operator=(const MeasurementSnapshotLock &) = delete;
+            [[nodiscard]] bool acquired() const
+            {
+                return ownsLock;
+            }
+
+            MeasurementFrameLock(const MeasurementFrameLock &) = delete;
+            MeasurementFrameLock &operator=(const MeasurementFrameLock &) = delete;
 
         private:
             bool ownsLock = false;
@@ -240,12 +246,22 @@ namespace SlaveController
 
         void invalidateBatteryCanSnapshot()
         {
+            if (measurementFrameMutex == nullptr)
             {
-                MeasurementSnapshotLock lock;
-                latestMeasurementSnapshot = {};
-                publishedMeasurementsFresh.store(false, std::memory_order_release);
-                publishedMeasurementValid.store(false, std::memory_order_release);
+                latestMeasurementFrame.summary = {};
+                latestMeasurementFrame.monitorCount = 0U;
             }
+            else
+            {
+                MeasurementFrameLock lock(kMeasurementFrameLockTimeout);
+                if (lock.acquired())
+                {
+                    latestMeasurementFrame.summary = {};
+                    latestMeasurementFrame.monitorCount = 0U;
+                }
+            }
+            publishedMeasurementsFresh.store(false, std::memory_order_release);
+            publishedMeasurementValid.store(false, std::memory_order_release);
             taskENTER_CRITICAL();
             latestBatteryCanSnapshot = {};
             lastValidBatteryCanSnapshot = {};
@@ -699,30 +715,39 @@ namespace SlaveController
             // Gather all cell voltages & temperatures and put them into static 2D arrays
             for (size_t i = 0; i < getNumOfSlaves(); i++)
             {
+                MonitorMeasurements &monitor = workingMeasurementFrame.monitors[i];
+                monitor.cellCount = mSlaves[i].getCellCount();
+                monitor.ntcCount = mSlaves[i].getNTCCount();
+
                 // Get the cell voltages
-                if (mSlaves[i].meas_GetCellVoltages(cellVoltages[i]) != BCC_STATUS_SUCCESS)
+                if (mSlaves[i].meas_GetCellVoltages(
+                        std::span<uint32_t>(monitor.cellVoltagesUv.data(), monitor.cellCount)) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get cell voltages\n", mSlaves[i].getCID());
                     return false;
                 }
 
                 // Get the NTC temperatures
-                if (mSlaves[i].meas_GetNTCTemperatures(NTCtemperatures[i], settings.NTC_RESISTANCE, settings.NTC_BETA) != BCC_STATUS_SUCCESS)
+                if (mSlaves[i].meas_GetNTCTemperatures(
+                        std::span<uint16_t>(monitor.ntcTemperaturesRaw.data(), monitor.ntcCount),
+                        settings.NTC_RESISTANCE,
+                        settings.NTC_BETA) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get NTC temperatures\n", mSlaves[i].getCID());
                     return false;
                 }
 
                 // Also get the IC temperature
-                if (mSlaves[i].meas_GetIcTemperature(&ICtemperatures[i]) != BCC_STATUS_SUCCESS)
+                if (mSlaves[i].meas_GetIcTemperature(&monitor.icTemperatureRaw) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: get IC temperature\n", mSlaves[i].getCID());
                     return false;
                 }
 
                 // Update some cell voltage stats
-                for (auto &cellVoltage : cellVoltages[i])
+                for (size_t cellIndex = 0U; cellIndex < mSlaves[i].getCellCount(); ++cellIndex)
                 {
+                    const uint32_t cellVoltage = monitor.cellVoltagesUv[cellIndex];
                     if (cellVoltage < minCellVoltage)
                     {
                         minCellVoltage = cellVoltage;
@@ -735,8 +760,9 @@ namespace SlaveController
                 }
 
                 // Update some NTC temperature stats
-                for (auto &NTCtemperature : NTCtemperatures[i])
+                for (size_t ntcIndex = 0U; ntcIndex < mSlaves[i].getNTCCount(); ++ntcIndex)
                 {
+                    const uint16_t NTCtemperature = monitor.ntcTemperaturesRaw[ntcIndex];
                     ntcTemperatureSum += NTCtemperature;
                     NTCtemperatureCount++;
                     if (NTCtemperature < minNTCtemperature)
@@ -750,13 +776,13 @@ namespace SlaveController
                 }
 
                 // Update IC temperature stats
-                if (ICtemperatures[i] > maxICtemperature)
+                if (monitor.icTemperatureRaw > maxICtemperature)
                 {
-                    maxICtemperature = ICtemperatures[i];
+                    maxICtemperature = monitor.icTemperatureRaw;
                 }
-                if (ICtemperatures[i] < minICtemperature)
+                if (monitor.icTemperatureRaw < minICtemperature)
                 {
-                    minICtemperature = ICtemperatures[i];
+                    minICtemperature = monitor.icTemperatureRaw;
                 }
             }
 
@@ -856,7 +882,10 @@ namespace SlaveController
         void publishBatteryCanSnapshot(uint32_t publishedSequence)
         {
             BatteryCanSnapshot snapshot{};
-            MeasurementSnapshot measurement{};
+            MeasurementFrame &measurement = workingMeasurementFrame;
+            measurement.summary = {};
+            measurement.monitorCount = static_cast<uint8_t>(mSlaves.size());
+            MeasurementSummary &summary = measurement.summary;
 
             snapshot.measurementsFresh = measurementsAreFresh();
             snapshot.socValid = currentMeasurementConfigured &&
@@ -942,25 +971,22 @@ namespace SlaveController
                                               : BCC_TEMPRAW_TO_TEMP(averageNTCtemperature);
             snapshot.cellCount = cellCount;
 
-            measurement.valid = snapshot.valid;
-            measurement.measurementsFresh = snapshot.measurementsFresh;
-            measurement.socValid = snapshot.socValid;
-            measurement.currentSensingEnabled = snapshot.currentSensingEnabled;
-            measurement.sequence = publishedSequence;
-            measurement.packVoltageUv = snapshot.packVoltageUv;
-            measurement.packCurrentA = snapshot.packCurrentA;
-            measurement.minCellVoltageUv = minCellVoltage;
-            measurement.maxCellVoltageUv = maxCellVoltage;
-            measurement.minNtcTemperatureRaw = minNTCtemperature;
-            measurement.maxNtcTemperatureRaw = maxNTCtemperature;
-            measurement.minIcTemperatureRaw = minICtemperature;
-            measurement.maxIcTemperatureRaw = maxICtemperature;
-            measurement.cellVoltages = cellVoltages;
-            measurement.ntcTemperatures = NTCtemperatures;
-            measurement.icTemperatures = ICtemperatures;
-            measurement.balancingMasks.reserve(mSlaves.size());
+            summary.valid = snapshot.valid;
+            summary.measurementsFresh = snapshot.measurementsFresh;
+            summary.socValid = snapshot.socValid;
+            summary.currentSensingEnabled = snapshot.currentSensingEnabled;
+            summary.sequence = publishedSequence;
+            summary.packVoltageUv = snapshot.packVoltageUv;
+            summary.packCurrentA = snapshot.packCurrentA;
+            summary.minCellVoltageUv = minCellVoltage;
+            summary.maxCellVoltageUv = maxCellVoltage;
+            summary.minNtcTemperatureRaw = minNTCtemperature;
+            summary.maxNtcTemperatureRaw = maxNTCtemperature;
+            summary.minIcTemperatureRaw = minICtemperature;
+            summary.maxIcTemperatureRaw = maxICtemperature;
             for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
             {
+                MonitorMeasurements &monitor = measurement.monitors[slaveIndex];
                 uint16_t mask = 0U;
                 for (uint8_t cellIndex = 0U; cellIndex < 12U; ++cellIndex)
                 {
@@ -969,7 +995,7 @@ namespace SlaveController
                         mask |= static_cast<uint16_t>(1U << cellIndex);
                     }
                 }
-                measurement.balancingMasks.push_back(mask);
+                monitor.balancingMask = mask;
             }
 
             if (snapshot.socValid)
@@ -978,20 +1004,48 @@ namespace SlaveController
                     (static_cast<double>(liveSoC()) / UINT16_MAX * 3.0 - 1.0) * 100.0;
                 snapshot.socPercent = static_cast<uint16_t>(std::clamp(socPercent, 0.0, 100.0));
             }
-            measurement.socRaw = snapshot.socValid ? liveSoC() : 0U;
+            summary.socRaw = snapshot.socValid ? liveSoC() : 0U;
 
-            /* Keep the externally visible snapshot coherent. The BMS task is
-             * the only writer; CAN consumers copy it under the same critical
-             * section. */
+            Watchdog::setBccPhase(Watchdog::BccPhase::EnergyUpdate);
+            EnergyCounter::update(summary.packVoltageUv,
+                                  BCC_CURRENT_TO_RAW(summary.packCurrentA),
+                                  micros(),
+                                  summary.valid && summary.measurementsFresh &&
+                                      summary.currentSensingEnabled);
+
+            Watchdog::setBccPhase(Watchdog::BccPhase::SnapshotPublication);
+            bool framePublished = false;
+            if (summary.valid)
             {
-                MeasurementSnapshotLock lock;
-                if (measurement.valid)
+                MeasurementFrameLock lock(kMeasurementFrameLockTimeout);
+                if (lock.acquired())
                 {
-                    latestMeasurementSnapshot = std::move(measurement);
+                    framePublished = copyActiveMeasurementFrame(measurement, latestMeasurementFrame);
                 }
-                publishedMeasurementsFresh.store(snapshot.measurementsFresh, std::memory_order_release);
-                publishedMeasurementValid.store(snapshot.valid, std::memory_order_release);
             }
+
+            if (framePublished)
+            {
+                publishedMeasurementValid.store(summary.valid, std::memory_order_release);
+                publishedMeasurementsFresh.store(summary.measurementsFresh, std::memory_order_release);
+                measurementSequence.store(publishedSequence, std::memory_order_release);
+            }
+            else if (!summary.valid)
+            {
+                publishedMeasurementValid.store(false, std::memory_order_release);
+                publishedMeasurementsFresh.store(summary.measurementsFresh, std::memory_order_release);
+            }
+            else
+            {
+                publishedMeasurementsFresh.store(false, std::memory_order_release);
+                snapshot.measurementsFresh = false;
+                snapshot.commonSafe = false;
+                snapshot.chargeAllowed = false;
+                snapshot.dischargeAllowed = false;
+                snapshot.chargeCurrentA = 0.0;
+                snapshot.dischargeCurrentA = 0.0;
+            }
+
             taskENTER_CRITICAL();
             latestBatteryCanSnapshot = snapshot;
             if (snapshot.valid && !snapshot.communicationFault)
@@ -1172,8 +1226,8 @@ namespace SlaveController
             for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
             {
                 const BatteryBalancing::Selection selection = BatteryBalancing::selectCells(
-                    std::span<const uint32_t>(cellVoltages[slaveIndex].data(),
-                                              cellVoltages[slaveIndex].size()),
+                    std::span<const uint32_t>(workingMeasurementFrame.monitors[slaveIndex].cellVoltagesUv.data(),
+                                              workingMeasurementFrame.monitors[slaveIndex].cellCount),
                     minCellVoltage,
                     minimumVoltageUv,
                     startDifferenceUv,
@@ -1303,10 +1357,12 @@ namespace SlaveController
         {
             // PRINTF_ERR("[SC] Running loop in state: %d\n", (currentState));
             // ADC conversions
+            Watchdog::setBccPhase(Watchdog::BccPhase::MeasurementStart);
             const bool conversionSuccessful = startMeasurements();
             if (!conversionSuccessful)
             {
                 completeMeasurementSetValid = false;
+                Watchdog::setBccPhase(Watchdog::BccPhase::PresenceCheck);
                 if (doCommunicationCheck(false))
                 {
                     // A live TPL loss invalidates CID assignment and/or
@@ -1318,15 +1374,18 @@ namespace SlaveController
                 }
                 else
                 {
+                    Watchdog::setBccPhase(Watchdog::BccPhase::SnapshotPublication);
                     publishHeldBatteryCanSnapshot();
                 }
                 return;
             }
 
+            Watchdog::setBccPhase(Watchdog::BccPhase::MeasurementRead);
             const bool measurementsSuccessful = getMeasurements();
             completeMeasurementSetValid = measurementsSuccessful;
             if (!measurementsSuccessful)
             {
+                Watchdog::setBccPhase(Watchdog::BccPhase::PresenceCheck);
                 if (doCommunicationCheck(false))
                 {
                     PRINTF_WARN("[SC] Communication lost; restarting TPL initialization\n");
@@ -1335,19 +1394,24 @@ namespace SlaveController
                 }
                 else
                 {
+                    Watchdog::setBccPhase(Watchdog::BccPhase::SnapshotPublication);
                     publishHeldBatteryCanSnapshot();
                 }
                 return;
             }
 
             // Handle register requests from Companion
+            Watchdog::setBccPhase(Watchdog::BccPhase::RegisterRequests);
             handleRegisterRequests();
 
+            Watchdog::setBccPhase(Watchdog::BccPhase::FaultDetection);
             const bool faultStatusSuccessful = faultDetection();
             // Select balancing channels only after this cycle's current and
             // fault status are known. A failed fault read skips balancing.
+            Watchdog::setBccPhase(Watchdog::BccPhase::Balancing);
             const bool balancingSuccessful = faultStatusSuccessful && performCellBalancing();
 
+            Watchdog::setBccPhase(Watchdog::BccPhase::PresenceCheck);
             if (doCommunicationCheck(faultStatusSuccessful && balancingSuccessful))
             {
                 // A live TPL loss invalidates CID assignment and/or monitor
@@ -1359,6 +1423,7 @@ namespace SlaveController
             }
             else if (communicationFaultActive)
             {
+                Watchdog::setBccPhase(Watchdog::BccPhase::SnapshotPublication);
                 publishHeldBatteryCanSnapshot();
                 return;
             }
@@ -1366,17 +1431,8 @@ namespace SlaveController
             const uint32_t publishedSequence = completeMeasurementSetValid
                                                     ? measurementSequence.load(std::memory_order_relaxed) + 1U
                                                     : measurementSequence.load(std::memory_order_relaxed);
+            Watchdog::setBccPhase(Watchdog::BccPhase::SnapshotPublication);
             publishBatteryCanSnapshot(publishedSequence);
-            const MeasurementSnapshot energyMeasurement = getMeasurementSnapshot();
-            EnergyCounter::update(energyMeasurement.packVoltageUv,
-                                  BCC_CURRENT_TO_RAW(energyMeasurement.packCurrentA),
-                                  micros(),
-                                  energyMeasurement.valid && energyMeasurement.measurementsFresh &&
-                                      energyMeasurement.currentSensingEnabled);
-            if (completeMeasurementSetValid)
-            {
-                measurementSequence.store(publishedSequence, std::memory_order_release);
-            }
         }
 
         bcc_status_t globalSoftwareReset()
@@ -1487,9 +1543,11 @@ namespace SlaveController
             while (true)
             {
 				Watchdog::reportBccProgress();
+				Watchdog::setBccPhase(Watchdog::BccPhase::LoopStart);
 
 				if (currentState == CRITICAL)
 				{
+					Watchdog::setBccPhase(Watchdog::BccPhase::Critical);
 					// Keep platform supervision alive while exposing the critical state.
 					osDelay(20U);
 					continue;
@@ -1500,6 +1558,7 @@ namespace SlaveController
 
                 if (currentState == DEVICE_INITIALIZATION && initializationRetryDue)
                 {
+                    Watchdog::setBccPhase(Watchdog::BccPhase::DeviceInitialization);
                     // 1. TPL plus daisy chain / CID initialization.
                     const bool tplReady = BCC_Communication::TPL_Enable() == BCC_STATUS_SUCCESS;
                     if (!tplReady)
@@ -1531,6 +1590,7 @@ namespace SlaveController
 
                 if (currentState == REGISTER_INITIALIZATION && initializationRetryDue)
                 {
+					Watchdog::setBccPhase(Watchdog::BccPhase::RegisterInitialization);
 
                     // 2. Register initialization
                     if (!initializeRegisters())
@@ -1552,6 +1612,7 @@ namespace SlaveController
 
                 if (currentState == PERFORMING_DIAGNOSTICS && initializationRetryDue)
                 {
+                    Watchdog::setBccPhase(Watchdog::BccPhase::Diagnostics);
                     // 5. Diagnostics
                     bool diagnosticsSuccessful = true;
                     if (startupDiagnosticsEnabled)
@@ -1580,15 +1641,19 @@ namespace SlaveController
                     {
                         diagnosticsFailureCount = 0U;
                         updateFault(DIAGNOSTICS_FAULT, false);
+                        Watchdog::setBccPhase(Watchdog::BccPhase::MeasurementStart);
                         const bool conversionSuccessful = startMeasurements();
+                        Watchdog::setBccPhase(Watchdog::BccPhase::MeasurementRead);
                         const bool measurementsSuccessful = conversionSuccessful && getMeasurements(true);
                         completeMeasurementSetValid = conversionSuccessful && measurementsSuccessful;
 
                         bool faultStatusSuccessful = false;
                         if (measurementsSuccessful)
                         {
+                            Watchdog::setBccPhase(Watchdog::BccPhase::FaultDetection);
                             faultStatusSuccessful = faultDetection();
                         }
+                        Watchdog::setBccPhase(Watchdog::BccPhase::PresenceCheck);
                         const bool communicationHardFault = doCommunicationCheck(faultStatusSuccessful);
                         if (communicationHardFault)
                         {
@@ -1605,15 +1670,13 @@ namespace SlaveController
                                                                     : measurementSequence.load(std::memory_order_relaxed);
                             if (communicationFaultActive)
                             {
+                                Watchdog::setBccPhase(Watchdog::BccPhase::SnapshotPublication);
                                 publishHeldBatteryCanSnapshot();
                             }
                             else
                             {
+                                Watchdog::setBccPhase(Watchdog::BccPhase::SnapshotPublication);
                                 publishBatteryCanSnapshot(publishedSequence);
-                            }
-                            if (completeMeasurementSetValid && !communicationFaultActive)
-                            {
-                                measurementSequence.store(publishedSequence, std::memory_order_release);
                             }
                         }
                     }
@@ -1626,10 +1689,12 @@ namespace SlaveController
 
                 if (currentState == CRITICAL)
                 {
+                    Watchdog::setBccPhase(Watchdog::BccPhase::Critical);
                     // Configuration is unrecoverable by current software.
                 }
 
                 // Schedule the next loop iteration BMS_MAIN_LOOP_PERIOD ms after this one to achieve constant frequency
+                Watchdog::setBccPhase(Watchdog::BccPhase::Delay);
                 osDelayUntil(startTick += settings.BMS_MAIN_LOOP_PERIOD / portTICK_PERIOD_MS);
             }
         }
@@ -1700,6 +1765,13 @@ namespace SlaveController
                 if (first <= energyLast && last >= energyFirst)
                 {
                     PRINTF_ERR("[SC] CONFIG ERR: Ah backup registers overlap energy counter storage!\n");
+                    return false;
+                }
+                if (config.CURRENT_SENSING_ENABLED &&
+                    first <= BccBreadcrumb::kWatchdogBackupRegister &&
+                    last >= BccBreadcrumb::kBackupRegister)
+                {
+                    PRINTF_ERR("[SC] CONFIG ERR: Ah backup registers overlap reset diagnostics storage!\n");
                     return false;
                 }
                 if (config.CURRENT_SENSING_ENABLED && first <= kSocCalibrationTimeBackupRegister + 2U && last >= kSocCalibrationTimeBackupRegister)
@@ -1785,8 +1857,8 @@ namespace SlaveController
     {
         // Make sure to start at correct state. This also faults the relay driver to be off during startup
         setState(DEVICE_INITIALIZATION);
-        measurementSnapshotMutex = xSemaphoreCreateMutex();
-        configASSERT(measurementSnapshotMutex != nullptr);
+        measurementFrameMutex = xSemaphoreCreateMutexStatic(&measurementFrameMutexStorage);
+        configASSERT(measurementFrameMutex != nullptr);
         FaultManager::setStartupComplete(false);
 
         BCC_MCU_Assert(can != nullptr);
@@ -1824,30 +1896,31 @@ namespace SlaveController
             PRINTF_WARN("[SC] SoC unavailable until a full-charge calibration\n");
         }
 
-        // Make some memory available for the vectors and arrays
-        cellVoltages.resize(getNumOfSlaves());
-        NTCtemperatures.resize(getNumOfSlaves());
-        ICtemperatures.resize(getNumOfSlaves());
-        for (size_t i = 0; i < getNumOfSlaves(); i++)
-        {
-            cellVoltages[i].resize(mSlaves[i].getCellCount());
-            NTCtemperatures[i].resize(mSlaves[i].getNTCCount());
-            ICtemperatures[i] = 0;
-        }
-
         // Create task 'n stuff
         bmsTaskHandle = osThreadNew(task, NULL, &bmsTask_attributes);
     }
 
-    bool isNewDataAvailable(uint32_t &lastSeenMeasurement)
+    bool tryGetNewMeasurementFrame(uint32_t &lastSeenMeasurement, MeasurementFrame &destination)
     {
-        const uint32_t currentMeasurement = measurementSequence.load();
-        if (currentMeasurement != lastSeenMeasurement)
+        const uint32_t currentMeasurement = measurementSequence.load(std::memory_order_acquire);
+        if (currentMeasurement == lastSeenMeasurement)
         {
-            lastSeenMeasurement = currentMeasurement;
-            return true;
+            return false;
         }
-        return false;
+
+        MeasurementFrameLock lock(kMeasurementFrameLockTimeout);
+        if (!lock.acquired() ||
+            !copyNewMeasurementFrame(latestMeasurementFrame,
+                                     currentMeasurement,
+                                     lastSeenMeasurement,
+                                     destination))
+        {
+            return false;
+        }
+
+        destination.summary.valid = publishedMeasurementValid.load(std::memory_order_acquire);
+        destination.summary.measurementsFresh = publishedMeasurementsFresh.load(std::memory_order_acquire);
+        return true;
     }
 
     bool areMeasurementsFresh()
@@ -1858,16 +1931,6 @@ namespace SlaveController
     uint32_t getMeasurementSequence()
     {
         return measurementSequence.load(std::memory_order_acquire);
-    }
-
-    MeasurementSnapshot getMeasurementSnapshot()
-    {
-        MeasurementSnapshot snapshot{};
-        MeasurementSnapshotLock lock;
-        snapshot = latestMeasurementSnapshot;
-        snapshot.valid = publishedMeasurementValid.load(std::memory_order_acquire);
-        snapshot.measurementsFresh = publishedMeasurementsFresh.load(std::memory_order_acquire);
-        return snapshot;
     }
 
     EnergySnapshot getEnergySnapshot()
@@ -1900,78 +1963,9 @@ namespace SlaveController
         return sum;
     }
 
-    vector<size_t> getCellCountPerSlave()
-    {
-        vector<size_t> cellCounts;
-        cellCounts.reserve(getNumOfSlaves());
-        for (auto &slave : mSlaves)
-        {
-            cellCounts.push_back(slave.getCellCount());
-        }
-        return cellCounts;
-    }
-
-    vector<size_t> getNTCCountPerSlave()
-    {
-        vector<size_t> NTCCounts;
-        NTCCounts.reserve(getNumOfSlaves());
-        for (auto &slave : mSlaves)
-        {
-            NTCCounts.push_back(slave.getNTCCount());
-        }
-        return NTCCounts;
-    }
-
-    vector<vector<uint32_t>> getCellVoltages()
-    {
-        return getMeasurementSnapshot().cellVoltages;
-    }
-
-    const std::vector<std::vector<bool>> getBalancingList()
-    {
-        vector<vector<bool>> balanceActive;
-        const MeasurementSnapshot snapshot = getMeasurementSnapshot();
-        balanceActive.reserve(snapshot.balancingMasks.size());
-        for (const uint16_t mask : snapshot.balancingMasks)
-        {
-            vector<bool> slaveBalance(12U, false);
-            for (size_t cellIndex = 0U; cellIndex < slaveBalance.size(); ++cellIndex)
-            {
-                slaveBalance[cellIndex] = (mask & (1U << cellIndex)) != 0U;
-            }
-            balanceActive.push_back(std::move(slaveBalance));
-        }
-        return balanceActive;
-    }
-
-    uint16_t getBalancingMask(size_t slaveIndex)
-    {
-        const MeasurementSnapshot snapshot = getMeasurementSnapshot();
-        if (slaveIndex >= snapshot.balancingMasks.size())
-        {
-            return 0U;
-        }
-        return snapshot.balancingMasks[slaveIndex];
-    }
-
-    uint32_t getMinCellVoltage()
-    {
-        return getMeasurementSnapshot().minCellVoltageUv;
-    }
-
-    uint32_t getMaxCellVoltage()
-    {
-        return getMeasurementSnapshot().maxCellVoltageUv;
-    }
-
     uint32_t getPackVoltage()
     {
         return packVoltage.load(std::memory_order_acquire);
-    }
-
-    double getCurrent()
-    {
-        return getMeasurementSnapshot().packCurrentA;
     }
 
     bool isHVReady()
@@ -2024,51 +2018,6 @@ namespace SlaveController
         if (available) report = diagnosticReports[slaveIndex];
         taskEXIT_CRITICAL();
         return available;
-    }
-
-    vector<vector<uint16_t>> getNTCtemps()
-    {
-        return getMeasurementSnapshot().ntcTemperatures;
-    }
-
-    uint16_t getMinNTCtemp()
-    {
-        return getMeasurementSnapshot().minNtcTemperatureRaw;
-    }
-
-    uint16_t getMaxNTCtemp()
-    {
-        return getMeasurementSnapshot().maxNtcTemperatureRaw;
-    }
-
-    vector<uint16_t> getICtemps()
-    {
-        return getMeasurementSnapshot().icTemperatures;
-    }
-
-    uint16_t getMinICtemp()
-    {
-        return getMeasurementSnapshot().minIcTemperatureRaw;
-    }
-
-    uint16_t getMaxICtemp()
-    {
-        return getMeasurementSnapshot().maxIcTemperatureRaw;
-    }
-
-    uint16_t getSoC()
-    {
-        return getMeasurementSnapshot().socRaw;
-    }
-
-    bool isSoCValid()
-    {
-        return getMeasurementSnapshot().socValid;
-    }
-
-    bool isCurrentSensingEnabled()
-    {
-        return getMeasurementSnapshot().currentSensingEnabled;
     }
 
     bool validateRuntimeConfiguration(const RuntimeConfiguration::Values &values)

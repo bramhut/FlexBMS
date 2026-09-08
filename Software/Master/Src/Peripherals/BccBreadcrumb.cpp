@@ -15,14 +15,23 @@ namespace BccBreadcrumb
         constexpr uint32_t kAddressMask = 0x7FUL;
         constexpr uint32_t kCommandMask = 0x03UL;
         constexpr uint32_t kRxCountMask = 0x0FUL;
+        constexpr uint32_t kWatchdogMagic = 0xC0000000UL;
+        constexpr uint32_t kWatchdogMonitoringMask = 1UL << 27U;
 
         volatile uint32_t *const record = &(TAMP->BKP0R) + kBackupRegister;
+        volatile uint32_t *const watchdogRecord = &(TAMP->BKP0R) + kWatchdogBackupRegister;
         uint32_t lastResetRecord = 0U;
+        uint32_t lastWatchdogRecord = 0U;
         uint8_t sequence = 0U;
 
         bool isValid(uint32_t value)
         {
             return (value & 0xF0000000UL) == kMagic;
+        }
+
+        bool isWatchdogValid(uint32_t value)
+        {
+            return (value & 0xF0000000UL) == kWatchdogMagic;
         }
 
         uint32_t makeRecord(uint8_t cid, uint8_t address, uint8_t command,
@@ -43,6 +52,8 @@ namespace BccBreadcrumb
     {
         const uint32_t value = *record;
         lastResetRecord = isValid(value) ? value : 0U;
+        const uint32_t watchdogValue = *watchdogRecord;
+        lastWatchdogRecord = isWatchdogValid(watchdogValue) ? watchdogValue : 0U;
     }
 
     bool hasLastResetRecord()
@@ -53,6 +64,16 @@ namespace BccBreadcrumb
     uint32_t getLastResetRecord()
     {
         return lastResetRecord;
+    }
+
+    bool hasLastWatchdogRecord()
+    {
+        return lastWatchdogRecord != 0U;
+    }
+
+    uint32_t getLastWatchdogRecord()
+    {
+        return lastWatchdogRecord;
     }
 
     void recordTransferStart(uint8_t cid, uint8_t address, uint8_t command,
@@ -71,5 +92,19 @@ namespace BccBreadcrumb
             *record = value & ~kPendingMask;
             __DMB();
         }
+    }
+
+    void recordWatchdogState(uint8_t stalledSources, uint8_t bccPhase,
+                             uint8_t pccPhase, uint8_t pccSequence,
+                             uint8_t bccSequence, bool monitoringActive)
+    {
+        *watchdogRecord = kWatchdogMagic |
+                          (monitoringActive ? kWatchdogMonitoringMask : 0U) |
+                          ((static_cast<uint32_t>(stalledSources) & 0x03UL) << 25U) |
+                          ((static_cast<uint32_t>(bccPhase) & 0x1FUL) << 20U) |
+                          ((static_cast<uint32_t>(pccPhase) & 0x0FUL) << 16U) |
+                          (static_cast<uint32_t>(pccSequence) << 8U) |
+                          static_cast<uint32_t>(bccSequence);
+        __DMB();
     }
 }

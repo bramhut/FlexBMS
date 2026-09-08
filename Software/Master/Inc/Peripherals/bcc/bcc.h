@@ -16,6 +16,7 @@
 #include "bcc_communication.h"
 #include "main.h"
 #include "SPIwrapper.h"
+#include <span>
 #include <vector>
 
 class BCC
@@ -414,16 +415,15 @@ public:
     /*!
      * @brief This function reads the cell measurements and converts them to [uV].
      *
-     * @param cellVolt  Pointer to the array or vector where the cell voltages (in [uV]) will
-     *                  be stored.
+     * @param cellVolt  Destination where cell voltages (in [uV]) will be stored.
      *                  For Array: stores all cell voltages in ascending order, including unconnected cells
-     *                  For Vector: stores only connected cell voltages in ascending order
+     *                  For Span: stores only connected cell voltages in ascending order
      *
      * @param forceRead If True will force an register read command. Else will use previously fetched value
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t meas_GetCellVoltages(std::vector<uint32_t> &cellVolt, bool forceRead = false);
+    bcc_status_t meas_GetCellVoltages(std::span<uint32_t> cellVolt, bool forceRead = false);
     bcc_status_t meas_GetCellVoltages(uint32_t *const cellVolt, bool forceRead = false);
 
     /*!
@@ -483,13 +483,13 @@ public:
     /*!
      * @brief This function reads the NTC's temperature
      *
-     * @param temperatures    Pointer to vector where the temperatures will be stored.
+     * @param temperatures    Destination span where temperatures will be stored.
      * @param NTCresistance   Resistance of the NTC in Ohms
      * @param NTCBeta         Beta value of the NTC
      *
      * @return bcc_status_t Error code.
      */
-    bcc_status_t meas_GetNTCTemperatures(std::vector<uint16_t> &temperatures, double NTCresistance, double NTCBeta, bool forceRead = false);
+    bcc_status_t meas_GetNTCTemperatures(std::span<uint16_t> temperatures, double NTCresistance, double NTCBeta, bool forceRead = false);
 
     /*!
      * @brief This function reads the fault status registers of the BCC device. Will clear the fault status registers.

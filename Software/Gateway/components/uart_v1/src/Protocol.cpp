@@ -180,7 +180,8 @@ namespace FlexBms::UartV1
 
     bool decodeStatus(const Frame &frame, Status &status)
     {
-        if (frame.type != MessageType::Status || (frame.length != 33U && frame.length != 37U)) return false;
+        if (frame.type != MessageType::Status ||
+            (frame.length != 33U && frame.length != 37U && frame.length != 41U)) return false;
         status.bmsState = frame.payload[0];
         status.hvState = frame.payload[1];
         status.flags = readLe16(frame.payload.data() + 2U);
@@ -192,9 +193,13 @@ namespace FlexBms::UartV1
         status.warnings = readLe32(frame.payload.data() + 21U);
         status.uptimeMs = readLe32(frame.payload.data() + 25U);
         status.socLastCalibrationUnixS = readLe32(frame.payload.data() + 29U);
-        if (frame.length == 37U && (status.flags & (1U << 9U)) != 0U)
+        if (frame.length >= 37U && (status.flags & (1U << 9U)) != 0U)
         {
             status.watchdogBreadcrumb = readLe32(frame.payload.data() + 33U);
+        }
+        if (frame.length == 41U && (status.flags & (1U << 10U)) != 0U)
+        {
+            status.watchdogDiagnostic = readLe32(frame.payload.data() + 37U);
         }
         return true;
     }

@@ -1067,9 +1067,12 @@ bcc_status_t BCC::meas_GetStackVoltage(uint32_t *const stackVolt, bool forceRead
  */
 bcc_status_t BCC::meas_GetCellVoltages(uint32_t *const cellVolt, bool forceRead)
 {
-    uint8_t maxCellCnt = BCC_MAX_CELLS_DEV(mDevice);
-    vector<uint32_t> cellVoltVec(getCellCount());
-    auto status = meas_GetCellVoltages(cellVoltVec, forceRead);
+    BCC_MCU_Assert(cellVolt != NULL);
+
+    const uint8_t maxCellCnt = BCC_MAX_CELLS_DEV(mDevice);
+    uint32_t connectedCellVoltages[BCC_MAX_CELLS] = {};
+    const auto status = meas_GetCellVoltages(
+        std::span<uint32_t>(connectedCellVoltages, getCellCount()), forceRead);
     if (status != BCC_STATUS_SUCCESS)
     {
         return status;
@@ -1088,14 +1091,14 @@ bcc_status_t BCC::meas_GetCellVoltages(uint32_t *const cellVolt, bool forceRead)
         }
         else
         {
-            // Otherwise set the correct voltage read from the vector
-            cellVolt[i] = cellVoltVec[j++];
+            // Otherwise set the correct voltage read from the connected-cell buffer
+            cellVolt[i] = connectedCellVoltages[j++];
             // PRINTF_INFO("Cell %u is connected, voltage: %.2f\n", i + 1, cellVolt[i]*1e-6);
         }
     }
     return BCC_STATUS_SUCCESS;
 }
-bcc_status_t BCC::meas_GetCellVoltages(vector<uint32_t> &cellVolt, bool forceRead)
+bcc_status_t BCC::meas_GetCellVoltages(std::span<uint32_t> cellVolt, bool forceRead)
 {
     bcc_status_t status;
 
@@ -1104,7 +1107,10 @@ bcc_status_t BCC::meas_GetCellVoltages(vector<uint32_t> &cellVolt, bool forceRea
     maxCellCnt = BCC_MAX_CELLS_DEV(mDevice);
     uint16_t *const rawVoltages = &mRawMeasurements[MSR_CELL_VOLT14];
     connCellCnt = getCellCount();
-    cellVolt.resize(connCellCnt);
+    if (cellVolt.size() < connCellCnt)
+    {
+        return BCC_STATUS_PARAM_RANGE;
+    }
 
     if (forceRead)
     {
@@ -1326,18 +1332,21 @@ bcc_status_t BCC::meas_GetIcTemperature(uint16_t *const icTemp, bool forceRead)
 /*!
  * @brief This function reads the NTC's temperature
  *
- * @param temperatures    Pointer to vector where the temperatures will be stored.
+ * @param temperatures    Destination span where the temperatures will be stored.
  * @param NTCresistance   Resistance of the NTC in Ohms
  * @param NTCBeta         Beta value of the NTC
  *
  * @return bcc_status_t Error code.
  */
-bcc_status_t BCC::meas_GetNTCTemperatures(vector<uint16_t> &temperatures, double NTCresistance, double NTCBeta, bool forceRead)
+bcc_status_t BCC::meas_GetNTCTemperatures(std::span<uint16_t> temperatures, double NTCresistance, double NTCBeta, bool forceRead)
 {
     bcc_status_t status;
     uint32_t ntcVolt[BCC_GPIO_INPUT_CNT];
 
-    temperatures.resize(getNTCCount());
+    if (temperatures.size() < getNTCCount())
+    {
+        return BCC_STATUS_PARAM_RANGE;
+    }
     if ((status = meas_GetAnVoltages(ntcVolt, false, forceRead)) != BCC_STATUS_SUCCESS)
     {
         PRINTF_ERR("Failed to read NTC voltages, error %u\n", status);

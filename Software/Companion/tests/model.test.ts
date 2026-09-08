@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { balancingDisplay, bmsStatusSummary, currentA, formatEnergy, formatPower, icCelsius, isFresh, ntcCelsius, powerW, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
+import { balancingDisplay, bmsStatusSummary, currentA, describeWatchdogBreadcrumb, formatEnergy, formatPower, icCelsius, isFresh, ntcCelsius, powerW, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
 import { reconnectDelayMs } from '../src/shared/reconnect.ts'
 import { serviceResultLabel } from '../src/shared/service.ts'
 import { advancingUnixTime, advancingUptimeMs, formatUptime } from '../src/shared/time.ts'
@@ -36,6 +36,15 @@ test('OFF-state voltage mismatch has an operator-facing warning label', () => {
 })
 test('transient BCC communication has an operator-facing warning label', () => {
   assert.equal(warningDisplayNames[3], 'BCC communication retry')
+})
+test('watchdog diagnostics identify the stalled source and active phases', () => {
+  const transfer = 0xB4A10052
+  const diagnostic = 0xCA921294
+  const description = describeWatchdogBreadcrumb(transfer, diagnostic)
+  assert.match(description ?? '', /Main\/PCC progress stopped/)
+  assert.match(description ?? '', /PCC Waiting for PCC state lock/)
+  assert.match(description ?? '', /BCC Balancing/)
+  assert.match(description ?? '', /Completed BCC transfer/)
 })
 test('balancing summary distinguishes disabled, idle, active, and fault states', () => {
   const status = { bms_state: 2, hv_state: 4, flags: 0, slave_count: 2, bms_active_errors: 0, bms_latched_errors: 0, hv_active_errors: 0, hv_latched_errors: 0, warnings: 0, uptime_ms: 0, measurements_fresh: true, run_request: true, balancing_enabled: true, soc_valid: true, current_sensing_enabled: true }

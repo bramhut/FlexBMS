@@ -73,6 +73,23 @@ namespace PCC
             bool ownsLock = false;
         };
 
+        class PccLoopWatchdogScope
+        {
+        public:
+            PccLoopWatchdogScope()
+            {
+                Watchdog::setPccPhase(Watchdog::PccPhase::WaitingForStateLock);
+            }
+
+            ~PccLoopWatchdogScope()
+            {
+                Watchdog::setPccPhase(Watchdog::PccPhase::Idle);
+            }
+
+            PccLoopWatchdogScope(const PccLoopWatchdogScope &) = delete;
+            PccLoopWatchdogScope &operator=(const PccLoopWatchdogScope &) = delete;
+        };
+
         void disableOutputs()
         {
             IO::setPrechargeRelay(false);
@@ -490,8 +507,10 @@ namespace PCC
 
     void loop()
     {
+        PccLoopWatchdogScope watchdogScope;
         PccStateLock lock;
         Watchdog::reportPccProgress();
+        Watchdog::setPccPhase(Watchdog::PccPhase::Running);
         const IO::HVVoltages hvVoltages = IO::getHVVoltages();
         hvVoltagesValid.store(hvVoltages.valid, std::memory_order_release);
         if (hvVoltages.valid)
