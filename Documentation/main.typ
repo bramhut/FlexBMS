@@ -977,8 +977,9 @@ cell-voltage and current thresholds. For the MB31 pack, top balancing starts at 
 10 mV difference from the pack-wide minimum cell. A selected cell continues down to a 5 mV
 difference, providing hysteresis. Balancing is permitted only from -0.100 A through C/10
 (31.4 A at 314 Ah), so meaningful discharge inhibits it. Thirty-second pulses are used and no
-more than six cells per slave are selected at once; selection priority rotates each pulse to
-avoid starvation while limiting one module board to approximately 3.1 W of bleed-resistor heat.
+more than six cells per slave are selected at once. The highest-voltage eligible cells receive
+priority; rotation is used only to share equal-voltage ties while limiting one module board to
+approximately 3.1 W of bleed-resistor heat.
 Before each pulse, the STM32 disables the global drivers, clears every retained CB channel,
 programs the complete desired mask, and enables the global drivers last. It then verifies the
 actual driver-status mask. Leaving the running/eligible state disables balancing immediately.

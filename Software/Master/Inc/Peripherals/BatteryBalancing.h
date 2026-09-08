@@ -43,35 +43,56 @@ namespace BatteryBalancing
         size_t nextStart = (first + 1U) % cellCount;
         uint8_t selectedCount = 0U;
 
-        for (size_t offset = 0U; offset < cellCount; ++offset)
+        while (selectedCount < maximumSelectedCells)
         {
-            const size_t cellIndex = (first + offset) % cellCount;
-            const uint32_t voltageUv = cellVoltagesUv[cellIndex];
-            const uint32_t differenceUv = voltageUv >= packMinimumCellVoltageUv
-                                              ? voltageUv - packMinimumCellVoltageUv
-                                              : 0U;
-            const bool wasSelected = (previousMask & (1U << cellIndex)) != 0U;
-            const uint32_t requiredDifferenceUv = wasSelected
-                                                      ? stopDifferenceUv
-                                                      : startDifferenceUv;
-            const bool differenceAllowsBalancing = wasSelected
-                                                        ? differenceUv > requiredDifferenceUv
-                                                        : differenceUv >= requiredDifferenceUv;
-
-            if (voltageUv >= minimumBalancingVoltageUv &&
-                differenceAllowsBalancing)
+            size_t highestCellIndex = cellCount;
+            for (size_t offset = 0U; offset < cellCount; ++offset)
             {
-                result.mask |= static_cast<uint16_t>(1U << cellIndex);
-                if (++selectedCount >= maximumSelectedCells)
+                const size_t cellIndex = (first + offset) % cellCount;
+                const uint16_t cellBit = static_cast<uint16_t>(1U << cellIndex);
+                if ((result.mask & cellBit) != 0U)
                 {
-                    nextStart = (cellIndex + 1U) % cellCount;
-                    break;
+                    continue;
+                }
+
+                const uint32_t voltageUv = cellVoltagesUv[cellIndex];
+                const uint32_t differenceUv = voltageUv >= packMinimumCellVoltageUv
+                                                  ? voltageUv - packMinimumCellVoltageUv
+                                                  : 0U;
+                const bool wasSelected = (previousMask & cellBit) != 0U;
+                const uint32_t requiredDifferenceUv = wasSelected
+                                                          ? stopDifferenceUv
+                                                          : startDifferenceUv;
+                const bool differenceAllowsBalancing = wasSelected
+                                                            ? differenceUv > requiredDifferenceUv
+                                                            : differenceUv >= requiredDifferenceUv;
+                if (voltageUv < minimumBalancingVoltageUv || !differenceAllowsBalancing)
+                {
+                    continue;
+                }
+
+                // Voltage is the primary priority. Iterating from the rotating
+                // start index makes that rotation only a tie-breaker for cells
+                // with equal measured voltage.
+                if (highestCellIndex == cellCount ||
+                    voltageUv > cellVoltagesUv[highestCellIndex])
+                {
+                    highestCellIndex = cellIndex;
                 }
             }
+
+            if (highestCellIndex == cellCount)
+            {
+                break;
+            }
+
+            result.mask |= static_cast<uint16_t>(1U << highestCellIndex);
+            ++selectedCount;
+            nextStart = (highestCellIndex + 1U) % cellCount;
         }
 
-        // Rotate the priority by one cell each cycle so a thermal channel cap
-        // cannot permanently starve a later cell.
+        // Rotation affects only equal-voltage ties; a lower-voltage cell can
+        // never displace a higher eligible cell because of its index.
         result.nextStartIndex = static_cast<uint8_t>(nextStart);
         return result;
     }
