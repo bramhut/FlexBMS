@@ -3,7 +3,7 @@ import test from 'node:test'
 import { balancingDisplay, bmsStatusSummary, currentA, describeWatchdogBreadcrumb, formatEnergy, formatPower, icCelsius, isFresh, ntcCelsius, powerW, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
 import { reconnectDelayMs } from '../src/shared/reconnect.ts'
 import { serviceResultLabel } from '../src/shared/service.ts'
-import { advancingUnixTime, advancingUptimeMs, formatUptime } from '../src/shared/time.ts'
+import { advancingUnixTime, advancingUptimeMs, createUptimeTracker, displayedUptimeMs, formatUptime, sampleUptime } from '../src/shared/time.ts'
 import { unavailableCapabilities } from '../src/transports/Transport.ts'
 
 test('raw UART v1 units convert in the presentation layer', () => {
@@ -77,6 +77,27 @@ test('displayed controller uptime advances locally and stays compact', () => {
   assert.equal(advancingUptimeMs(10_000, 1_000, 4_999), 13_999)
   assert.equal(advancingUptimeMs(10_000, 5_000, 1_000), 10_000)
   assert.equal(formatUptime(97_322_000), '1 d 3 h 2 min')
+})
+test('uptime display stays monotonic when samples arrive with jitter', () => {
+  const tracker = createUptimeTracker()
+  assert.equal(sampleUptime(tracker, 10_000, 1_000), 'accepted')
+  assert.equal(displayedUptimeMs(tracker, 2_000), 11_000)
+  assert.equal(sampleUptime(tracker, 10_500, 2_000), 'accepted')
+  assert.equal(displayedUptimeMs(tracker, 2_000), 11_000)
+  assert.equal(displayedUptimeMs(tracker, 2_500), 11_000)
+  assert.equal(displayedUptimeMs(tracker, 3_000), 11_500)
+})
+test('uptime tracker ignores delayed samples and recognizes reset boundaries', () => {
+  const tracker = createUptimeTracker()
+  assert.equal(sampleUptime(tracker, 2_000_000, 1_000), 'accepted')
+  assert.equal(sampleUptime(tracker, 1_990_000, 2_000), 'stale')
+  assert.equal(displayedUptimeMs(tracker, 3_000), 2_002_000)
+  assert.equal(sampleUptime(tracker, 500, 4_000), 'restart')
+  assert.equal(displayedUptimeMs(tracker, 4_000), 500)
+  const wrapTracker = createUptimeTracker()
+  assert.equal(sampleUptime(wrapTracker, 0x0000_0100, 5_000), 'accepted')
+  assert.equal(sampleUptime(wrapTracker, 0xf100_0000, 6_000), 'accepted')
+  assert.equal(sampleUptime(wrapTracker, 0x0000_0200, 7_000), 'wrap')
 })
 test('stale BMS status identifies the state and active fault', () => {
   assert.equal(bmsStatusSummary({ bms_state: 3, hv_state: 0, flags: 0x10, slave_count: 1, bms_active_errors: 0x0002, bms_latched_errors: 0, hv_active_errors: 0, hv_latched_errors: 0, warnings: 0, uptime_ms: 0, measurements_fresh: false, run_request: false, balancing_enabled: false, soc_valid: false, current_sensing_enabled: false }), 'Error: measurements are not fresh (SLAVE_UNAVAILABLE).')

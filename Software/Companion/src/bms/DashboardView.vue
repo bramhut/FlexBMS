@@ -4,19 +4,20 @@ import ServiceView from './ServiceView.vue'
 import RecentChangesList from './RecentChangesList.vue'
 import { balancingDisplay, bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, describeWatchdogBreadcrumb, formatEnergy, formatPower, hvReasonNames, hvStateName, icCelsius, ntcCelsius, powerW, setBits, socPercent, warningDisplayNames } from '@/shared/model'
 import { serviceResultLabel } from '@/shared/service'
-import { advancingUnixTime, advancingUptimeMs, formatUptime } from '@/shared/time'
+import { advancingUnixTime, createUptimeTracker, displayedUptimeMs, formatUptime, resetUptimeTracker, sampleUptime } from '@/shared/time'
 import type { BccDiagnosticReport, BmsTransport, Capabilities, GatewayStatus, RecordedControllerEvent, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
 
 const props = defineProps<{ snapshot: Snapshot | null; status: Status | null; transport: BmsTransport; capabilities: Capabilities; connected: boolean; gateway?: GatewayStatus; recentEvents: RecordedControllerEvent[]; diagnosticReports: BccDiagnosticReport[]; deviceTimeUnixS: number | null; deviceTimeSampledAt: number }>()
 const emit = defineEmits<{ showAll: [] }>()
 const requested = ref(false)
 const changingRunRequest = ref(false)
-const runResult = ref('')
+const runError = ref('')
+let runErrorTimer: number | undefined
 const clockNow = ref(Date.now())
-const stm32UptimeSampledAt = ref(0)
-const gatewayUptimeSampledAt = ref(0)
-const previousStm32UptimeMs = ref<number>()
-const previousGatewayUptimeMs = ref<number>()
+const stm32Uptime = createUptimeTracker()
+const gatewayUptime = createUptimeTracker()
+const stm32DisplayedUptimeMs = ref<number>()
+const gatewayDisplayedUptimeMs = ref<number>()
 const stm32Restarted = ref(false)
 const gatewayRestarted = ref(false)
 const formattedDeviceTime = computed(() => {
@@ -26,14 +27,14 @@ const formattedDeviceTime = computed(() => {
 })
 const formattedStm32Uptime = computed(() => {
   if (!props.connected) return 'Not connected.'
-  if (props.status?.uptime_ms === undefined) return 'Waiting for BMS status.'
-  return formatUptime(advancingUptimeMs(props.status.uptime_ms, stm32UptimeSampledAt.value, clockNow.value))
+  if (stm32DisplayedUptimeMs.value === undefined) return 'Waiting for BMS status.'
+  return formatUptime(stm32DisplayedUptimeMs.value)
 })
 const formattedGatewayUptime = computed(() => {
   if (!props.gateway) return 'Gateway only.'
   if (!props.connected) return 'Not connected.'
-  if (props.gateway.gateway_uptime_ms === undefined) return 'Waiting for Gateway status.'
-  return formatUptime(advancingUptimeMs(props.gateway.gateway_uptime_ms, gatewayUptimeSampledAt.value, clockNow.value))
+  if (gatewayDisplayedUptimeMs.value === undefined) return 'Waiting for Gateway status.'
+  return formatUptime(gatewayDisplayedUptimeMs.value)
 })
 const fresh = computed(() => Boolean(props.snapshot && props.status?.measurements_fresh))
 const measurement = (value: string) => fresh.value ? value : '—'
@@ -112,30 +113,62 @@ const socCalibration = computed(() => {
 })
 const controlAvailability = (capability: keyof Capabilities) => props.capabilities[capability] ? '' : 'Unavailable in the current Gateway state.'
 function describeControlResponse(response: ServiceResponse): string { return serviceResultLabel(response.result) }
+function clearRunError(): void {
+  runError.value = ''
+  if (runErrorTimer !== undefined) {
+    window.clearTimeout(runErrorTimer)
+    runErrorTimer = undefined
+  }
+}
+function showRunError(response: ServiceResponse): void {
+  if (response.result === 'ok') return
+  runError.value = `Run request: ${describeControlResponse(response)}`
+  runErrorTimer = window.setTimeout(clearRunError, 5000)
+}
 async function setRunRequest(): Promise<void> {
   const requestedValue = requested.value
+  clearRunError()
   changingRunRequest.value = true
   const response = await props.transport.request('set_run_request', { requested: requestedValue })
-  runResult.value = `Run: ${describeControlResponse(response)}`
+  showRunError(response)
   changingRunRequest.value = false
   if (response.result !== 'ok') requested.value = props.status?.run_request ?? false
 }
 watch(() => props.status?.run_request, value => { if (!changingRunRequest.value) requested.value = value ?? false }, { immediate: true })
 watch(() => props.status?.uptime_ms, uptimeMs => {
   if (uptimeMs === undefined) return
-  if (previousStm32UptimeMs.value !== undefined && uptimeMs < previousStm32UptimeMs.value &&
-      !(previousStm32UptimeMs.value > 0xf0000000 && uptimeMs < 0x0fffffff)) stm32Restarted.value = true
-  previousStm32UptimeMs.value = uptimeMs
-  stm32UptimeSampledAt.value = Date.now()
+  const result = sampleUptime(stm32Uptime, uptimeMs, performance.now())
+  if (result === 'restart') stm32Restarted.value = true
+  if (result !== 'stale') stm32DisplayedUptimeMs.value = displayedUptimeMs(stm32Uptime)
 }, { immediate: true })
 watch(() => props.gateway?.gateway_uptime_ms, uptimeMs => {
   if (uptimeMs === undefined) return
-  if (previousGatewayUptimeMs.value !== undefined && uptimeMs < previousGatewayUptimeMs.value) gatewayRestarted.value = true
-  previousGatewayUptimeMs.value = uptimeMs
-  gatewayUptimeSampledAt.value = Date.now()
+  const result = sampleUptime(gatewayUptime, uptimeMs, performance.now())
+  if (result === 'restart') gatewayRestarted.value = true
+  if (result !== 'stale') gatewayDisplayedUptimeMs.value = displayedUptimeMs(gatewayUptime)
 }, { immediate: true })
+watch(() => props.connected, connected => {
+  if (connected) return
+  resetUptimeTracker(stm32Uptime)
+  resetUptimeTracker(gatewayUptime)
+  stm32DisplayedUptimeMs.value = undefined
+  gatewayDisplayedUptimeMs.value = undefined
+}, { immediate: true })
+watch(() => props.gateway?.uart_state, state => {
+  if (state !== 'lost' && state !== 'starting') return
+  resetUptimeTracker(stm32Uptime)
+  stm32DisplayedUptimeMs.value = undefined
+})
+const uptimeTimer = window.setInterval(() => {
+  stm32DisplayedUptimeMs.value = displayedUptimeMs(stm32Uptime)
+  gatewayDisplayedUptimeMs.value = displayedUptimeMs(gatewayUptime)
+}, 250)
 const clockTimer = window.setInterval(() => { clockNow.value = Date.now() }, 1000)
-onBeforeUnmount(() => { window.clearInterval(clockTimer) })
+onBeforeUnmount(() => {
+  window.clearInterval(uptimeTimer)
+  window.clearInterval(clockTimer)
+  clearRunError()
+})
 </script>
 
 <template>
@@ -158,9 +191,9 @@ onBeforeUnmount(() => { window.clearInterval(clockTimer) })
             <div class="context-control">
               <label class="ios-switch"><input v-model="requested" type="checkbox" role="switch" :disabled="!capabilities.set_run_request || changingRunRequest" @change="setRunRequest"><span class="ios-switch-track" aria-hidden="true"><span class="ios-switch-thumb"></span></span><span>Run</span></label>
               <small v-if="!capabilities.set_run_request">{{ controlAvailability('set_run_request') }}</small>
-              <p v-if="runResult" class="action-result inline-action-result">{{ runResult }}</p>
             </div>
           </div>
+          <p v-if="runError" class="action-warning" role="alert">{{ runError }}</p>
           <small class="context-note">Named requests only; the STM32 remains the safety authority.</small>
         </div>
         <div class="overview-section battery-overview">
