@@ -2,13 +2,17 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ServiceView from './ServiceView.vue'
 import RecentChangesList from './RecentChangesList.vue'
-import { balancingDisplay, bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, describeWatchdogBreadcrumb, formatEnergy, formatPower, hvReasonNames, hvStateName, icCelsius, ntcCelsius, powerW, setBits, socPercent, warningDisplayNames } from '@/shared/model'
+import { balancingDisplay, bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, describeWatchdogBreadcrumb, formatCellDifferenceMv, formatEnergy, formatPower, hvReasonNames, hvStateName, icCelsius, ntcCelsius, powerW, setBits, socPercent, warningDisplayNames } from '@/shared/model'
 import { serviceResultLabel } from '@/shared/service'
 import { advancingUnixTime, createUptimeTracker, displayedUptimeMs, formatUptime, resetUptimeTracker, sampleUptime } from '@/shared/time'
 import type { BccDiagnosticReport, BmsTransport, Capabilities, GatewayStatus, RecordedControllerEvent, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
 
-const props = defineProps<{ snapshot: Snapshot | null; status: Status | null; transport: BmsTransport; capabilities: Capabilities; connected: boolean; gateway?: GatewayStatus; recentEvents: RecordedControllerEvent[]; diagnosticReports: BccDiagnosticReport[]; deviceTimeUnixS: number | null; deviceTimeSampledAt: number }>()
-const emit = defineEmits<{ showAll: [] }>()
+const props = defineProps<{ snapshot: Snapshot | null; status: Status | null; transport: BmsTransport; capabilities: Capabilities; connected: boolean; gateway?: GatewayStatus; recentEvents: RecordedControllerEvent[]; diagnosticReports: BccDiagnosticReport[]; deviceTimeUnixS: number | null; deviceTimeSampledAt: number; bmsUptimeSampledAt: number; gatewayUptimeSampledAt: number; heatmapEnabled: boolean; deltaViewEnabled: boolean }>()
+const emit = defineEmits<{
+  (event: 'showAll'): void
+  (event: 'update:heatmapEnabled', value: boolean): void
+  (event: 'update:deltaViewEnabled', value: boolean): void
+}>()
 const requested = ref(false)
 const changingRunRequest = ref(false)
 const runError = ref('')
@@ -79,6 +83,46 @@ const acknowledgementPending = computed(() => {
   return Boolean(status && liveIssueCount.value === 0 &&
     (pendingIssueCount.value > 0 || (status.warnings & (1 << 0)) !== 0))
 })
+type CellReading = { slaveIndex: number; cellIndex: number; voltageUv: number }
+const cellReadings = computed<CellReading[]>(() => props.snapshot?.cells.flatMap(cell => cell.cell_voltage_uV.map((voltageUv, cellIndex) => ({ slaveIndex: cell.slave_index, cellIndex, voltageUv }))) ?? [])
+const cellOverview = computed(() => {
+  if (cellReadings.value.length === 0) return null
+  const minimum = cellReadings.value.reduce((current, reading) => reading.voltageUv < current.voltageUv ? reading : current)
+  const maximumVoltageUv = Math.max(...cellReadings.value.map(reading => reading.voltageUv))
+  return { minimum, maximumVoltageUv, spreadUv: maximumVoltageUv - minimum.voltageUv }
+})
+const heatmapDeadbandUv = 5_000
+const toggleHeatmap = () => emit('update:heatmapEnabled', !props.heatmapEnabled)
+const toggleDeltaView = () => emit('update:deltaViewEnabled', !props.deltaViewEnabled)
+const cellLabel = (slaveIndex: number, cellIndex: number) => {
+  const cellNumber = String(cellIndex + 1)
+  return props.snapshot && props.snapshot.cells.length > 1 ? `S${slaveIndex + 1} C${cellNumber}` : `C${cellNumber}`
+}
+const cellDifferenceUv = (voltageUv: number) => Math.max(0, voltageUv - (cellOverview.value?.minimum.voltageUv ?? voltageUv))
+const cellDifference = (voltageUv: number) => formatCellDifferenceMv(cellDifferenceUv(voltageUv))
+const cellDisplayValue = (voltageUv: number) => props.deltaViewEnabled ? `${cellDifference(voltageUv)} mV` : `${cellVoltageV(voltageUv).toFixed(3)} V`
+const cellHeatmapStyle = (voltageUv: number) => {
+  const overview = cellOverview.value
+  if (!props.heatmapEnabled || !overview || overview.spreadUv <= heatmapDeadbandUv) return undefined
+
+  const heatmapRangeUv = overview.spreadUv - heatmapDeadbandUv
+  const normalized = Math.min(1, Math.max(0, (cellDifferenceUv(voltageUv) - heatmapDeadbandUv) / heatmapRangeUv))
+  if (normalized === 0) return undefined
+
+  const hue = Math.round(145 * (1 - normalized))
+  const saturation = Math.round(55 + normalized * 15)
+  const lightness = Math.round(96 - normalized * 5)
+  return { backgroundColor: `hsl(${hue} ${saturation}% ${lightness}%)` }
+}
+const cellReference = computed(() => {
+  const overview = cellOverview.value
+  if (!overview) return null
+  return {
+    label: cellLabel(overview.minimum.slaveIndex, overview.minimum.cellIndex),
+    voltage: `${cellVoltageV(overview.minimum.voltageUv).toFixed(3)} V`,
+    spread: `${formatCellDifferenceMv(overview.spreadUv)} mV`,
+  }
+})
 const cellDeltaMv = computed(() => props.snapshot ? (props.snapshot.pack.max_cell_uV - props.snapshot.pack.min_cell_uV) / 1000 : 0)
 const currentValue = computed(() => {
   if (!props.status?.current_sensing_enabled) return 'Disabled'
@@ -135,15 +179,15 @@ async function setRunRequest(): Promise<void> {
   if (response.result !== 'ok') requested.value = props.status?.run_request ?? false
 }
 watch(() => props.status?.run_request, value => { if (!changingRunRequest.value) requested.value = value ?? false }, { immediate: true })
-watch(() => props.status?.uptime_ms, uptimeMs => {
-  if (uptimeMs === undefined) return
-  const result = sampleUptime(stm32Uptime, uptimeMs, performance.now())
+watch([() => props.status?.uptime_ms, () => props.bmsUptimeSampledAt], ([uptimeMs, sampledAt]) => {
+  if (uptimeMs === undefined || sampledAt === 0) return
+  const result = sampleUptime(stm32Uptime, uptimeMs, sampledAt)
   if (result === 'restart') stm32Restarted.value = true
   if (result !== 'stale') stm32DisplayedUptimeMs.value = displayedUptimeMs(stm32Uptime)
 }, { immediate: true })
-watch(() => props.gateway?.gateway_uptime_ms, uptimeMs => {
-  if (uptimeMs === undefined) return
-  const result = sampleUptime(gatewayUptime, uptimeMs, performance.now())
+watch([() => props.gateway?.gateway_uptime_ms, () => props.gatewayUptimeSampledAt], ([uptimeMs, sampledAt]) => {
+  if (uptimeMs === undefined || sampledAt === 0) return
+  const result = sampleUptime(gatewayUptime, uptimeMs, sampledAt)
   if (result === 'restart') gatewayRestarted.value = true
   if (result !== 'stale') gatewayDisplayedUptimeMs.value = displayedUptimeMs(gatewayUptime)
 }, { immediate: true })
@@ -226,9 +270,15 @@ onBeforeUnmount(() => {
       </section>
     </section>
 
-    <section class="panel"><div class="panel-heading cell-panel-heading"><div><h2>Cell voltages and balancing</h2></div><div class="context-control"><p v-if="!fresh">Values remain hidden until a complete fresh snapshot arrives.</p><p v-else>Selected cells remain marked during brief measurement pauses.</p></div></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th v-for="index in 12" :key="index">C{{ index }}</th></tr></thead><tbody><tr v-for="cell in snapshot.cells" :key="cell.slave_index"><th>Slave {{ cell.slave_index }}</th><td v-for="(value, index) in cell.cell_voltage_uV" :key="index" :class="{ balancing: (cell.balance_mask & (1 << index)) !== 0 }">{{ cellVoltageV(value).toFixed(3) }} V<span v-if="(cell.balance_mask & (1 << index)) !== 0"> balancing</span></td></tr></tbody></table></div></section>
+    <section class="panel">
+      <div class="panel-heading cell-panel-heading">
+        <div><h2>Cell voltage offsets</h2><p>{{ props.deltaViewEnabled ? 'Positive offset from lowest cell · mV' : 'Absolute cell voltage · V' }}</p></div>
+        <div class="cell-panel-actions"><span class="balancing-legend"><svg class="balancing-chevron header-balancing-chevron" viewBox="0 0 20 20" role="img" aria-label="Balancing active"><path d="M3 4.5 10 11.5 17 4.5" /><path d="M3 10.5 10 17.5 17 10.5" /></svg><span>Balancing active</span></span><button type="button" class="table-view-toggle" :aria-pressed="props.deltaViewEnabled" :title="props.deltaViewEnabled ? 'Switch to absolute cell voltages' : 'Switch to voltage offsets'" @click="toggleDeltaView">{{ props.deltaViewEnabled ? 'Δ view' : 'V view' }}</button><button type="button" class="heatmap-toggle" :aria-pressed="props.heatmapEnabled" @click="toggleHeatmap">Heatmap</button><p v-if="!fresh">Values remain hidden until a complete fresh snapshot arrives.</p></div>
+      </div>
+      <div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr class="cell-table-summary-row"><th colspan="13"><span class="cell-table-summary-metric"><span class="cell-table-summary-label">Lowest cell</span><span class="cell-table-summary-value">{{ cellReference ? `${cellReference.label} · ${cellReference.voltage}` : '—' }}</span></span><span class="cell-table-summary-metric"><span class="cell-table-summary-label">Spread</span><span class="cell-table-summary-secondary">{{ cellReference?.spread ?? '—' }}</span></span></th></tr><tr><th>Slave</th><th v-for="index in 12" :key="index">C{{ index }}</th></tr></thead><tbody><tr v-for="cell in snapshot.cells" :key="cell.slave_index"><th>Slave {{ cell.slave_index + 1 }}</th><td v-for="(value, index) in cell.cell_voltage_uV" :key="index" :style="cellHeatmapStyle(value)" :title="`${cellLabel(cell.slave_index, index)} · ${cellVoltageV(value).toFixed(3)} V`"><span class="cell-difference-content" :class="{ 'delta-view': props.deltaViewEnabled }"><span class="balancing-marker-slot"><svg v-if="(cell.balance_mask & (1 << index)) !== 0" class="balancing-chevron" viewBox="0 0 20 20" role="img" aria-label="Balancing active"><path d="M3 4.5 10 11.5 17 4.5" /><path d="M3 10.5 10 17.5 17 10.5" /></svg></span><span class="cell-difference-value">{{ cellDisplayValue(value) }}</span></span></td></tr></tbody></table></div>
+    </section>
 
-    <section class="panel"><div class="panel-heading"><div><h2>Temperatures</h2></div></div><div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr><th>Slave</th><th>NTC 0</th><th>NTC 1</th><th>NTC 2</th><th>NTC 3</th><th>IC</th></tr></thead><tbody><tr v-for="temperature in snapshot.temperatures" :key="temperature.slave_index"><th>Slave {{ temperature.slave_index }}</th><td v-for="(value, index) in temperature.ntc_raw" :key="index">{{ ntcCelsius(value).toFixed(1) }} °C</td><td>{{ icCelsius(temperature.ic_temp_raw).toFixed(1) }} °C</td></tr></tbody></table></div></section>
+    <section class="panel"><div class="panel-heading"><div><h2>Temperatures</h2></div></div><div v-if="fresh && snapshot" class="table-scroll"><table class="temperature-table"><thead><tr><th>Slave</th><th>NTC 0</th><th>NTC 1</th><th>NTC 2</th><th>NTC 3</th><th>IC</th></tr></thead><tbody><tr v-for="temperature in snapshot.temperatures" :key="temperature.slave_index"><th>Slave {{ temperature.slave_index }}</th><td v-for="(value, index) in temperature.ntc_raw" :key="index">{{ ntcCelsius(value).toFixed(1) }} °C</td><td>{{ icCelsius(temperature.ic_temp_raw).toFixed(1) }} °C</td></tr></tbody></table></div></section>
 
     <ServiceView :transport="transport" :capabilities="capabilities" :connected="connected" :acknowledgement-pending="acknowledgementPending" />
   </main>

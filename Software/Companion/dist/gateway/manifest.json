@@ -1,23 +1,23 @@
 {
   "format": 1,
-  "companion_version": "0.1.54",
-  "build_id": "4ba23fff33a2a8f0",
+  "companion_version": "0.1.60",
+  "build_id": "40aa16b734b9055e",
   "files": [
     {
-      "path": "assets/index-BgRc2M57.css",
-      "bytes": 16717,
-      "sha256": "e831a6f64099e93048d679e4c5c4e9378ac3e4715ab848b96d08b48f5566758f"
+      "path": "assets/index-BLDhV6Ej.css",
+      "bytes": 18059,
+      "sha256": "c09bf756051e74762c44b26e5d952fbf1caf3289a84300f3ab326d4c83c3ae56"
     },
     {
-      "path": "assets/index-C-ghIpVR.js",
-      "bytes": 122794,
-      "sha256": "18d3911fe50b1a2926cc4277404a6ac2b117636a7fbd7cb92a9c2e32182f72bd"
+      "path": "assets/index-C7sKebNc.js",
+      "bytes": 125853,
+      "sha256": "04cb3917d5a30a71122961677b33f6ab9f357279dc5296dcb5d39dd81b5e3ed9"
     },
     {
       "path": "index.html",
       "bytes": 378,
-      "sha256": "75969c324675ee6403de43274841b6ec02619c53a5ab015be3476d0bedd18204"
+      "sha256": "b04074fafe5d57d6398279a865be0c3bd91155b0370eeceacc222b6549a062c7"
     }
   ],
-  "total_bytes": 139889
+  "total_bytes": 144290
 }

@@ -1,6 +1,10 @@
 import type { Snapshot, Status } from '../transports/Transport'
 
 export const cellVoltageV = (raw: number) => raw / 1_000_000
+export const formatCellDifferenceMv = (microvolts: number): string => {
+  if (!Number.isFinite(microvolts)) return 'Unavailable'
+  return String(Math.round(Math.max(0, microvolts) / 1_000))
+}
 export const currentA = (raw: number) => raw / 64
 export const powerW = (voltageUv: number, currentRaw: number) => cellVoltageV(voltageUv) * currentA(currentRaw)
 export const socPercent = (raw: number) => 100 * (raw / 65535 * 3 - 1)

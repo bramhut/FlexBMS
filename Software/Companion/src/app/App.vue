@@ -12,6 +12,10 @@ import type { BccDiagnosticReport, BmsTransport, ConnectionState, GatewayStatus,
 const gatewayTarget = __FLEXBMS_TARGET__ === 'gateway'
 const transport: BmsTransport = gatewayTarget ? new GatewayTransport() : new WebSerialTransport()
 const active = ref<'dashboard' | 'diagnostics' | 'configuration' | 'firmware'>('dashboard'); const state = ref<ConnectionState>('disconnected'); const snapshot = ref<Snapshot | null>(null); const bmsStatus = ref<Status | null>(null); const gateway = ref<GatewayStatus>(); const recentEvents = ref<RecordedControllerEvent[]>([]); const recentChangesOpen = ref(false)
+const bmsUptimeSampledAt = ref(0)
+const gatewayUptimeSampledAt = ref(0)
+const heatmapEnabled = ref(false)
+const deltaViewEnabled = ref(true)
 const deviceTimeUnixS = ref<number | null>(null)
 const deviceTimeSampledAt = ref(0)
 let deviceTimePollTimer: number | undefined
@@ -78,12 +82,13 @@ async function refreshDiagnosticReports(status: Status): Promise<void> {
 
 const offBmsStatus = transport.onBmsStatus(next => {
   bmsStatus.value = next
+  bmsUptimeSampledAt.value = performance.now()
   const diagnosticFaultMask = (next.bms_active_errors | next.bms_latched_errors) & bccDiagnosticsMask
   if (diagnosticFaultMask !== 0 && diagnosticFaultMask !== lastDiagnosticFaultMask) {
     lastDiagnosticFaultMask = diagnosticFaultMask
     void refreshDiagnosticReports(next)
   }
-}); const offSnapshot = transport.onSnapshot(next => { snapshot.value = next; bmsStatus.value = next.status }); const offEvent = transport.onEvent(event => { recentEvents.value = [{ ...event, observed_at_ms: Date.now() }, ...recentEvents.value].slice(0, 12) }); const offState = transport.onState((next, gatewayStatus) => { state.value = next; capabilities.value = transport.getCapabilities(); if (gatewayStatus) gateway.value = gatewayStatus; if (next !== 'connected') { stopDeviceTimePolling(); diagnosticReports.value = []; lastDiagnosticFaultMask = 0 } else startDeviceTimePolling() })
+}); const offSnapshot = transport.onSnapshot(next => { snapshot.value = next; bmsStatus.value = next.status; bmsUptimeSampledAt.value = performance.now() }); const offEvent = transport.onEvent(event => { recentEvents.value = [{ ...event, observed_at_ms: Date.now() }, ...recentEvents.value].slice(0, 12) }); const offState = transport.onState((next, gatewayStatus) => { state.value = next; capabilities.value = transport.getCapabilities(); if (gatewayStatus) { gateway.value = gatewayStatus; gatewayUptimeSampledAt.value = performance.now() }; if (next !== 'connected') { stopDeviceTimePolling(); diagnosticReports.value = []; lastDiagnosticFaultMask = 0 } else startDeviceTimePolling() })
 async function connect(): Promise<void> { try { await transport.connect(); capabilities.value = transport.getCapabilities() } catch (error) { console.error('Companion connection failed', error) } }
 onMounted(() => { if (gatewayTarget) void connect() })
 onBeforeUnmount(() => { offBmsStatus(); offSnapshot(); offEvent(); offState(); stopDeviceTimePolling(); transport.disconnect() })
@@ -96,7 +101,7 @@ onBeforeUnmount(() => { offBmsStatus(); offSnapshot(); offEvent(); offState(); s
     <button v-if="capabilities.runtime_configuration || capabilities.wifi_configuration || capabilities.mqtt_configuration" :class="{ active: active === 'configuration' }" @click="active = 'configuration'; recentChangesOpen = false">Configuration</button>
     <button :class="{ active: active === 'firmware' }" @click="active = 'firmware'; recentChangesOpen = false">Firmware</button>
   </nav>
-  <DashboardView v-if="active === 'dashboard'" :snapshot="snapshot" :status="bmsStatus" :transport="transport" :capabilities="capabilities" :connected="state === 'connected'" :gateway="gateway" :recent-events="recentEvents" :diagnostic-reports="diagnosticReports" :device-time-unix-s="deviceTimeUnixS" :device-time-sampled-at="deviceTimeSampledAt" @show-all="recentChangesOpen = true" />
+  <DashboardView v-if="active === 'dashboard'" :snapshot="snapshot" :status="bmsStatus" :transport="transport" :capabilities="capabilities" :connected="state === 'connected'" :gateway="gateway" :recent-events="recentEvents" :diagnostic-reports="diagnosticReports" :device-time-unix-s="deviceTimeUnixS" :device-time-sampled-at="deviceTimeSampledAt" :bms-uptime-sampled-at="bmsUptimeSampledAt" :gateway-uptime-sampled-at="gatewayUptimeSampledAt" :heatmap-enabled="heatmapEnabled" :delta-view-enabled="deltaViewEnabled" @update:heatmap-enabled="heatmapEnabled = $event" @update:delta-view-enabled="deltaViewEnabled = $event" @show-all="recentChangesOpen = true" />
   <DiagnosticsView v-else-if="active === 'diagnostics'" :snapshot="snapshot" :status="bmsStatus" :transport="transport" :capabilities="capabilities" :connected="state === 'connected'" :diagnostic-reports="diagnosticReports" />
   <ConfigurationView v-else-if="active === 'configuration'" :transport="transport" :capabilities="capabilities" :connected="state === 'connected'" :gateway="gateway" />
   <FirmwareView v-else :transport="transport" :capabilities="capabilities" :connected="state === 'connected'" :gateway="gateway" />

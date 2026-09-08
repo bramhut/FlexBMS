@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { balancingDisplay, bmsStatusSummary, currentA, describeWatchdogBreadcrumb, formatEnergy, formatPower, icCelsius, isFresh, ntcCelsius, powerW, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
+import { balancingDisplay, bmsStatusSummary, currentA, describeWatchdogBreadcrumb, formatCellDifferenceMv, formatEnergy, formatPower, icCelsius, isFresh, ntcCelsius, powerW, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
 import { reconnectDelayMs } from '../src/shared/reconnect.ts'
 import { serviceResultLabel } from '../src/shared/service.ts'
 import { advancingUnixTime, advancingUptimeMs, createUptimeTracker, displayedUptimeMs, formatUptime, sampleUptime } from '../src/shared/time.ts'
@@ -11,6 +11,15 @@ test('raw UART v1 units convert in the presentation layer', () => {
   assert.equal(socPercent(65535), 200)
   assert.equal(ntcCelsius(0), -20)
   assert.equal(icCelsius(29430).toFixed(2), '21.15')
+})
+test('cell differences use compact millivolt formatting', () => {
+  assert.equal(formatCellDifferenceMv(0), '0')
+  assert.equal(formatCellDifferenceMv(500), '1')
+  assert.equal(formatCellDifferenceMv(1_020), '1')
+  assert.equal(formatCellDifferenceMv(1_234), '1')
+  assert.equal(formatCellDifferenceMv(12_000), '12')
+  assert.equal(formatCellDifferenceMv(29_700), '30')
+  assert.equal(formatCellDifferenceMv(102_000), '102')
 })
 test('energy display selects a useful unit for the current quantity', () => {
   assert.equal(formatEnergy('12'), '12 µWh')
