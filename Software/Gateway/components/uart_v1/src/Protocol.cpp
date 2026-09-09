@@ -1,5 +1,6 @@
 #include "flexbms/Protocol.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace FlexBms::UartV1
@@ -237,6 +238,55 @@ namespace FlexBms::UartV1
         return true;
     }
 
+    bool decodeGoodweCanDiagnostics(const Frame &frame, GoodweCanDiagnostics &diagnostics)
+    {
+        constexpr size_t headerBytes = 40U;
+        constexpr size_t transmitFrameBytes = 8U;
+        constexpr size_t receiveFrameBytes = 20U;
+        constexpr size_t payloadBytes = headerBytes + 7U * transmitFrameBytes + 3U * receiveFrameBytes;
+        if (!frameHasPayload(frame, MessageType::GoodweCanDiagnostics, payloadBytes) || frame.payload[0] != 1U) return false;
+
+        diagnostics = {};
+        diagnostics.schemaVersion = frame.payload[0];
+        diagnostics.protocol = frame.payload[1];
+        diagnostics.request45aEnabled = (frame.payload[2] & (1U << 0U)) != 0U;
+        diagnostics.compatibility460Enabled = (frame.payload[2] & (1U << 1U)) != 0U;
+        diagnostics.transmitCycles = readLe32(frame.payload.data() + 4U);
+        diagnostics.snapshotUnavailableCycles = readLe32(frame.payload.data() + 8U);
+        diagnostics.transmitFailures = readLe32(frame.payload.data() + 12U);
+        diagnostics.lastTransmitFailureMs = readLe32(frame.payload.data() + 16U);
+        diagnostics.lastTransmitFailureId = readLe16(frame.payload.data() + 20U);
+        diagnostics.reported458CurrentDeciA = static_cast<int16_t>(readLe16(frame.payload.data() + 22U));
+        diagnostics.reported458VoltageDeciV = readLe16(frame.payload.data() + 24U);
+        diagnostics.transmitErrorCount = frame.payload[26];
+        diagnostics.receiveErrorCount = frame.payload[27];
+        diagnostics.errorLoggingCount = frame.payload[28];
+        diagnostics.protocolLastErrorCode = frame.payload[29];
+        diagnostics.protocolActivity = frame.payload[30];
+        diagnostics.errorPassive = (frame.payload[31] & (1U << 0U)) != 0U;
+        diagnostics.warning = (frame.payload[31] & (1U << 1U)) != 0U;
+        diagnostics.busOff = (frame.payload[31] & (1U << 2U)) != 0U;
+        diagnostics.halErrorCode = readLe32(frame.payload.data() + 32U);
+        diagnostics.transmitFifoFreeLevel = readLe32(frame.payload.data() + 36U);
+
+        size_t offset = headerBytes;
+        for (GoodweTransmitFrameDiagnostics &transmit : diagnostics.transmitFrames)
+        {
+            transmit.successCount = readLe32(frame.payload.data() + offset);
+            transmit.lastSuccessMs = readLe32(frame.payload.data() + offset + 4U);
+            offset += transmitFrameBytes;
+        }
+        for (GoodweReceiveFrameDiagnostics &receive : diagnostics.receiveFrames)
+        {
+            receive.count = readLe32(frame.payload.data() + offset);
+            receive.lastSeenMs = readLe32(frame.payload.data() + offset + 4U);
+            receive.length = std::min<uint8_t>(frame.payload[offset + 8U], 8U);
+            std::memcpy(receive.data.data(), frame.payload.data() + offset + 9U, receive.data.size());
+            offset += receiveFrameBytes;
+        }
+        return true;
+    }
+
     bool decodeCell(const Frame &frame, Cell &cell)
     {
         if (!frameHasPayload(frame, MessageType::Cell, 51U)) return false;
@@ -336,6 +386,33 @@ namespace FlexBms::UartV1
         Frame malformedEnergy = energyFrame;
         malformedEnergy.length = 16U;
         if (decodeEnergy(malformedEnergy, decodedEnergy)) return false;
+
+        Frame goodweFrame{};
+        goodweFrame.type = MessageType::GoodweCanDiagnostics;
+        goodweFrame.length = 156U;
+        goodweFrame.payload[0] = 1U;
+        goodweFrame.payload[1] = 1U;
+        goodweFrame.payload[2] = 3U;
+        goodweFrame.payload[4] = 7U;
+        goodweFrame.payload[22] = 0xD3U;
+        goodweFrame.payload[23] = 0xFFU;
+        goodweFrame.payload[40] = 11U;
+        goodweFrame.payload[44] = 0x39U;
+        goodweFrame.payload[136] = 2U;
+        goodweFrame.payload[144] = 4U;
+        goodweFrame.payload[145] = 0x34U;
+        goodweFrame.payload[146] = 0x12U;
+        GoodweCanDiagnostics decodedGoodwe{};
+        if (!decodeGoodweCanDiagnostics(goodweFrame, decodedGoodwe) ||
+            decodedGoodwe.transmitCycles != 7U || decodedGoodwe.reported458CurrentDeciA != -45 ||
+            decodedGoodwe.transmitFrames[0].successCount != 11U || decodedGoodwe.transmitFrames[0].lastSuccessMs != 0x39U ||
+            decodedGoodwe.receiveFrames[2].count != 2U || decodedGoodwe.receiveFrames[2].length != 4U ||
+            decodedGoodwe.receiveFrames[2].data[0] != 0x34U || decodedGoodwe.receiveFrames[2].data[1] != 0x12U)
+        {
+            return false;
+        }
+        goodweFrame.payload[0] = 2U;
+        if (decodeGoodweCanDiagnostics(goodweFrame, decodedGoodwe)) return false;
 
         std::array<uint8_t, kMaxFrameBytes> encoded{};
         const Frame expected{.type = MessageType::Heartbeat, .sequence = 0U, .length = 0U};

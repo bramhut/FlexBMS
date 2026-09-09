@@ -10,6 +10,7 @@ export const messageType = {
   temperature: 0x05,
   hvVoltages: 0x06,
   energy: 0x07,
+  goodweCanDiagnostics: 0x08,
   serviceRequest: 0x10,
   serviceResponse: 0x11,
   event: 0x12,
@@ -93,6 +94,51 @@ export function decodeHvVoltages(payload: Uint8Array): Snapshot['hv_voltages'] |
 export function decodeEnergy(payload: Uint8Array): Snapshot['energy'] | undefined {
   if (payload.length !== 17) return undefined
   return { valid: (payload[0] & 1) !== 0, charged_energy_uWh: readLe64(payload, 1).toString(), discharged_energy_uWh: readLe64(payload, 9).toString() }
+}
+
+export function decodeGoodweCanDiagnostics(payload: Uint8Array): Snapshot['goodwe_can'] | undefined {
+  const headerBytes = 40
+  const transmitIds = [0x453, 0x455, 0x456, 0x457, 0x458, 0x45a, 0x460]
+  const receiveIds = [0x420, 0x425, 0x305]
+  if (payload.length !== 156 || payload[0] !== 1) return undefined
+  const signed16 = (offset: number) => { const value = readLe16(payload, offset); return value > 0x7fff ? value - 0x10000 : value }
+  let offset = headerBytes
+  const transmitFrames = transmitIds.map(id => {
+    const frame = { id, success_count: readLe32(payload, offset), last_success_ms: readLe32(payload, offset + 4) }
+    offset += 8
+    return frame
+  })
+  const receiveFrames = receiveIds.map(id => {
+    const length = Math.min(payload[offset + 8], 8)
+    const frame = { id, count: readLe32(payload, offset), last_seen_ms: readLe32(payload, offset + 4), length, data: Array.from(payload.slice(offset + 9, offset + 9 + length)) }
+    offset += 20
+    return frame
+  })
+  return {
+    schema_version: payload[0],
+    protocol: payload[1],
+    request_45a_enabled: (payload[2] & 1) !== 0,
+    compatibility_460_enabled: (payload[2] & 2) !== 0,
+    transmit_cycles: readLe32(payload, 4),
+    snapshot_unavailable_cycles: readLe32(payload, 8),
+    transmit_failures: readLe32(payload, 12),
+    last_transmit_failure_ms: readLe32(payload, 16),
+    last_transmit_failure_id: readLe16(payload, 20),
+    reported_458_current_deci_a: signed16(22),
+    reported_458_voltage_deci_v: readLe16(payload, 24),
+    transmit_error_count: payload[26],
+    receive_error_count: payload[27],
+    error_logging_count: payload[28],
+    protocol_last_error_code: payload[29],
+    protocol_activity: payload[30],
+    error_passive: (payload[31] & 1) !== 0,
+    warning: (payload[31] & 2) !== 0,
+    bus_off: (payload[31] & 4) !== 0,
+    hal_error_code: readLe32(payload, 32),
+    transmit_fifo_free_level: readLe32(payload, 36),
+    transmit_frames: transmitFrames,
+    receive_frames: receiveFrames,
+  }
 }
 
 export function decodeCell(payload: Uint8Array): Snapshot['cells'][number] | undefined {

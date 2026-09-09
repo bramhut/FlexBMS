@@ -53,6 +53,7 @@ namespace FlexBms::GatewayApi
         UartV1::Pack pack{};
         UartV1::Energy energy{};
         UartV1::HvVoltages hvVoltages{};
+        UartV1::GoodweCanDiagnostics goodweCanDiagnostics{};
         std::array<UartV1::Cell, kMaxSlaves> cells{};
         std::array<UartV1::Temperature, kMaxSlaves> temperatures{};
         std::array<bool, kMaxSlaves> hasCell{};
@@ -61,6 +62,7 @@ namespace FlexBms::GatewayApi
         bool hasPack = false;
         bool hasEnergy = false;
         bool hasHvVoltages = false;
+        bool hasGoodweCanDiagnostics = false;
 
         struct WebSocketDelivery
         {
@@ -648,6 +650,63 @@ namespace FlexBms::GatewayApi
                 cJSON_AddBoolToObject(hvVoltagesJson, "valid", hvVoltages.valid);
                 cJSON_AddNumberToObject(hvVoltagesJson, "bat_plus_uV", hvVoltages.batteryVoltageUv);
                 cJSON_AddNumberToObject(hvVoltagesJson, "load_plus_uV", hvVoltages.loadVoltageUv);
+            }
+            if (hasGoodweCanDiagnostics)
+            {
+                static constexpr std::array<uint16_t, 7U> transmitIds = {
+                    0x453U, 0x455U, 0x456U, 0x457U, 0x458U, 0x45AU, 0x460U};
+                static constexpr std::array<uint16_t, 3U> receiveIds = {
+                    0x420U, 0x425U, 0x305U};
+
+                cJSON *goodwe = cJSON_AddObjectToObject(root, "goodwe_can");
+                cJSON_AddNumberToObject(goodwe, "schema_version", goodweCanDiagnostics.schemaVersion);
+                cJSON_AddNumberToObject(goodwe, "protocol", goodweCanDiagnostics.protocol);
+                cJSON_AddBoolToObject(goodwe, "request_45a_enabled", goodweCanDiagnostics.request45aEnabled);
+                cJSON_AddBoolToObject(goodwe, "compatibility_460_enabled", goodweCanDiagnostics.compatibility460Enabled);
+                cJSON_AddNumberToObject(goodwe, "transmit_cycles", goodweCanDiagnostics.transmitCycles);
+                cJSON_AddNumberToObject(goodwe, "snapshot_unavailable_cycles", goodweCanDiagnostics.snapshotUnavailableCycles);
+                cJSON_AddNumberToObject(goodwe, "transmit_failures", goodweCanDiagnostics.transmitFailures);
+                cJSON_AddNumberToObject(goodwe, "last_transmit_failure_ms", goodweCanDiagnostics.lastTransmitFailureMs);
+                cJSON_AddNumberToObject(goodwe, "last_transmit_failure_id", goodweCanDiagnostics.lastTransmitFailureId);
+                cJSON_AddNumberToObject(goodwe, "reported_458_current_deci_a", goodweCanDiagnostics.reported458CurrentDeciA);
+                cJSON_AddNumberToObject(goodwe, "reported_458_voltage_deci_v", goodweCanDiagnostics.reported458VoltageDeciV);
+                cJSON_AddNumberToObject(goodwe, "transmit_error_count", goodweCanDiagnostics.transmitErrorCount);
+                cJSON_AddNumberToObject(goodwe, "receive_error_count", goodweCanDiagnostics.receiveErrorCount);
+                cJSON_AddNumberToObject(goodwe, "error_logging_count", goodweCanDiagnostics.errorLoggingCount);
+                cJSON_AddNumberToObject(goodwe, "protocol_last_error_code", goodweCanDiagnostics.protocolLastErrorCode);
+                cJSON_AddNumberToObject(goodwe, "protocol_activity", goodweCanDiagnostics.protocolActivity);
+                cJSON_AddBoolToObject(goodwe, "error_passive", goodweCanDiagnostics.errorPassive);
+                cJSON_AddBoolToObject(goodwe, "warning", goodweCanDiagnostics.warning);
+                cJSON_AddBoolToObject(goodwe, "bus_off", goodweCanDiagnostics.busOff);
+                cJSON_AddNumberToObject(goodwe, "hal_error_code", goodweCanDiagnostics.halErrorCode);
+                cJSON_AddNumberToObject(goodwe, "transmit_fifo_free_level", goodweCanDiagnostics.transmitFifoFreeLevel);
+
+                cJSON *transmitFrames = cJSON_AddArrayToObject(goodwe, "transmit_frames");
+                for (size_t index = 0U; index < goodweCanDiagnostics.transmitFrames.size(); ++index)
+                {
+                    cJSON *frame = cJSON_CreateObject();
+                    cJSON_AddItemToArray(transmitFrames, frame);
+                    cJSON_AddNumberToObject(frame, "id", transmitIds[index]);
+                    cJSON_AddNumberToObject(frame, "success_count", goodweCanDiagnostics.transmitFrames[index].successCount);
+                    cJSON_AddNumberToObject(frame, "last_success_ms", goodweCanDiagnostics.transmitFrames[index].lastSuccessMs);
+                }
+
+                cJSON *receiveFrames = cJSON_AddArrayToObject(goodwe, "receive_frames");
+                for (size_t index = 0U; index < goodweCanDiagnostics.receiveFrames.size(); ++index)
+                {
+                    const UartV1::GoodweReceiveFrameDiagnostics &diagnostics = goodweCanDiagnostics.receiveFrames[index];
+                    cJSON *frame = cJSON_CreateObject();
+                    cJSON_AddItemToArray(receiveFrames, frame);
+                    cJSON_AddNumberToObject(frame, "id", receiveIds[index]);
+                    cJSON_AddNumberToObject(frame, "count", diagnostics.count);
+                    cJSON_AddNumberToObject(frame, "last_seen_ms", diagnostics.lastSeenMs);
+                    cJSON_AddNumberToObject(frame, "length", diagnostics.length);
+                    cJSON *data = cJSON_AddArrayToObject(frame, "data");
+                    for (uint8_t byteIndex = 0U; byteIndex < diagnostics.length; ++byteIndex)
+                    {
+                        cJSON_AddItemToArray(data, cJSON_CreateNumber(diagnostics.data[byteIndex]));
+                    }
+                }
             }
             cJSON *cellArray = cJSON_AddArrayToObject(root, "cells");
             cJSON *temperatureArray = cJSON_AddArrayToObject(root, "temperatures");
@@ -1324,6 +1383,8 @@ namespace FlexBms::GatewayApi
         else if (frame.type == UartV1::MessageType::Pack && UartV1::decodePack(frame, pack)) hasPack = true;
         else if (frame.type == UartV1::MessageType::Energy && UartV1::decodeEnergy(frame, energy)) hasEnergy = true;
         else if (frame.type == UartV1::MessageType::HvVoltages && UartV1::decodeHvVoltages(frame, hvVoltages)) hasHvVoltages = true;
+        else if (frame.type == UartV1::MessageType::GoodweCanDiagnostics &&
+                 UartV1::decodeGoodweCanDiagnostics(frame, goodweCanDiagnostics)) hasGoodweCanDiagnostics = true;
         else if (frame.type == UartV1::MessageType::Cell)
         {
             UartV1::Cell cell{};

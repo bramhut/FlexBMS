@@ -113,7 +113,11 @@ even if a browser client attempts to send them.
 
 Both builds support stale-status explanation, live BMS monitoring, register
 reads, Gateway NTP RTC sync and device-time readback, fault-clear requests,
-the immediate BMS run-request switch, and browser-local CSV logging. The Gateway build additionally offers Gateway
+the immediate BMS run-request switch, browser-local CSV logging, and a live
+GoodWe CAN diagnostic panel. The panel shows STM32 TX-queue acceptance/timing,
+transmit failures, FDCAN error counters and bus state, skipped CAN cycles, the
+exact current sent in `0x458`, and raw inverter responses `0x420`, `0x425`, and
+`0x305`; the same data is included in the CSV log. The Gateway build additionally offers Gateway
 Wi-Fi/link diagnostics. Its page prominently identifies the active connection
 as either Direct USB to STM32 or Via ESP32 Gateway and disables capabilities
 not available on that path.

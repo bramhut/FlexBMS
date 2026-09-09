@@ -523,12 +523,15 @@ default and generated FDCAN timing use Candidate A, while the startup code
 applies the selected timing before starting the shared CAN driver.
 
 The transmitter publishes the core frames once per second. Candidate A sends
-`0x453`, `0x455`, `0x456`, `0x457`, `0x458`, and the two-byte `0x460` default-
+`0x453`, `0x455`, `0x456`, `0x457`, `0x458`, the eight-zero-byte `0x45A`
+diagnostic request, and the two-byte `0x460` default-
 battery compatibility frame with payload `00 00`. The latter was enabled for
 the inverter's `Default *6` profile after the core frames were accepted but the
-inverter continued to report `BMS: Discharge disabled`. Candidate B sends
-`0x351`, `0x355`, `0x356`, and `0x359`. Candidate A `0x45A` and Candidate B
-`0x354` remain disabled because their use is not sufficiently confirmed.
+inverter continued to report `BMS: Discharge disabled`. `0x45A` is enabled to
+request the inverter's `0x425` measured voltage/current response during the
+diagnostic test; that response remains observation-only. Candidate B sends
+`0x351`, `0x355`, `0x356`, and `0x359`. Candidate B `0x354` remains disabled
+because its use is not sufficiently confirmed.
 
 The CAN receiver passively records standard frames `0x420`, `0x425`, and
 `0x305`, including counters, timestamps, and the last payload. These frames do
@@ -538,6 +541,19 @@ material describes `0x420` as a timeout/no-BMS indication, not as a confirmed
 request requiring a response. The Candidate B material describes `0x305` as an
 inverter-originated periodic frame; community testing also treated it as an ACK
 or keepalive rather than a BMS request.
+
+The STM32 publishes a 500 ms GoodWe diagnostic snapshot to Companion through
+the normal framed UART/Gateway path. Companion's Diagnostics page shows every
+Candidate A transmit frame's FDCAN-queue acceptance count and last-accept time,
+skipped cycles caused by an unavailable coherent BMS snapshot, the total and
+most recent transmit failure, the exact voltage/current last sent in `0x458`,
+and the raw `0x420`, `0x425`, and `0x305` receive counters, timestamps, and
+payloads. It also shows the hardware transmit/receive error counters, protocol
+state, bus-off/warning/error-passive flags, HAL error code, and TX FIFO free
+level so queue acceptance is not mistaken for confirmation of a completed CAN
+transmission. Browser-local CSV logging includes the same data,
+plus a clearly labelled candidate 0.1-unit decode of `0x425`; this decode is
+diagnostic evidence and not an input to battery safety or inverter limits.
 
 Application-level responses are guarded by
 `GOODWE_CAN_ENABLE_APPLICATION_RESPONSES`, which defaults to `0`. It must not

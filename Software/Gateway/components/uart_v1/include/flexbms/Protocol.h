@@ -23,6 +23,7 @@ namespace FlexBms::UartV1
         Temperature = 0x05U,
         HvVoltages = 0x06U,
         Energy = 0x07U,
+        GoodweCanDiagnostics = 0x08U,
         ServiceRequest = 0x10U,
         ServiceResponse = 0x11U,
         Event = 0x12U,
@@ -80,6 +81,47 @@ namespace FlexBms::UartV1
         uint64_t dischargedEnergyUWh{};
     };
 
+    struct GoodweTransmitFrameDiagnostics
+    {
+        uint32_t successCount{};
+        uint32_t lastSuccessMs{};
+    };
+
+    struct GoodweReceiveFrameDiagnostics
+    {
+        uint32_t count{};
+        uint32_t lastSeenMs{};
+        uint8_t length{};
+        std::array<uint8_t, 8U> data{};
+    };
+
+    struct GoodweCanDiagnostics
+    {
+        uint8_t schemaVersion{};
+        uint8_t protocol{};
+        bool request45aEnabled{};
+        bool compatibility460Enabled{};
+        uint32_t transmitCycles{};
+        uint32_t snapshotUnavailableCycles{};
+        uint32_t transmitFailures{};
+        uint32_t lastTransmitFailureMs{};
+        uint16_t lastTransmitFailureId{};
+        int16_t reported458CurrentDeciA{};
+        uint16_t reported458VoltageDeciV{};
+        uint8_t transmitErrorCount{};
+        uint8_t receiveErrorCount{};
+        uint8_t errorLoggingCount{};
+        uint8_t protocolLastErrorCode{};
+        uint8_t protocolActivity{};
+        bool errorPassive{};
+        bool warning{};
+        bool busOff{};
+        uint32_t halErrorCode{};
+        uint32_t transmitFifoFreeLevel{};
+        std::array<GoodweTransmitFrameDiagnostics, 7U> transmitFrames{};
+        std::array<GoodweReceiveFrameDiagnostics, 3U> receiveFrames{};
+    };
+
     struct Cell
     {
         uint8_t slaveIndex{};
@@ -124,6 +166,7 @@ namespace FlexBms::UartV1
     bool decodePack(const Frame &frame, Pack &pack);
     bool decodeHvVoltages(const Frame &frame, HvVoltages &voltages);
     bool decodeEnergy(const Frame &frame, Energy &energy);
+    bool decodeGoodweCanDiagnostics(const Frame &frame, GoodweCanDiagnostics &diagnostics);
     bool decodeCell(const Frame &frame, Cell &cell);
     bool decodeTemperature(const Frame &frame, Temperature &temperature);
 

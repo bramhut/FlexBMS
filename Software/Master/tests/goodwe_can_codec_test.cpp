@@ -54,6 +54,12 @@ namespace
             return false;
         }
 
+        if (!GoodweCan::encodeCandidateA(0x45AU, sample, frame) ||
+            frame.length != 8U || frame.data[0] != 0x00U || frame.data[7] != 0x00U)
+        {
+            return false;
+        }
+
         return GoodweCan::encodeCandidateA(0x460U, sample, frame) &&
                frame.length == 2U &&
                frame.data[0] == 0x00U && frame.data[1] == 0x00U;

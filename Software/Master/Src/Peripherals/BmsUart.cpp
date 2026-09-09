@@ -5,6 +5,8 @@
 #include "FirmwareVersion.h"
 #include "FaultManager.h"
 #include "FreeRTOS.h"
+#include "GoodweCan.h"
+#include "GoodweCanConfig.h"
 #include "RtcTime.h"
 #include "cmsis_os.h"
 #include "bcc/SlaveController.h"
@@ -58,6 +60,7 @@ namespace BmsUart
             TEMPERATURE = 0x05U,
             HV_VOLTAGES = 0x06U,
             ENERGY = 0x07U,
+            GOODWE_CAN_DIAGNOSTICS = 0x08U,
             SERVICE_REQUEST = 0x10U,
             SERVICE_RESPONSE = 0x11U,
             EVENT = 0x12U,
@@ -641,6 +644,62 @@ namespace BmsUart
             writeLe64(payload.data() + 1U, energy.chargedEnergyUWh);
             writeLe64(payload.data() + 9U, energy.dischargedEnergyUWh);
             broadcastFrame(ENERGY, 0U, payload.data(), payload.size());
+        }
+
+        void sendGoodweCanDiagnostics()
+        {
+            constexpr size_t HEADER_BYTES = 40U;
+            constexpr size_t TX_FRAME_BYTES = 8U;
+            constexpr size_t RX_FRAME_BYTES = 20U;
+            constexpr size_t PAYLOAD_BYTES = HEADER_BYTES +
+                                             GoodweCan::TRANSMIT_FRAME_IDS.size() * TX_FRAME_BYTES +
+                                             GoodweCan::RECEIVE_FRAME_IDS.size() * RX_FRAME_BYTES;
+            static_assert(PAYLOAD_BYTES == 156U);
+
+            const GoodweCan::Diagnostics diagnostics = GoodweCan::getDiagnostics();
+            std::array<uint8_t, PAYLOAD_BYTES> payload{};
+            payload[0] = 1U; // GoodWe diagnostics payload schema.
+            payload[1] = static_cast<uint8_t>(GOODWE_CAN_PROTOCOL);
+            if (GOODWE_CAN_A_ENABLE_45A) payload[2] |= 1U << 0U;
+            if (GOODWE_CAN_A_ENABLE_460) payload[2] |= 1U << 1U;
+            writeLe32(payload.data() + 4U, diagnostics.transmitCycles);
+            writeLe32(payload.data() + 8U, diagnostics.snapshotUnavailableCycles);
+            writeLe32(payload.data() + 12U, diagnostics.transmitFailures);
+            writeLe32(payload.data() + 16U, diagnostics.lastTransmitFailureMs);
+            writeLe16(payload.data() + 20U, static_cast<uint16_t>(diagnostics.lastTransmitFailureId));
+            writeLe16(payload.data() + 22U, static_cast<uint16_t>(diagnostics.last458CurrentDeciA));
+            writeLe16(payload.data() + 24U, diagnostics.last458VoltageDeciV);
+            payload[26] = diagnostics.transmitErrorCount;
+            payload[27] = diagnostics.receiveErrorCount;
+            payload[28] = diagnostics.errorLoggingCount;
+            payload[29] = diagnostics.protocolLastErrorCode;
+            payload[30] = diagnostics.protocolActivity;
+            if (diagnostics.errorPassive) payload[31] |= 1U << 0U;
+            if (diagnostics.warning) payload[31] |= 1U << 1U;
+            if (diagnostics.busOff) payload[31] |= 1U << 2U;
+            writeLe32(payload.data() + 32U, diagnostics.halErrorCode);
+            writeLe32(payload.data() + 36U, diagnostics.transmitFifoFreeLevel);
+
+            size_t offset = HEADER_BYTES;
+            for (const GoodweCan::TransmitFrameDiagnostics &frame : diagnostics.transmitFrames)
+            {
+                writeLe32(payload.data() + offset, frame.successCount);
+                writeLe32(payload.data() + offset + 4U, frame.lastSuccessMs);
+                offset += TX_FRAME_BYTES;
+            }
+
+            const std::array<GoodweCan::FrameDiagnostics, 3U> receivedFrames = {
+                diagnostics.timeout420, diagnostics.inverter425, diagnostics.inverter305};
+            for (const GoodweCan::FrameDiagnostics &frame : receivedFrames)
+            {
+                writeLe32(payload.data() + offset, frame.count);
+                writeLe32(payload.data() + offset + 4U, frame.lastSeenMs);
+                payload[offset + 8U] = frame.length;
+                std::memcpy(payload.data() + offset + 9U, frame.data, 8U);
+                offset += RX_FRAME_BYTES;
+            }
+
+            broadcastFrame(GOODWE_CAN_DIAGNOSTICS, 0U, payload.data(), payload.size());
         }
 
         uint32_t voltageToMicrovolts(double voltage)
@@ -1240,6 +1299,7 @@ namespace BmsUart
                     sendHvVoltages();
                     sendPack(uartMeasurementFrame.summary);
                     sendEnergy();
+                    sendGoodweCanDiagnostics();
                     sendCellsAndTemperatures(uartMeasurementFrame);
                     lastSnapshotMs = now;
                 }

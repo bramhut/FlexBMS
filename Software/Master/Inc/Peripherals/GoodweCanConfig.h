@@ -28,7 +28,7 @@
 
 /* Candidate A optional/default-profile compatibility frames. */
 #ifndef GOODWE_CAN_A_ENABLE_45A
-#define GOODWE_CAN_A_ENABLE_45A 0U
+#define GOODWE_CAN_A_ENABLE_45A 1U
 #endif
 
 #ifndef GOODWE_CAN_A_ENABLE_460

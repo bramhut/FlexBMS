@@ -74,6 +74,18 @@ namespace GoodweCan
             }
         }
 
+        TransmitFrameDiagnostics *transmitDiagnosticsForId(uint32_t id)
+        {
+            for (size_t index = 0U; index < TRANSMIT_FRAME_IDS.size(); ++index)
+            {
+                if (TRANSMIT_FRAME_IDS[index] == id)
+                {
+                    return &diagnostics.transmitFrames[index];
+                }
+            }
+            return nullptr;
+        }
+
         void recordReceivedFrame(const CAN::Frame &frame)
         {
             if (frame.isExtended || frame.isRtr)
@@ -91,6 +103,7 @@ namespace GoodweCan
             target->count++;
             target->lastSeenMs = millis();
             target->length = std::min<uint8_t>(frame.length, 8U);
+            std::fill_n(target->data, 8U, 0U);
             for (uint8_t index = 0U; index < target->length; ++index)
             {
                 target->data[index] = frame.data[index];
@@ -196,13 +209,31 @@ namespace GoodweCan
                 frame.data[index] = encoded.data[index];
             }
 
+            const uint32_t now = millis();
             if (mCan->sendMessage(frame))
             {
+                taskENTER_CRITICAL();
+                if (TransmitFrameDiagnostics *target = transmitDiagnosticsForId(encoded.id))
+                {
+                    target->successCount++;
+                    target->lastSuccessMs = now;
+                }
+                if (encoded.id == 0x458U && encoded.length >= 4U)
+                {
+                    diagnostics.last458VoltageDeciV = static_cast<uint16_t>(encoded.data[0]) |
+                                                      (static_cast<uint16_t>(encoded.data[1]) << 8U);
+                    diagnostics.last458CurrentDeciA = static_cast<int16_t>(
+                        static_cast<uint16_t>(encoded.data[2]) |
+                        (static_cast<uint16_t>(encoded.data[3]) << 8U));
+                }
+                taskEXIT_CRITICAL();
                 return true;
             }
 
             taskENTER_CRITICAL();
             diagnostics.transmitFailures++;
+            diagnostics.lastTransmitFailureMs = now;
+            diagnostics.lastTransmitFailureId = encoded.id;
             taskEXIT_CRITICAL();
             return false;
         }
@@ -212,12 +243,18 @@ namespace GoodweCan
             GoodweCan::CodecData data{};
             if (!makeCodecData(data))
             {
+                taskENTER_CRITICAL();
+                diagnostics.snapshotUnavailableCycles++;
+                taskEXIT_CRITICAL();
                 return;
             }
 
+            taskENTER_CRITICAL();
+            diagnostics.transmitCycles++;
+            taskEXIT_CRITICAL();
+
 #if GOODWE_CAN_PROTOCOL == GOODWE_CAN_PROTOCOL_A
-            constexpr std::array<uint32_t, 7U> frameIds = {
-                0x453U, 0x455U, 0x456U, 0x457U, 0x458U, 0x45AU, 0x460U};
+            constexpr auto &frameIds = TRANSMIT_FRAME_IDS;
 #else
             constexpr std::array<uint32_t, 4U> frameIds = {
                 0x351U, 0x355U, 0x356U, 0x359U};
@@ -313,6 +350,24 @@ namespace GoodweCan
         taskENTER_CRITICAL();
         copy = diagnostics;
         taskEXIT_CRITICAL();
+        FDCAN_ErrorCountersTypeDef errorCounters{};
+        if (HAL_FDCAN_GetErrorCounters(&hfdcan1, &errorCounters) == HAL_OK)
+        {
+            copy.transmitErrorCount = static_cast<uint8_t>(errorCounters.TxErrorCnt);
+            copy.receiveErrorCount = static_cast<uint8_t>(errorCounters.RxErrorCnt);
+            copy.errorLoggingCount = static_cast<uint8_t>(errorCounters.ErrorLogging);
+        }
+        FDCAN_ProtocolStatusTypeDef protocolStatus{};
+        if (HAL_FDCAN_GetProtocolStatus(&hfdcan1, &protocolStatus) == HAL_OK)
+        {
+            copy.protocolLastErrorCode = static_cast<uint8_t>(protocolStatus.LastErrorCode);
+            copy.protocolActivity = static_cast<uint8_t>(protocolStatus.Activity);
+            copy.errorPassive = protocolStatus.ErrorPassive != 0U;
+            copy.warning = protocolStatus.Warning != 0U;
+            copy.busOff = protocolStatus.BusOff != 0U;
+        }
+        copy.halErrorCode = hfdcan1.ErrorCode;
+        copy.transmitFifoFreeLevel = HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1);
         return copy;
     }
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { crc32, decodeEnergy, decodeHvVoltages, decodeStatus, encodeFrame, FrameDecoder, messageType, serviceId, writeLe32 } from '../src/shared/uartV1.ts'
+import { crc32, decodeEnergy, decodeGoodweCanDiagnostics, decodeHvVoltages, decodeStatus, encodeFrame, FrameDecoder, messageType, serviceId, writeLe16, writeLe32 } from '../src/shared/uartV1.ts'
 
 test('UART v1 browser codec matches the canonical heartbeat vector', () => {
   const heartbeat = encodeFrame({ type: messageType.heartbeat, sequence: 0, payload: new Uint8Array() })
@@ -32,6 +32,48 @@ test('UART v1 decodes 64-bit energy counters and rejects malformed payloads', ()
   const payload = Uint8Array.from([1, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x99, 0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff])
   assert.deepEqual(decodeEnergy(payload), { valid: true, charged_energy_uWh: '1234605616436508552', discharged_energy_uWh: '18441921395520307353' })
   assert.equal(decodeEnergy(payload.slice(0, 16)), undefined)
+})
+
+test('UART v1 decodes GoodWe CAN counters, timestamps, signed current, and raw replies', () => {
+  const payload = new Uint8Array(156)
+  payload[0] = 1
+  payload[1] = 1
+  payload[2] = 3
+  writeLe32(payload, 4, 123)
+  writeLe32(payload, 12, 2)
+  writeLe32(payload, 16, 42_000)
+  writeLe16(payload, 20, 0x458)
+  writeLe16(payload, 22, 0xffd3)
+  writeLe16(payload, 24, 3290)
+  payload[26] = 3
+  payload[27] = 4
+  payload[28] = 5
+  payload[29] = 6
+  payload[30] = 8
+  payload[31] = 4
+  writeLe32(payload, 32, 0x200)
+  writeLe32(payload, 36, 2)
+  writeLe32(payload, 40, 120)
+  writeLe32(payload, 44, 41_500)
+  writeLe32(payload, 116, 9)
+  writeLe32(payload, 120, 41_900)
+  payload[124] = 4
+  payload.set([0xda, 0x0c, 0x25, 0x00], 125)
+  const diagnostics = decodeGoodweCanDiagnostics(payload)
+  assert.equal(diagnostics?.transmit_cycles, 123)
+  assert.equal(diagnostics?.transmit_failures, 2)
+  assert.equal(diagnostics?.last_transmit_failure_id, 0x458)
+  assert.equal(diagnostics?.reported_458_current_deci_a, -45)
+  assert.equal(diagnostics?.reported_458_voltage_deci_v, 3290)
+  assert.equal(diagnostics?.transmit_error_count, 3)
+  assert.equal(diagnostics?.receive_error_count, 4)
+  assert.equal(diagnostics?.bus_off, true)
+  assert.equal(diagnostics?.hal_error_code, 0x200)
+  assert.equal(diagnostics?.transmit_fifo_free_level, 2)
+  assert.deepEqual(diagnostics?.transmit_frames[0], { id: 0x453, success_count: 120, last_success_ms: 41_500 })
+  assert.deepEqual(diagnostics?.receive_frames[1], { id: 0x425, count: 9, last_seen_ms: 41_900, length: 4, data: [0xda, 0x0c, 0x25, 0x00] })
+  payload[0] = 2
+  assert.equal(decodeGoodweCanDiagnostics(payload), undefined)
 })
 
 test('UART v1 status exposes current sensing and SOC calibration validity', () => {
