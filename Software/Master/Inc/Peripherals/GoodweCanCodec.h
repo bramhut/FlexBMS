@@ -151,9 +151,12 @@ namespace GoodweCan
 
         case 0x460U:
 #if GOODWE_CAN_A_ENABLE_460
+            // The captured GoodWe default-battery profile sends this
+            // compatibility frame as two reserved zero bytes. Directional
+            // permission remains fail-safe in 0x456 via the current limits.
             frame.length = 2U;
-            frame.data[0] = static_cast<uint8_t>((data.chargeAllowed ? 1U : 0U) |
-                                                  (data.dischargeAllowed ? 2U : 0U));
+            frame.data[0] = 0U;
+            frame.data[1] = 0U;
             return true;
 #else
             return false;

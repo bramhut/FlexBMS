@@ -523,10 +523,12 @@ default and generated FDCAN timing use Candidate A, while the startup code
 applies the selected timing before starting the shared CAN driver.
 
 The transmitter publishes the core frames once per second. Candidate A sends
-`0x453`, `0x455`, `0x456`, `0x457`, and `0x458`. Candidate B sends `0x351`,
-`0x355`, `0x356`, and `0x359`. Candidate A `0x45A`/`0x460` and Candidate B
-`0x354` are not enabled in the first build because their meanings or payloads
-are not sufficiently confirmed.
+`0x453`, `0x455`, `0x456`, `0x457`, `0x458`, and the two-byte `0x460` default-
+battery compatibility frame with payload `00 00`. The latter was enabled for
+the inverter's `Default *6` profile after the core frames were accepted but the
+inverter continued to report `BMS: Discharge disabled`. Candidate B sends
+`0x351`, `0x355`, `0x356`, and `0x359`. Candidate A `0x45A` and Candidate B
+`0x354` remain disabled because their use is not sufficiently confirmed.
 
 The CAN receiver passively records standard frames `0x420`, `0x425`, and
 `0x305`, including counters, timestamps, and the last payload. These frames do
@@ -570,8 +572,9 @@ calibrated SoC.
 - Is `0x420` only a timeout indication, or does this firmware require an
   additional response? The available HV document does not establish a reply
   to `0x420`; the implemented receiver records it so this can be verified.
-- Are `0x45A` and `0x460` required for startup, or are they optional/status
-  frames? What values and timing do the approved batteries use?
+- Does the `0x460 00 00` frame clear the discharge-disable status on the
+  GW12K-ET-20 with the `Default *6` battery profile? Is `0x45A` also required,
+  and what values and timing do approved batteries use?
 - Does the inverter emit `0x425` after receiving `0x45A`, and can that frame be
   used for diagnostics without becoming a BMS safety input?
 - What are the exact signs, limits, alarm bits, and timeout intervals on this

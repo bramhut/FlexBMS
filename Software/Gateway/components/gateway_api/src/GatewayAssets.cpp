@@ -15,6 +15,6 @@ const Asset kAssets[] = {
 {"index.html", "text/html", asset_5, 595U},
 };
 const size_t kAssetCount = 6U;
-const char kCompanionVersion[] = "0.1.62+0c87774d30a7134d";
+const char kCompanionVersion[] = "0.1.63+0c87774d30a7134d";
 const char kCompanionBuildId[] = "0c87774d30a7134d";
 }

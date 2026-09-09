@@ -46,10 +46,17 @@ namespace
             return false;
         }
 
-        return GoodweCan::encodeCandidateA(0x458U, sample, frame) &&
-               frame.data[0] == 0x00U && frame.data[1] == 0x0CU &&
-               frame.data[2] == 0x32U && frame.data[3] == 0x00U &&
-               frame.data[4] == 0xFAU && frame.data[5] == 0x00U;
+        if (!GoodweCan::encodeCandidateA(0x458U, sample, frame) ||
+            frame.data[0] != 0x00U || frame.data[1] != 0x0CU ||
+            frame.data[2] != 0x32U || frame.data[3] != 0x00U ||
+            frame.data[4] != 0xFAU || frame.data[5] != 0x00U)
+        {
+            return false;
+        }
+
+        return GoodweCan::encodeCandidateA(0x460U, sample, frame) &&
+               frame.length == 2U &&
+               frame.data[0] == 0x00U && frame.data[1] == 0x00U;
     }
 
     constexpr bool candidateBEncodingIsStable()

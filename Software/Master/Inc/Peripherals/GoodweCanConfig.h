@@ -26,13 +26,13 @@
 #error "GOODWE_CAN_ENABLE_APPLICATION_RESPONSES must be 0 or 1"
 #endif
 
-/* Candidate A experimental frames. Their meanings are not confirmed. */
+/* Candidate A optional/default-profile compatibility frames. */
 #ifndef GOODWE_CAN_A_ENABLE_45A
 #define GOODWE_CAN_A_ENABLE_45A 0U
 #endif
 
 #ifndef GOODWE_CAN_A_ENABLE_460
-#define GOODWE_CAN_A_ENABLE_460 0U
+#define GOODWE_CAN_A_ENABLE_460 1U
 #endif
 
 /* Candidate B frame 0x354 is not emitted until its payload is confirmed. */
