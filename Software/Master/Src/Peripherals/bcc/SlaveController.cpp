@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <span>
 
 #define DEBUG_LVL 2
@@ -1002,7 +1003,11 @@ namespace SlaveController
             {
                 const double socPercent =
                     (static_cast<double>(liveSoC()) / UINT16_MAX * 3.0 - 1.0) * 100.0;
-                snapshot.socPercent = static_cast<uint16_t>(std::clamp(socPercent, 0.0, 100.0));
+                // The raw BCC value is quantized. Round the public integer
+                // representation so a value just below 100% due to that
+                // quantization does not become 99% on the inverter bus.
+                snapshot.socPercent = static_cast<uint16_t>(std::clamp(
+                    std::lround(socPercent), 0L, 100L));
             }
             summary.socRaw = snapshot.socValid ? liveSoC() : 0U;
 

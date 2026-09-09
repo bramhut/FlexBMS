@@ -9,6 +9,8 @@ import { unavailableCapabilities } from '../src/transports/Transport.ts'
 test('raw UART v1 units convert in the presentation layer', () => {
   assert.equal(currentA(-64), -1)
   assert.equal(socPercent(65535), 200)
+  assert.equal(socPercent(43689), 100)
+  assert.equal(socPercent(43688), 99.99)
   assert.equal(ntcCelsius(0), -20)
   assert.equal(icCelsius(29430).toFixed(2), '21.15')
 })

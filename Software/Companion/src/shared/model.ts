@@ -7,7 +7,7 @@ export const formatCellDifferenceMv = (microvolts: number): string => {
 }
 export const currentA = (raw: number) => raw / 64
 export const powerW = (voltageUv: number, currentRaw: number) => cellVoltageV(voltageUv) * currentA(currentRaw)
-export const socPercent = (raw: number) => 100 * (raw / 65535 * 3 - 1)
+export const socPercent = (raw: number) => Math.round((raw / 65535 * 3 - 1) * 10_000) / 100
 export const ntcCelsius = (raw: number) => raw / 65535 * 120 - 20
 // The STM32 BCC driver exports IC temperature as centikelvin.
 export const icCelsius = (raw: number) => raw / 100 - 273.15

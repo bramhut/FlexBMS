@@ -685,9 +685,17 @@ namespace FlexBms::Wifi
                 logError("Creating Wi-Fi event loop", result);
                 return false;
             }
-            if (esp_netif_create_default_wifi_ap() == nullptr || esp_netif_create_default_wifi_sta() == nullptr)
+            esp_netif_t *accessPointNetif = esp_netif_create_default_wifi_ap();
+            esp_netif_t *stationNetif = esp_netif_create_default_wifi_sta();
+            if (accessPointNetif == nullptr || stationNetif == nullptr)
             {
                 ESP_LOGE(kLogTag, "Creating Wi-Fi network interfaces failed");
+                return false;
+            }
+            result = esp_netif_set_hostname(stationNetif, "FlexBMS");
+            if (result != ESP_OK)
+            {
+                logError("Setting Wi-Fi station hostname", result);
                 return false;
             }
             wifi_init_config_t initConfig = WIFI_INIT_CONFIG_DEFAULT();

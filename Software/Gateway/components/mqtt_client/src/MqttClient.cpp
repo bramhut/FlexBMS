@@ -31,6 +31,34 @@ namespace FlexBms::Mqtt
         constexpr int64_t kStartRetryMinimumUs = 5'000'000LL;
         constexpr int64_t kStartRetryMaximumUs = 60'000'000LL;
 
+        uint16_t socPercentHundredths(uint16_t raw)
+        {
+            // Convert using integer arithmetic and round to the precision
+            // exposed by MQTT. This avoids publishing the binary float tail
+            // from the BCC raw-to-percent conversion.
+            constexpr int64_t kRawMaximum = 65535LL;
+            constexpr int64_t kPercentHundredths = 100LL;
+            constexpr int64_t kFullRangeHundredths = 3LL * kPercentHundredths * kPercentHundredths;
+            const int64_t rounded =
+                (static_cast<int64_t>(raw) * kFullRangeHundredths + kRawMaximum / 2LL) /
+                    kRawMaximum -
+                kPercentHundredths * kPercentHundredths;
+            return static_cast<uint16_t>(std::clamp<int64_t>(
+                rounded, 0LL, kPercentHundredths * kPercentHundredths));
+        }
+
+        void addSocPercent(cJSON *root, uint16_t raw)
+        {
+            const uint16_t hundredths = socPercentHundredths(raw);
+            char value[16]{};
+            std::snprintf(value, sizeof(value), "%u.%02u",
+                          static_cast<unsigned>(hundredths / 100U),
+                          static_cast<unsigned>(hundredths % 100U));
+            // Add the fixed-point text as a JSON number so Home Assistant
+            // receives a numeric sensor value without a floating-point tail.
+            cJSON_AddRawToObject(root, "soc_percent", value);
+        }
+
         struct Credentials
         {
             std::array<char, kHostBytes + 1U> host{};
@@ -190,7 +218,7 @@ namespace FlexBms::Mqtt
             component("pack_voltage", "sensor", "Pack voltage", "{{ value_json.pack_voltage_v }}", "voltage", "V", nullptr, -1, "measurement");
             component("pack_current", "sensor", "Pack current", "{{ value_json.pack_current_a if value_json.current_valid else none }}", "current", "A", nullptr, -1, "measurement");
             component("pack_power", "sensor", "Pack power", "{{ value_json.pack_power_w if value_json.current_valid else none }}", "power", "W", nullptr, -1, "measurement");
-            component("state_of_charge", "sensor", "State of charge", "{{ value_json.soc_percent if value_json.soc_valid else none }}", "battery", "%", nullptr, -1, "measurement");
+            component("state_of_charge", "sensor", "State of charge", "{{ value_json.soc_percent if value_json.soc_valid else none }}", "battery", "%", nullptr, 1, "measurement");
             component("min_cell_voltage", "sensor", "Minimum cell voltage", "{{ value_json.min_cell_v }}", "voltage", "V", nullptr, 3, "measurement");
             component("max_cell_voltage", "sensor", "Maximum cell voltage", "{{ value_json.max_cell_v }}", "voltage", "V", nullptr, 3, "measurement");
             component("cell_delta", "sensor", "Cell voltage delta", "{{ value_json.cell_delta_mv }}", nullptr, "mV", nullptr, 0, "measurement");
@@ -270,7 +298,7 @@ namespace FlexBms::Mqtt
                 cJSON_AddNumberToObject(root, "pack_voltage_v", voltage);
                 cJSON_AddNumberToObject(root, "pack_current_a", current);
                 cJSON_AddNumberToObject(root, "pack_power_w", voltage * current);
-                cJSON_AddNumberToObject(root, "soc_percent", 100.0F * (static_cast<float>(pack.socRaw) / 65535.0F * 3.0F - 1.0F));
+                addSocPercent(root, pack.socRaw);
                 cJSON_AddNumberToObject(root, "min_cell_v", static_cast<float>(pack.minCellUv) / 1'000'000.0F);
                 cJSON_AddNumberToObject(root, "max_cell_v", static_cast<float>(pack.maxCellUv) / 1'000'000.0F);
                 cJSON_AddNumberToObject(root, "cell_delta_mv", static_cast<float>(pack.maxCellUv - pack.minCellUv) / 1'000.0F);
