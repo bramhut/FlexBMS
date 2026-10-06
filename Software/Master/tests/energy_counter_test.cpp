@@ -9,12 +9,12 @@ namespace
     {
         uint64_t remainder = 0U;
         uint64_t charged = 0U;
-        charged = EnergyCounter::integrateMicroWh(charged, remainder, 300'000'000U, 640U, 1'000'000U);
+        charged = EnergyCounter::integrateMicroWh(charged, remainder, 300'000'000U, 10'000'000U, 1'000'000U);
         if (charged != 833'333U) return false; // 300 V * 10 A * 1 s
 
         uint64_t discharged = 0U;
         remainder = 0U;
-        discharged = EnergyCounter::integrateMicroWh(discharged, remainder, 300'000'000U, 640U, 500'000U);
+        discharged = EnergyCounter::integrateMicroWh(discharged, remainder, 300'000'000U, 10'000'000U, 500'000U);
         if (discharged != 416'666U) return false;
 
         const uint64_t held = EnergyCounter::integrateMicroWh(discharged, remainder, 300'000'000U, 0U, 1'000'000U);

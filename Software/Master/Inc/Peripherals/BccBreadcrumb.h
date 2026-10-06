@@ -6,7 +6,8 @@ namespace BccBreadcrumb
 {
     // BKP18R and BKP19R are intentionally reserved for reset diagnostics.
     // They sit after the energy-counter record (BKP8R..BKP17R) and before
-    // SoC calibration storage (BKP28R..BKP30R). BKP20R..BKP27R remain free.
+    // SoC calibration details use BKP20R..BKP25R; BKP26R..BKP27R remain free.
+    // The calibration timestamp remains in BKP28R..BKP30R.
     constexpr uint8_t kBackupRegister = 18U;
     constexpr uint8_t kWatchdogBackupRegister = 19U;
 

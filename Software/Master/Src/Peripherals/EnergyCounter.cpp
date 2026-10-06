@@ -50,9 +50,9 @@ namespace EnergyCounter
         }
 
         void integrate(uint64_t &counter, uint64_t &remainder, uint32_t voltageUv,
-                       uint32_t currentRawMagnitude, uint32_t elapsedUs)
+                       uint32_t currentMicroAmpsMagnitude, uint32_t elapsedUs)
         {
-            counter = integrateMicroWh(counter, remainder, voltageUv, currentRawMagnitude, elapsedUs);
+            counter = integrateMicroWh(counter, remainder, voltageUv, currentMicroAmpsMagnitude, elapsedUs);
         }
     }
 
@@ -81,7 +81,7 @@ namespace EnergyCounter
         taskEXIT_CRITICAL();
     }
 
-    void update(uint32_t packVoltageUv, int16_t packCurrentRaw, uint32_t timestampUs, bool valid)
+    void update(uint32_t packVoltageUv, int32_t packCurrentMicroAmps, uint32_t timestampUs, bool valid)
     {
         if (!initialized)
         {
@@ -106,22 +106,22 @@ namespace EnergyCounter
 
         const uint32_t elapsedUs = elapsedMicroseconds(timestampUs, previousTimestampUs);
         previousTimestampUs = timestampUs;
-        if (elapsedUs == 0U)
+        if (elapsedUs == 0U || elapsedUs > 1'000'000U)
         {
             taskEXIT_CRITICAL();
             return;
         }
 
-        const uint32_t currentRawMagnitude = packCurrentRaw < 0
-                                                 ? static_cast<uint32_t>(-(static_cast<int32_t>(packCurrentRaw)))
-                                                 : static_cast<uint32_t>(packCurrentRaw);
-        if (packCurrentRaw > 0)
+        const uint32_t currentMicroAmpsMagnitude = packCurrentMicroAmps < 0
+                                                 ? static_cast<uint32_t>(-(static_cast<int64_t>(packCurrentMicroAmps)))
+                                                 : static_cast<uint32_t>(packCurrentMicroAmps);
+        if (packCurrentMicroAmps > 0)
         {
-            integrate(chargedEnergyUWh, chargedRemainder, packVoltageUv, currentRawMagnitude, elapsedUs);
+            integrate(chargedEnergyUWh, chargedRemainder, packVoltageUv, currentMicroAmpsMagnitude, elapsedUs);
         }
         else
         {
-            integrate(dischargedEnergyUWh, dischargedRemainder, packVoltageUv, currentRawMagnitude, elapsedUs);
+            integrate(dischargedEnergyUWh, dischargedRemainder, packVoltageUv, currentMicroAmpsMagnitude, elapsedUs);
         }
         persist();
         taskEXIT_CRITICAL();

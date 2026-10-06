@@ -7,6 +7,24 @@
 
 namespace BatteryBalancing
 {
+    inline constexpr uint32_t QualificationMs = 30'000U;
+    inline constexpr uint32_t ShortPulseMs = 30'000U;
+    // Qualification gates new pulses only; safety checks remain independent.
+    class CurrentQualification
+    {
+    public:
+        constexpr void reset() { tracking = false; }
+        constexpr bool update(bool inRange, uint32_t now)
+        {
+            if (!inRange) { reset(); return false; }
+            if (!tracking) { since = now; tracking = true; }
+            return static_cast<uint32_t>(now - since) >= QualificationMs;
+        }
+    private:
+        uint32_t since = 0U;
+        bool tracking = false;
+    };
+
     struct Selection
     {
         uint16_t mask{};

@@ -1,3 +1,4 @@
+#include "FirmwareVersion.h"
 
 /*!
  * @file slaveController.cpp
@@ -16,7 +17,13 @@
 #include "EnergyCounter.h"
 #include "BccBreadcrumb.h"
 #include "Peripherals/BatteryBalancing.h"
+#include "Peripherals/BalancingCharge.h"
+#include "Peripherals/SelfDischarge.h"
+#include "Peripherals/CurrentUnits.h"
+#include "Peripherals/CurrentSensingPolicy.h"
 #include "Peripherals/BatteryLimits.h"
+#include "Peripherals/TemperatureLimits.h"
+#include "Peripherals/BatterySoc.h"
 #include "Watchdog.h"
 #include "pcc.h"
 #include "bcc/SlaveController.h"
@@ -30,6 +37,8 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <initializer_list>
+#include <limits>
 #include <span>
 
 #define DEBUG_LVL 2
@@ -85,6 +94,7 @@ namespace SlaveController
         // Static firmware defaults contain safety limits and hardware timing.
         // Companion-configurable values live in this runtime/NV-backed object.
         const StaticSettings_t &settings = DEFAULT_STATIC_SETTINGS;
+        bool activeConfigurationLoaded = false;
         RuntimeConfiguration::Values runtimeConfiguration = RuntimeConfiguration::defaults();
 
         uint16_t cBalancingTime = 0; // Time in [min] for a single cell balancing operation
@@ -96,7 +106,15 @@ namespace SlaveController
         std::array<uint8_t, RuntimeConfiguration::MAX_SLAVES> balancingSelectionStartIndices{};
         bool balancingHardwareStateKnown = false;
         bool balancingCycleActive = false;
+        BatteryBalancing::CurrentQualification balancingCurrentQualification;
         uint32_t balancingCycleEndMs = 0U;
+        std::array<BalancingCharge::Timeline, RuntimeConfiguration::MAX_SLAVES>
+            balancingAccountingTimelines{};
+        std::array<std::array<BalancingCharge::Counter, MAX_MEASUREMENT_CELLS>,
+                   RuntimeConfiguration::MAX_SLAVES> balancingChargeMilliAmpMs{};
+        SelfDischarge::CalibrationInterval selfDischargeInterval{};
+        uint32_t selfDischargeLastTickMs{};
+        SelfDischargeSnapshot publishedSelfDischargeSnapshot{};
         bool startupDiagnosticsEnabled = true;
         std::array<DiagnosticReport, RuntimeConfiguration::MAX_SLAVES> diagnosticReports{};
         size_t diagnosticReportCount = 0U;
@@ -104,11 +122,19 @@ namespace SlaveController
         uint8_t currentMeasurementSlaveIdx = 0; // Index of the slave responsible for current measurement
         bool currentMeasurementConfigured = false;
         uint32_t fullSocConditionsSinceMs = 0U;
-        bool fullSocCalibrationApplied = false;
+        bool fullChargeConfirmed = false;
         constexpr uint32_t kSocCalibrationMarker = 0x534F4332U; // "SOC2"
         constexpr uint32_t kSocCalibrationChecksumXor = 0xA56CC39DU;
+        constexpr uint32_t kSocCalibrationDetailsMarker = 0x53434431U; // "SCD1"
+        constexpr uint32_t kSocCalibrationDetailsCompleteMarker = 0x53434432U; // "SCD2"
+        constexpr uint32_t kSocCalibrationDetailsIncompleteMarker = 0x53434433U; // "SCD3"
+        constexpr uint8_t kSocCalibrationDetailsBackupRegister = 20U;
+        constexpr uint8_t kSocCalibrationSelfDischargeBackupRegister = 26U;
         constexpr uint8_t kSocCalibrationTimeBackupRegister = 28U;
 
+        volatile uint32_t *socCalibrationDetails = &(TAMP->BKP0R) + kSocCalibrationDetailsBackupRegister;
+        volatile uint32_t *socCalibrationSelfDischargeLoss =
+            &(TAMP->BKP0R) + kSocCalibrationSelfDischargeBackupRegister;
         volatile uint32_t *socCalibrationTime = &(TAMP->BKP0R) + kSocCalibrationTimeBackupRegister;
         volatile uint32_t *socCalibrationChecksum = &(TAMP->BKP0R) + kSocCalibrationTimeBackupRegister + 1U;
         volatile uint32_t *socCalibrationMarker = &(TAMP->BKP0R) + kSocCalibrationTimeBackupRegister + 2U;
@@ -127,6 +153,10 @@ namespace SlaveController
         bool hasValidBatteryCanSnapshot = false;
         uint8_t consecutiveCommunicationFailures = 0U;
         std::atomic<bool> chargeTemperatureInhibit{false};
+        TemperatureLimits::Controller temperatureController;
+        TemperatureLimits::Limits temperatureLimits;
+        CurrentLimitGuard::Controller currentLimitGuard;
+        CurrentLimitGuard::Event currentLimitEvent;
         double publishedChargeCurrentLimitA = 0.0;
         double publishedDischargeCurrentLimitA = 0.0;
         uint32_t currentLimitUpdatedAtMs = 0U;
@@ -172,7 +202,45 @@ namespace SlaveController
             balancingSelectionStartIndices.fill(0U);
             balancingHardwareStateKnown = hardwareKnownDisabled;
             balancingCycleActive = false;
+            balancingCurrentQualification.reset();
             balancingCycleEndMs = 0U;
+            for (auto &timeline : balancingAccountingTimelines) timeline.reset();
+        }
+
+        void accumulateBalancingCharge(size_t slaveIndex, uint32_t now)
+        {
+            if (slaveIndex >= mSlaves.size() || slaveIndex >= workingMeasurementFrame.monitorCount)
+            {
+                return;
+            }
+            const uint32_t enabledDurationMs = balancingAccountingTimelines[slaveIndex]
+                                                  .takeEnabledMilliseconds(now);
+            if (enabledDurationMs == 0U)
+            {
+                return;
+            }
+
+            const auto &monitor = workingMeasurementFrame.monitors[slaveIndex];
+            const uint16_t activeMask = activeBalancingMasks[slaveIndex];
+            for (size_t cellIndex = 0U;
+                 cellIndex < monitor.cellCount && cellIndex < MAX_MEASUREMENT_CELLS;
+                 ++cellIndex)
+            {
+                if ((activeMask & (1U << cellIndex)) == 0U) continue;
+                // Keep floating-point work outside the critical section;
+                // only protect the small counter copies and update.
+                const uint32_t cellVoltageUv = monitor.cellVoltagesUv[cellIndex];
+                const uint64_t increment = BalancingCharge::milliAmpMilliseconds(
+                    cellVoltageUv, BMS_BAL_RESISTANCE, enabledDurationMs);
+                BalancingCharge::Counter updated{};
+                taskENTER_CRITICAL();
+                updated = balancingChargeMilliAmpMs[slaveIndex][cellIndex];
+                taskEXIT_CRITICAL();
+                BalancingCharge::addMilliAmpMilliseconds(updated, increment);
+                taskENTER_CRITICAL();
+                balancingChargeMilliAmpMs[slaveIndex][cellIndex] = updated;
+                taskEXIT_CRITICAL();
+            }
         }
 
         double shuntResistanceOhms()
@@ -183,6 +251,100 @@ namespace SlaveController
         double batteryCapacityAh()
         {
             return runtimeConfiguration.batteryCapacityMilliAh / 1'000.0;
+        }
+
+        uint32_t socCalibrationDetailsChecksum(uint32_t packedSoc, uint32_t unixTime,
+                                               uint32_t previousUnixTime, uint32_t dwellMs)
+        {
+            uint32_t checksum = 2166136261U;
+            for (const uint32_t value : {packedSoc, unixTime, previousUnixTime, dwellMs})
+            {
+                checksum = (checksum ^ value) * 16777619U;
+            }
+            return checksum;
+        }
+
+        uint32_t socCalibrationDetailsChecksum(uint32_t packedSoc, uint32_t unixTime,
+                                               uint32_t previousUnixTime, uint32_t dwellMs,
+                                               uint32_t modeledLossMilliAh, uint32_t marker)
+        {
+            uint32_t checksum = socCalibrationDetailsChecksum(packedSoc, unixTime,
+                                                              previousUnixTime, dwellMs);
+            for (const uint32_t value : {modeledLossMilliAh, marker})
+            {
+                checksum = (checksum ^ value) * 16777619U;
+            }
+            return checksum;
+        }
+
+        void markSelfDischargeDiagnosticsIncomplete()
+        {
+            selfDischargeInterval.markIncomplete();
+        }
+
+        void publishSelfDischargeSnapshot()
+        {
+            const bool socValid = currentMeasurementConfigured &&
+                                  currentMeasurementSlaveIdx < mSlaves.size() &&
+                                  mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid();
+            const SelfDischargeSnapshot snapshot = {
+                .rateTenthPercentPer30Days = runtimeConfiguration.selfDischargeRateTenthPercentPer30Days,
+                .equivalentCurrentMicroAmps = static_cast<uint32_t>(SelfDischarge::equivalentCurrentMicroAmps(
+                    runtimeConfiguration.batteryCapacityMilliAh,
+                    runtimeConfiguration.selfDischargeRateTenthPercentPer30Days)),
+                .accumulatedSinceCalibrationMicroAh = selfDischargeInterval.accumulatedMicroAh(),
+                .socValid = socValid,
+                .intervalComplete = socValid && selfDischargeInterval.complete(),
+            };
+            taskENTER_CRITICAL();
+            publishedSelfDischargeSnapshot = snapshot;
+            taskEXIT_CRITICAL();
+        }
+
+        void updateSelfDischarge(uint32_t nowMs)
+        {
+            const uint32_t elapsedMs = nowMs - selfDischargeLastTickMs;
+            selfDischargeLastTickMs = nowMs;
+            if (elapsedMs == 0U)
+            {
+                publishSelfDischargeSnapshot();
+                return;
+            }
+
+            if (!currentMeasurementConfigured || currentMeasurementSlaveIdx >= mSlaves.size() ||
+                !mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid())
+            {
+                markSelfDischargeDiagnosticsIncomplete();
+                publishSelfDischargeSnapshot();
+                return;
+            }
+
+            const uint64_t lossMicroAh = selfDischargeInterval.advance(
+                runtimeConfiguration.batteryCapacityMilliAh,
+                runtimeConfiguration.selfDischargeRateTenthPercentPer30Days,
+                elapsedMs, true);
+
+            // Apply every whole µAh directly. RTC backup writes have no flash
+            // wear, and avoiding a second pending buffer keeps applied charge
+            // aligned with the exact fixed-point diagnostic total.
+            if (lossMicroAh != 0U)
+            {
+                const double currentAh = mSlaves[currentMeasurementSlaveIdx].getAhCounter();
+                const double lossAh = static_cast<double>(lossMicroAh) / 1'000'000.0;
+                const double capacityAh = batteryCapacityAh();
+                const double nextAh = std::clamp(currentAh - lossAh, 0.0, capacityAh * 2.0);
+                mSlaves[currentMeasurementSlaveIdx].setAhCounter(nextAh);
+            }
+            publishSelfDischargeSnapshot();
+        }
+
+        void beginSelfDischargeCalibrationInterval()
+        {
+            const bool socValid = currentMeasurementConfigured &&
+                                  currentMeasurementSlaveIdx < mSlaves.size() &&
+                                  mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid();
+            selfDischargeInterval.beginAfterCalibration(socValid);
+            publishSelfDischargeSnapshot();
         }
 
         uint16_t liveSoC()
@@ -196,7 +358,7 @@ namespace SlaveController
             const double ampHour = std::clamp(
                 mSlaves[currentMeasurementSlaveIdx].getAhCounter(),
                 0.0,
-                batteryCapacityAh());
+                batteryCapacityAh() * 2.0);
             return BCC_AMPHOUR_TO_SOC(ampHour, batteryCapacityAh());
         }
 
@@ -273,10 +435,22 @@ namespace SlaveController
             publishedDischargeCurrentLimitA = 0.0;
             currentLimitUpdatedAtMs = 0U;
             currentLimitRecoveryInitialized = false;
+            temperatureController.reset();
+            temperatureLimits = {};
+            currentLimitGuard.reset();
         }
 
         void updateFullSocCalibration(const double current)
         {
+            if (fullChargeConfirmed &&
+                (!currentMeasurementConfigured ||
+                 currentMeasurementSlaveIdx >= mSlaves.size() ||
+                 !mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid() ||
+                 mSlaves[currentMeasurementSlaveIdx].getAhCounter() < batteryCapacityAh() * 0.995))
+            {
+                fullChargeConfirmed = false;
+                fullSocConditionsSinceMs = 0U;
+            }
             const FaultManager::Snapshot faults = FaultManager::getSnapshot();
             const bool conditionsMet = currentMeasurementConfigured &&
                                        settings.AUTO_CALIBRATE_SOC &&
@@ -288,7 +462,6 @@ namespace SlaveController
             if (!conditionsMet)
             {
                 fullSocConditionsSinceMs = 0U;
-                fullSocCalibrationApplied = false;
                 return;
             }
 
@@ -299,11 +472,29 @@ namespace SlaveController
                 return;
             }
 
-            if (!fullSocCalibrationApplied && now - fullSocConditionsSinceMs >= settings.SOC_FULL_CALIBRATION_DWELL_MS)
+            if (!fullChargeConfirmed && now - fullSocConditionsSinceMs >= settings.SOC_FULL_CALIBRATION_DWELL_MS)
             {
-                setSoC(BCC_SOC_TO_SOCRAW(1));
-                fullSocCalibrationApplied = true;
+                uint32_t previousUnixTime = 0U;
+                (void)getLastSoCCalibrationUnixTime(previousUnixTime);
                 HAL_PWR_EnableBkUpAccess();
+                // An interrupted calibration must not leave an older detail
+                // record paired with a newer counter or timestamp.
+                socCalibrationDetails[5] = 0U;
+                updateSelfDischarge(millis());
+                const bool preSocValid = mSlaves[currentMeasurementSlaveIdx].ahCounterIsValid();
+                const uint16_t preSocRaw = preSocValid ? liveSoC() : 0U;
+                bool modeledLossComplete = preSocValid && selfDischargeInterval.complete();
+                const uint64_t roundedModeledLossMilliAh = SelfDischarge::roundedMilliAmpHours(
+                    selfDischargeInterval.accumulatedMicroAh());
+                const uint32_t modeledLossMilliAh = static_cast<uint32_t>(std::min<uint64_t>(
+                    roundedModeledLossMilliAh, std::numeric_limits<uint32_t>::max()));
+                if (roundedModeledLossMilliAh > std::numeric_limits<uint32_t>::max())
+                {
+                    modeledLossComplete = false;
+                }
+                setSoC(BCC_SOC_TO_SOCRAW(1));
+                selfDischargeLastTickMs = millis();
+                fullChargeConfirmed = true;
                 // A calibration without valid UTC must not leave an older
                 // timestamp behind and imply a false SoC accuracy age.
                 *socCalibrationMarker = 0U;
@@ -320,6 +511,23 @@ namespace SlaveController
                 {
                     PRINTF_WARN("[SC] SoC calibrated to full charge before UTC was available\n");
                 }
+                const uint32_t packedSoc = static_cast<uint32_t>(preSocRaw) |
+                                           (preSocValid ? (1UL << 16U) : 0U);
+                const uint32_t dwellMs = now - fullSocConditionsSinceMs;
+                socCalibrationDetails[0] = packedSoc;
+                socCalibrationDetails[1] = unixTime;
+                socCalibrationDetails[2] = previousUnixTime;
+                socCalibrationDetails[3] = dwellMs;
+                *socCalibrationSelfDischargeLoss = modeledLossMilliAh;
+                const uint32_t detailsMarker = modeledLossComplete
+                                                   ? kSocCalibrationDetailsCompleteMarker
+                                                   : kSocCalibrationDetailsIncompleteMarker;
+                socCalibrationDetails[4] = socCalibrationDetailsChecksum(
+                    packedSoc, unixTime, previousUnixTime, dwellMs,
+                    modeledLossMilliAh, detailsMarker);
+                __DMB();
+                socCalibrationDetails[5] = detailsMarker;
+                beginSelfDischargeCalibrationInterval();
             }
         }
 
@@ -449,7 +657,7 @@ namespace SlaveController
                 {MC33771C_TH_AN2_UT_OFFSET, MC33771C_TH_AN2_UT_POR_VAL, (uint16_t)MC33771C_TH_ANX_UT_VALUE(ut_an_reg_val)},
                 {MC33771C_TH_AN1_UT_OFFSET, MC33771C_TH_AN1_UT_POR_VAL, (uint16_t)MC33771C_TH_ANX_UT_VALUE(ut_an_reg_val)},
                 {MC33771C_TH_AN0_UT_OFFSET, MC33771C_TH_AN0_UT_POR_VAL, (uint16_t)MC33771C_TH_ANX_UT_VALUE(ut_an_reg_val)},
-                {MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_POR_VAL, MC33771C_SYS_CFG1_VALUE(false)}, // Slave with Current measurement should have different initial register
+                {MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_POR_VAL, MC33771C_SYS_CFG1_VALUE(false)}, // Per-slave measurement-circuit policy is applied below.
                 {MC33771C_SYS_CFG2_OFFSET, MC33771C_SYS_CFG2_POR_VAL, MC33771C_SYS_CFG2_VALUE},
                 {MC33771C_ADC_CFG_OFFSET, MC33771C_ADC_CFG_POR_VAL, MC33771C_ADC_CFG_VALUE},
                 {MC33771C_ADC2_OFFSET_COMP_OFFSET, MC33771C_ADC2_OFFSET_COMP_POR_VAL, MC33771C_ADC2_OFFSET_COMP_VALUE}, // Only useful if I_MEAS is enabled, but global write is probably fine
@@ -466,6 +674,7 @@ namespace SlaveController
          */
         bool initializeRegisters()
         {
+            for (auto &slave : mSlaves) slave.resetCurrentBaseline();
             bcc_status_t status;
 
             vector<bcc_init_reg_t> globalRegisters = getInitGlobalRegisterMapping();
@@ -486,13 +695,20 @@ namespace SlaveController
             // Loop trough all devices to set slave specific registers based on config
             for (auto &slave : mSlaves)
             {
-                if (slave.currentSenseEnabled())
+                // Hardware power policy is separate from the authoritative
+                // shunt/SoC role. Explicitly write both enabled and disabled
+                // states on every initialization, then verify the enable bit.
+                const bool circuitEnabled = CurrentSensingPolicy::measurementCircuitEnabled(
+                    currentMeasurementConfigured, slave.currentSenseEnabled(), EQUALIZE_CURRENT_MEASUREMENT_LOAD);
+                if ((status = slave.regWrite(MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_VALUE(circuitEnabled))) != BCC_STATUS_SUCCESS)
                 {
-                    // Set I_MEAS_EN in SYS_CFG1
-                    if ((status = slave.regWrite(MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_VALUE(true))) != BCC_STATUS_SUCCESS)
-                    {
-                        return false;
-                    }
+                    return false;
+                }
+                uint16_t sysCfg1 = 0U;
+                if (slave.regRead(MC33771C_SYS_CFG1_OFFSET, 1U, &sysCfg1) != BCC_STATUS_SUCCESS ||
+                    ((sysCfg1 & MC33771C_SYS_CFG1_I_MEAS_EN_MASK) != 0U) != circuitEnabled)
+                {
+                    return false;
                 }
 
                 // Depending on number of NTCs used, set unused GPIOs to digital in, (and highest bits to 0)
@@ -545,17 +761,21 @@ namespace SlaveController
         bool startMeasurements()
         {
             // Pause CB for all slaves
-            for (auto &slave : mSlaves)
+            for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
             {
+                accumulateBalancingCharge(slaveIndex, millis());
+                auto &slave = mSlaves[slaveIndex];
                 if (slave.CB_Pause(true) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: pause balancing\n", slave.getCID());
-                    for (auto &resumeSlave : mSlaves)
+                    for (size_t index = 0U; index < mSlaves.size(); ++index)
                     {
-                        (void)resumeSlave.CB_Pause(false);
+                        (void)mSlaves[index].CB_Pause(false);
+                        balancingAccountingTimelines[index].invalidate(millis());
                     }
                     return false;
                 }
+                balancingAccountingTimelines[slaveIndex].pause(millis());
             }
 
             // It is recommended to wait for at least 3ms before starting the ADC conversion
@@ -564,9 +784,17 @@ namespace SlaveController
 
             if (BCC::meas_StartConversionGlobal() != BCC_STATUS_SUCCESS)
             {
-                for (auto &slave : mSlaves)
+                bool resumed = true;
+                for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
                 {
-                    (void)slave.CB_Pause(false);
+                    const bool success = mSlaves[slaveIndex].CB_Pause(false) == BCC_STATUS_SUCCESS;
+                    resumed = success && resumed;
+                    if (success) balancingAccountingTimelines[slaveIndex].resume(millis());
+                    else balancingAccountingTimelines[slaveIndex].invalidate(millis());
+                }
+                if (!resumed)
+                {
+                    for (auto &timeline : balancingAccountingTimelines) timeline.invalidate(millis());
                 }
                 return false;
             }
@@ -577,22 +805,33 @@ namespace SlaveController
                 if (slave.meas_WaitOnConversion(BCC_ADC_AVG) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: wait on conversion\n", slave.getCID());
-                    for (auto &resumeSlave : mSlaves)
+                    bool resumed = true;
+                    for (size_t index = 0U; index < mSlaves.size(); ++index)
                     {
-                        (void)resumeSlave.CB_Pause(false);
+                        const bool success = mSlaves[index].CB_Pause(false) == BCC_STATUS_SUCCESS;
+                        resumed = success && resumed;
+                        if (success) balancingAccountingTimelines[index].resume(millis());
+                        else balancingAccountingTimelines[index].invalidate(millis());
+                    }
+                    if (!resumed)
+                    {
+                        for (auto &timeline : balancingAccountingTimelines) timeline.invalidate(millis());
                     }
                     return false;
                 }
             }
 
             // Resume CB
-            for (auto &slave : mSlaves)
+            for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
             {
+                auto &slave = mSlaves[slaveIndex];
                 if (slave.CB_Pause(false) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Slave (CID: %u) failed on: resume balancing\n", slave.getCID());
+                    for (auto &timeline : balancingAccountingTimelines) timeline.invalidate(millis());
                     return false;
                 }
+                balancingAccountingTimelines[slaveIndex].resume(millis());
             }
 
             return true;
@@ -621,7 +860,7 @@ namespace SlaveController
                         runtimeConfiguration.invertCurrent,
                         batteryCapacityAh(),
                         &ampHour,
-                        &current) != BCC_STATUS_SUCCESS)
+                        &current, true) != BCC_STATUS_SUCCESS)
                 {
                     PRINTF_WARN("[SC] Current measurement failed on CID %u\n",
                                 mSlaves[currentMeasurementSlaveIdx].getCID());
@@ -645,9 +884,13 @@ namespace SlaveController
             cellOverVoltageActive = combinedFaults[BCC_FS_CELL_OV] != 0;
             cellUnderVoltageActive = combinedFaults[BCC_FS_CELL_UV] != 0;
             const uint16_t temperatureFaults = combinedFaults[BCC_FS_AN_OT_UT];
-            underTemperatureActive = (temperatureFaults & 0x007FU) != 0U;
+            temperatureLimits = temperatureController.update(
+                completeMeasurementSetValid && measurementsAreFresh() && NTCtemperatureCount != 0U,
+                BCC_TEMPRAW_TO_TEMP(minNTCtemperature), BCC_TEMPRAW_TO_TEMP(maxNTCtemperature),
+                runtimeConfiguration.coldAllowanceDeciC / 10.0, batteryCapacityAh());
+            underTemperatureActive = temperatureLimits.coldStopped;
             overTemperatureActive = (temperatureFaults & 0x7F00U) != 0U;
-            chargeTemperatureInhibit.store(underTemperatureActive, std::memory_order_relaxed);
+            chargeTemperatureInhibit.store(underTemperatureActive || temperatureLimits.hotStopped, std::memory_order_relaxed);
 
             updateFault(OVERVOLTAGE_LIMIT, cellOverVoltageActive);
             updateFault(UNDERVOLTAGE_LIMIT, cellUnderVoltageActive);
@@ -661,7 +904,8 @@ namespace SlaveController
             const bool icTemperatureFault =
                 (combinedFaults[BCC_FS_FAULT2] & MC33771C_FAULT2_STATUS_IC_TSD_FLT_MASK) != 0;
             const bool systemFault = combinedFaults[BCC_FS_FAULT1] != 0 ||
-                                     combinedFaults[BCC_FS_FAULT2] != 0 ||
+                                     (combinedFaults[BCC_FS_FAULT2] &
+                                      ~MC33771C_FAULT2_STATUS_IC_TSD_FLT_MASK) != 0 ||
                                      combinedFaults[BCC_FS_FAULT3] != 0;
             internalFaultActive = openShortFault || icTemperatureFault || systemFault;
             updateFault(OPEN_SHORT_FAULT, openShortFault);
@@ -865,7 +1109,7 @@ namespace SlaveController
             snapshot.chargeAllowed = snapshot.chargeAllowed &&
                                      snapshot.commonSafe &&
                                      !chargeTemperatureInhibit.load(std::memory_order_relaxed);
-            snapshot.dischargeAllowed = snapshot.dischargeAllowed && snapshot.commonSafe;
+            snapshot.dischargeAllowed = snapshot.dischargeAllowed && snapshot.commonSafe && !temperatureLimits.hotStopped;
             if (!snapshot.chargeAllowed)
             {
                 snapshot.chargeCurrentA = 0.0;
@@ -909,11 +1153,11 @@ namespace SlaveController
                                   snapshot.measurementsFresh;
             snapshot.chargeAllowed = snapshot.commonSafe &&
                                      !chargeTemperatureInhibit.load(std::memory_order_relaxed);
-            snapshot.dischargeAllowed = snapshot.commonSafe;
+            snapshot.dischargeAllowed = snapshot.commonSafe && !temperatureLimits.hotStopped;
 
             snapshot.cellOverVoltage = cellOverVoltageActive;
             snapshot.cellUnderVoltage = cellUnderVoltageActive;
-            snapshot.overTemperature = overTemperatureActive;
+            snapshot.overTemperature = overTemperatureActive || temperatureLimits.hotStopped;
             snapshot.underTemperature = underTemperatureActive;
             snapshot.overCurrent = overCurrentActive;
             snapshot.communicationFault = communicationFaultActive;
@@ -945,10 +1189,10 @@ namespace SlaveController
             currentLimitRecoveryInitialized = true;
 
             const double requestedChargeCurrentA = snapshot.valid && snapshot.chargeAllowed
-                                                       ? requestedLimits.chargeCurrentA
+                                                       ? std::min(requestedLimits.chargeCurrentA, temperatureLimits.chargeA)
                                                        : 0.0;
             const double requestedDischargeCurrentA = snapshot.valid && snapshot.dischargeAllowed
-                                                          ? requestedLimits.dischargeCurrentA
+                                                          ? std::min(requestedLimits.dischargeCurrentA, temperatureLimits.dischargeA)
                                                           : 0.0;
             publishedChargeCurrentLimitA = BatteryLimits::applyRecoverySlew(
                 publishedChargeCurrentLimitA,
@@ -967,6 +1211,28 @@ namespace SlaveController
             snapshot.dischargeVoltageV = requestedLimits.dischargeVoltageV;
             snapshot.chargeCurrentA = publishedChargeCurrentLimitA;
             snapshot.dischargeCurrentA = publishedDischargeCurrentLimitA;
+            // Enforce the same downward quantization as the CAN codec. Arming
+            // begins with the first RUN snapshot; the 5 s dwell covers response
+            // latency, not an additional startup grace period.
+            const uint16_t chargeDeciA = CurrentLimitGuard::encodeDeciAmps(snapshot.chargeCurrentA);
+            const uint16_t dischargeDeciA = CurrentLimitGuard::encodeDeciAmps(snapshot.dischargeCurrentA);
+            const uint8_t violation = currentLimitGuard.update(hvConnected,
+                snapshot.valid && currentMeasurementConfigured, packCurrent,
+                chargeDeciA, dischargeDeciA, now);
+            if (violation != 0U)
+            {
+                taskENTER_CRITICAL();
+                currentLimitEvent = {violation, CurrentUnits::microAmps(packCurrent) / 1000,
+                    violation == 1U ? chargeDeciA : dischargeDeciA, now};
+                taskEXIT_CRITICAL();
+            }
+            FaultManager::setBmsFault(FaultManager::BmsFault::InverterCurrentLimit, violation != 0U);
+            if (violation != 0U)
+            {
+                snapshot.commonSafe = snapshot.chargeAllowed = snapshot.dischargeAllowed = false;
+                snapshot.chargeCurrentA = snapshot.dischargeCurrentA = 0;
+                publishedChargeCurrentLimitA = publishedDischargeCurrentLimitA = 0;
+            }
             snapshot.averageTemperatureC = NTCtemperatureCount == 0U
                                               ? 0.0
                                               : BCC_TEMPRAW_TO_TEMP(averageNTCtemperature);
@@ -1001,22 +1267,20 @@ namespace SlaveController
 
             if (snapshot.socValid)
             {
-                const double socPercent =
-                    (static_cast<double>(liveSoC()) / UINT16_MAX * 3.0 - 1.0) * 100.0;
-                // The raw BCC value is quantized. Round the public integer
-                // representation so a value just below 100% due to that
-                // quantization does not become 99% on the inverter bus.
-                snapshot.socPercent = static_cast<uint16_t>(std::clamp(
-                    std::lround(socPercent), 0L, 100L));
+                // GoodWe stops charging at 100%. Only advertise full after
+                // the cell-voltage/current dwell has calibrated the counter.
+                snapshot.socPercent = BatterySoc::inverterPercent(
+                    liveSoC(), fullChargeConfirmed);
             }
             summary.socRaw = snapshot.socValid ? liveSoC() : 0U;
 
             Watchdog::setBccPhase(Watchdog::BccPhase::EnergyUpdate);
             EnergyCounter::update(summary.packVoltageUv,
-                                  BCC_CURRENT_TO_RAW(summary.packCurrentA),
-                                  micros(),
+                                  CurrentUnits::microAmps(summary.packCurrentA),
+                                  currentMeasurementConfigured ? mSlaves[currentMeasurementSlaveIdx].currentSampleTimeUs() : micros(),
                                   summary.valid && summary.measurementsFresh &&
-                                      summary.currentSensingEnabled);
+                                      summary.currentSensingEnabled &&
+                                      mSlaves[currentMeasurementSlaveIdx].currentIntervalValid());
 
             Watchdog::setBccPhase(Watchdog::BccPhase::SnapshotPublication);
             bool framePublished = false;
@@ -1070,11 +1334,6 @@ namespace SlaveController
                    completeMeasurementSetValid &&
                    measurementsAreFresh() &&
                    currentMeasurementConfigured &&
-                   BatteryBalancing::currentAllowsBalancing(
-                       packCurrent,
-                       batteryCapacityAh(),
-                       settings.BALANCING_MIN_CURRENT,
-                       settings.BALANCING_MAX_CURRENT_C) &&
                    (snapshot.bmsActive | snapshot.bmsLatched |
                     snapshot.hvActive | snapshot.hvLatched) == 0U;
         }
@@ -1082,9 +1341,13 @@ namespace SlaveController
         bool disableCellBalancing(bool clearChannelConfiguration)
         {
             bool successful = true;
-            for (auto &slave : mSlaves)
+            for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
             {
+                auto &slave = mSlaves[slaveIndex];
+                accumulateBalancingCharge(slaveIndex, millis());
                 const bool driverDisabled = slave.CB_Enable(false) == BCC_STATUS_SUCCESS;
+                if (driverDisabled) balancingAccountingTimelines[slaveIndex].stop(millis());
+                else balancingAccountingTimelines[slaveIndex].invalidate(millis());
                 successful = driverDisabled && successful;
                 if (driverDisabled && clearChannelConfiguration)
                 {
@@ -1109,7 +1372,7 @@ namespace SlaveController
         uint32_t balancingPulseDurationMs()
         {
             return cBalancingTime == 0U
-                       ? 30'000U
+                       ? BatteryBalancing::ShortPulseMs
                        : static_cast<uint32_t>(cBalancingTime) * 60'000U;
         }
 
@@ -1151,13 +1414,15 @@ namespace SlaveController
                 return true;
             }
 
-            for (auto &slave : mSlaves)
+            std::array<uint32_t, RuntimeConfiguration::MAX_SLAVES> enabledAtMs{};
+            for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
             {
-                if (slave.CB_Enable(true) != BCC_STATUS_SUCCESS)
+                if (mSlaves[slaveIndex].CB_Enable(true) != BCC_STATUS_SUCCESS)
                 {
                     (void)disableCellBalancing(false);
                     return false;
                 }
+                enabledAtMs[slaveIndex] = millis();
             }
 
             // The specified maximum driver turn-on time is 450 us.
@@ -1189,6 +1454,11 @@ namespace SlaveController
             balancingHardwareStateKnown = true;
             balancingCycleActive = true;
             balancingCycleEndMs = millis() + balancingPulseDurationMs();
+            for (size_t slaveIndex = 0U; slaveIndex < mSlaves.size(); ++slaveIndex)
+            {
+                balancingAccountingTimelines[slaveIndex].start(
+                    enabledAtMs[slaveIndex], balancingPulseDurationMs());
+            }
             updateFault(CELL_BALANCING_FAULT, false);
             return true;
         }
@@ -1197,6 +1467,7 @@ namespace SlaveController
         {
             if (!isBalancingAllowed())
             {
+                balancingCurrentQualification.reset();
                 if (balancingHardwareStateKnown && !balancingCycleActive)
                 {
                     updateFault(CELL_BALANCING_FAULT, false);
@@ -1212,9 +1483,21 @@ namespace SlaveController
             }
 
             const uint32_t now = millis();
+            const bool currentQualified = balancingCurrentQualification.update(
+                BatteryBalancing::currentAllowsBalancing(
+                    packCurrent, batteryCapacityAh(), settings.BALANCING_MIN_CURRENT,
+                    settings.BALANCING_MAX_CURRENT_C), now);
+            // A current excursion prevents the next pulse but need not interrupt
+            // this 30-second pulse. Safety conditions above still stop it.
             if (balancingCycleActive && !balancingCycleHasEnded(now))
             {
                 return true;
+            }
+
+            if (!currentQualified)
+            {
+                if (balancingHardwareStateKnown && !balancingCycleActive) return true;
+                return disableCellBalancing(true);
             }
 
             const uint32_t minimumVoltageUv = static_cast<uint32_t>(
@@ -1276,6 +1559,7 @@ namespace SlaveController
 
         bool diagnostics()
         {
+            for (auto &slave : mSlaves) slave.resetCurrentBaseline();
             const size_t reportCount = std::min(mSlaves.size(), diagnosticReports.size());
             taskENTER_CRITICAL();
             diagnosticReportCount = 0U;
@@ -1366,6 +1650,9 @@ namespace SlaveController
             const bool conversionSuccessful = startMeasurements();
             if (!conversionSuccessful)
             {
+                temperatureController.reset();
+                currentLimitGuard.update(PCC::getPCCState() == PCC::RUN, false, 0, 0, 0, millis());
+                balancingCurrentQualification.reset();
                 completeMeasurementSetValid = false;
                 Watchdog::setBccPhase(Watchdog::BccPhase::PresenceCheck);
                 if (doCommunicationCheck(false))
@@ -1390,6 +1677,9 @@ namespace SlaveController
             completeMeasurementSetValid = measurementsSuccessful;
             if (!measurementsSuccessful)
             {
+                temperatureController.reset();
+                currentLimitGuard.update(PCC::getPCCState() == PCC::RUN, false, 0, 0, 0, millis());
+                balancingCurrentQualification.reset();
                 Watchdog::setBccPhase(Watchdog::BccPhase::PresenceCheck);
                 if (doCommunicationCheck(false))
                 {
@@ -1411,6 +1701,12 @@ namespace SlaveController
 
             Watchdog::setBccPhase(Watchdog::BccPhase::FaultDetection);
             const bool faultStatusSuccessful = faultDetection();
+            if (!faultStatusSuccessful)
+            {
+                temperatureController.reset();
+                currentLimitGuard.update(PCC::getPCCState() == PCC::RUN, false, 0, 0, 0, millis());
+            }
+            if (!faultStatusSuccessful) balancingCurrentQualification.reset();
             // Select balancing channels only after this cycle's current and
             // fault status are known. A failed fault read skips balancing.
             Watchdog::setBccPhase(Watchdog::BccPhase::Balancing);
@@ -1545,10 +1841,16 @@ namespace SlaveController
         void task(void *argument)
         {
             uint32_t startTick = osKernelGetTickCount(); // Keep track of the time since the task started
+            selfDischargeLastTickMs = millis();
             while (true)
             {
 				Watchdog::reportBccProgress();
 				Watchdog::setBccPhase(Watchdog::BccPhase::LoopStart);
+
+                // Execute ahead of state-specific returns so communication
+                // errors, retries, and CRITICAL supervision still apply the
+                // model whenever the retained SoC counter is valid.
+                updateSelfDischarge(millis());
 
 				if (currentState == CRITICAL)
 				{
@@ -1742,6 +2044,7 @@ namespace SlaveController
             }
 
             runtimeConfiguration = persisted.values;
+            activeConfigurationLoaded = true;
             vector<BCC::Config_t> slaveConfigs;
             slaveConfigs.reserve(runtimeConfiguration.slaveCount);
             for (size_t index = 0U; index < runtimeConfiguration.slaveCount; ++index)
@@ -1751,7 +2054,7 @@ namespace SlaveController
                 config.CELL_COUNT = settings.SLAVE_TEMPLATE.CELL_COUNT;
                 config.NTC_COUNT = settings.SLAVE_TEMPLATE.NTC_COUNT;
                 config.CURRENT_SENSING_ENABLED =
-                    runtimeConfiguration.currentSenseSlave == static_cast<uint8_t>(index + 1U);
+                    CurrentSensingPolicy::isPackCurrentSource(runtimeConfiguration.currentSenseSlave, static_cast<uint8_t>(index + 1U));
                 config.AMPHOUR_BACKUP_REG = config.CURRENT_SENSING_ENABLED
                                                 ? settings.SLAVE_TEMPLATE.AMPHOUR_BACKUP_REG
                                                 : 0U;
@@ -1779,9 +2082,9 @@ namespace SlaveController
                     PRINTF_ERR("[SC] CONFIG ERR: Ah backup registers overlap reset diagnostics storage!\n");
                     return false;
                 }
-                if (config.CURRENT_SENSING_ENABLED && first <= kSocCalibrationTimeBackupRegister + 2U && last >= kSocCalibrationTimeBackupRegister)
+                if (config.CURRENT_SENSING_ENABLED && first <= kSocCalibrationTimeBackupRegister + 2U && last >= kSocCalibrationDetailsBackupRegister)
                 {
-                    PRINTF_ERR("[SC] CONFIG ERR: Ah backup registers overlap SoC calibration timestamp storage!\n");
+                    PRINTF_ERR("[SC] CONFIG ERR: Ah backup registers overlap SoC calibration storage!\n");
                     return false;
                 }
             }
@@ -1948,6 +2251,37 @@ namespace SlaveController
         };
     }
 
+    SelfDischargeSnapshot getSelfDischargeSnapshot()
+    {
+        taskENTER_CRITICAL();
+        const SelfDischargeSnapshot snapshot = publishedSelfDischargeSnapshot;
+        taskEXIT_CRITICAL();
+        return snapshot;
+    }
+
+    bool getBalancingChargeSnapshot(uint8_t slaveIndex, BalancingChargeSnapshot &snapshot)
+    {
+        snapshot = {};
+        if (slaveIndex >= mSlaves.size()) return false;
+
+        const size_t cellCount = std::min<size_t>(
+            mSlaves[slaveIndex].getCellCount(), MAX_MEASUREMENT_CELLS);
+        std::array<uint32_t, MAX_MEASUREMENT_CELLS> chargeCopy{};
+        taskENTER_CRITICAL();
+        for (size_t cellIndex = 0U; cellIndex < cellCount; ++cellIndex)
+        {
+            chargeCopy[cellIndex] = balancingChargeMilliAmpMs[slaveIndex][cellIndex].milliAmpHours;
+        }
+        taskEXIT_CRITICAL();
+
+        snapshot.cellCount = cellCount;
+        for (size_t cellIndex = 0U; cellIndex < cellCount; ++cellIndex)
+        {
+            snapshot.milliAmpHours[cellIndex] = chargeCopy[cellIndex];
+        }
+        return true;
+    }
+
     BMSState getState()
     {
         return currentState.load(std::memory_order_acquire);
@@ -1980,6 +2314,63 @@ namespace SlaveController
                areMeasurementsFresh();
     }
 
+    SafetyPolicy::Values getSafetyPolicy()
+    {
+        SafetyPolicy::Values values{};
+        values[SafetyPolicy::capacity_mah] = static_cast<int32_t>(std::lround(runtimeConfiguration.batteryCapacityMilliAh));
+        values[SafetyPolicy::cold_allowance_deci_c] = static_cast<int32_t>(std::lround(runtimeConfiguration.coldAllowanceDeciC));
+        values[SafetyPolicy::charge_derate_mv] = static_cast<int32_t>(std::lround(settings.INVERTER_LIMITS.CHARGE_DERATING_START_CELL_VOLTAGE * 1000));
+        values[SafetyPolicy::charge_stop_mv] = static_cast<int32_t>(std::lround(settings.INVERTER_LIMITS.CHARGE_TARGET_CELL_VOLTAGE * 1000));
+        values[SafetyPolicy::discharge_derate_mv] = static_cast<int32_t>(std::lround(settings.INVERTER_LIMITS.DISCHARGE_TARGET_CELL_VOLTAGE * 1000));
+        values[SafetyPolicy::discharge_stop_mv] = static_cast<int32_t>(std::lround(settings.INVERTER_LIMITS.DISCHARGE_STOP_CELL_VOLTAGE * 1000));
+        values[SafetyPolicy::cell_ov_mv] = static_cast<int32_t>(std::lround(settings.SAFETY_LIMITS.OVERVOLTAGE_LIMIT * 1000));
+        values[SafetyPolicy::cell_uv_mv] = static_cast<int32_t>(std::lround(settings.SAFETY_LIMITS.UNDERVOLTAGE_LIMIT * 1000));
+        values[SafetyPolicy::cell_ot_deci_c] = static_cast<int32_t>(std::lround(settings.SAFETY_LIMITS.OVERTEMPERATURE_LIMIT * 10));
+        values[SafetyPolicy::charge_max_ma] = static_cast<int32_t>(std::lround(settings.SAFETY_LIMITS.CHARGE_CURRENT_LIMIT * 1000));
+        values[SafetyPolicy::discharge_max_ma] = static_cast<int32_t>(std::lround(settings.SAFETY_LIMITS.DISCHARGE_CURRENT_LIMIT * 1000));
+        values[SafetyPolicy::recovery_permille_per_s] = static_cast<int32_t>(std::lround(settings.INVERTER_LIMITS.CURRENT_LIMIT_RECOVERY_RATE * 1000));
+        values[SafetyPolicy::cold_stop_deci_c] = static_cast<int32_t>(std::lround(TemperatureLimits::ColdStopC * 10));
+        values[SafetyPolicy::cold_recover_deci_c] = static_cast<int32_t>(std::lround(TemperatureLimits::ColdRecoveryC * 10));
+        values[SafetyPolicy::cold_t0_deci_c] = static_cast<int32_t>(std::lround(TemperatureLimits::ColdTemperaturesC[0] * 10));
+        values[SafetyPolicy::cold_c0_permille] = static_cast<int32_t>(std::lround(TemperatureLimits::ColdRatesC[0] * 1000));
+        values[SafetyPolicy::cold_t1_deci_c] = static_cast<int32_t>(std::lround(TemperatureLimits::ColdTemperaturesC[1] * 10));
+        values[SafetyPolicy::cold_c1_permille] = static_cast<int32_t>(std::lround(TemperatureLimits::ColdRatesC[1] * 1000));
+        values[SafetyPolicy::cold_t2_deci_c] = static_cast<int32_t>(std::lround(TemperatureLimits::ColdTemperaturesC[2] * 10));
+        values[SafetyPolicy::cold_c2_permille] = static_cast<int32_t>(std::lround(TemperatureLimits::ColdRatesC[2] * 1000));
+        values[SafetyPolicy::cold_t3_deci_c] = static_cast<int32_t>(std::lround(TemperatureLimits::ColdTemperaturesC[3] * 10));
+        values[SafetyPolicy::cold_c3_permille] = static_cast<int32_t>(std::lround(TemperatureLimits::ColdRatesC[3] * 1000));
+        values[SafetyPolicy::hot_start_deci_c] = static_cast<int32_t>(std::lround(TemperatureLimits::HotStartC * 10));
+        values[SafetyPolicy::hot_stop_deci_c] = static_cast<int32_t>(std::lround(TemperatureLimits::HotStopC * 10));
+        values[SafetyPolicy::hot_recover_deci_c] = static_cast<int32_t>(std::lround(TemperatureLimits::HotRecoveryC * 10));
+        values[SafetyPolicy::hot_c_permille] = static_cast<int32_t>(std::lround(TemperatureLimits::HotRateC * 1000));
+        values[SafetyPolicy::zero_tolerance_ma] = static_cast<int32_t>(std::lround(CurrentLimitGuard::ZeroToleranceA * 1000));
+        values[SafetyPolicy::limit_margin_ma] = static_cast<int32_t>(std::lround(CurrentLimitGuard::MinimumMarginA * 1000));
+        values[SafetyPolicy::limit_margin_permille] = static_cast<int32_t>(std::lround(CurrentLimitGuard::MarginFraction * 1000));
+        values[SafetyPolicy::violation_dwell_ms] = static_cast<int32_t>(std::lround(CurrentLimitGuard::DwellMs));
+        values[SafetyPolicy::bal_min_mv] = static_cast<int32_t>(std::lround(settings.MIN_BALANCING_VOLTAGE * 1000));
+        values[SafetyPolicy::bal_start_delta_mv] = static_cast<int32_t>(std::lround(settings.MIN_BALANCING_DIFF_VOLTAGE * 1000));
+        values[SafetyPolicy::bal_stop_delta_mv] = static_cast<int32_t>(std::lround(settings.STOP_BALANCING_DIFF_VOLTAGE * 1000));
+        values[SafetyPolicy::bal_min_ma] = static_cast<int32_t>(std::lround(settings.BALANCING_MIN_CURRENT * 1000));
+        values[SafetyPolicy::bal_max_c_permille] = static_cast<int32_t>(std::lround(settings.BALANCING_MAX_CURRENT_C * 1000));
+        values[SafetyPolicy::bal_qualify_ms] = static_cast<int32_t>(std::lround(BatteryBalancing::QualificationMs));
+        values[SafetyPolicy::bal_pulse_ms] = static_cast<int32_t>(std::lround(balancingPulseDurationMs()));
+        values[SafetyPolicy::bal_max_cells] = static_cast<int32_t>(std::lround(settings.MAX_SIMULTANEOUS_BALANCING_CELLS_PER_SLAVE));
+        values[SafetyPolicy::communication_timeout_ms] = static_cast<int32_t>(std::lround(settings.SAFETY_LIMITS.COMMUNICATION_TIMEOUT));
+        values[SafetyPolicy::firmware_version] = static_cast<int32_t>(std::lround(FIRMWARE_VERSION_PACKED));
+        values[SafetyPolicy::configuration_valid] = static_cast<int32_t>(std::lround(activeConfigurationLoaded ? 1 : 0));
+        values[SafetyPolicy::cell_ov_programmed_uv] = static_cast<int32_t>(std::lround(BCC_GET_TH_CTX(static_cast<uint16_t>(settings.SAFETY_LIMITS.OVERVOLTAGE_LIMIT * 1000)) * 19'500));
+        values[SafetyPolicy::cell_uv_programmed_uv] = static_cast<int32_t>(std::lround(BCC_GET_TH_CTX(static_cast<uint16_t>(settings.SAFETY_LIMITS.UNDERVOLTAGE_LIMIT * 1000)) * 19'500));
+        return values;
+    }
+
+    CurrentLimitGuard::Event getCurrentLimitEvent()
+    {
+        taskENTER_CRITICAL();
+        const auto event = currentLimitEvent;
+        taskEXIT_CRITICAL();
+        return event;
+    }
+
     bool isChargingAllowed()
     {
         // Low temperature is a charge-only restriction. All other common BMS
@@ -1994,7 +2385,7 @@ namespace SlaveController
     {
         return currentState.load(std::memory_order_acquire) == RUNNING &&
                FaultManager::canEnableHv() &&
-               areMeasurementsFresh();
+               areMeasurementsFresh() && getBatteryCanSnapshot().dischargeAllowed;
     }
 
     BatteryCanSnapshot getBatteryCanSnapshot()
@@ -2054,7 +2445,7 @@ namespace SlaveController
         const double ampHour = std::clamp(
             BCC_SOC_TO_AMPHOUR(soc, batteryCapacityAh()),
             0.0,
-            batteryCapacityAh());
+            batteryCapacityAh() * 2.0);
         mSlaves[currentMeasurementSlaveIdx].setAhCounter(ampHour);
     }
 
@@ -2077,6 +2468,42 @@ namespace SlaveController
         registerResponseReady = false;
         registerRequestBusy = true;
         taskEXIT_CRITICAL();
+        return true;
+    }
+
+    bool getLastSoCCalibrationDetails(SocCalibrationDetails &details)
+    {
+        HAL_PWR_EnableBkUpAccess();
+        const uint32_t marker = socCalibrationDetails[5];
+        const uint32_t packedSoc = socCalibrationDetails[0];
+        const uint32_t unixTime = socCalibrationDetails[1];
+        const uint32_t previousUnixTime = socCalibrationDetails[2];
+        const uint32_t dwellMs = socCalibrationDetails[3];
+        const uint32_t checksum = socCalibrationDetails[4];
+        const bool legacyRecord = marker == kSocCalibrationDetailsMarker;
+        const bool extendedRecord = marker == kSocCalibrationDetailsCompleteMarker ||
+                                    marker == kSocCalibrationDetailsIncompleteMarker;
+        const uint32_t modeledLossMilliAh = extendedRecord ? *socCalibrationSelfDischargeLoss : 0U;
+        const uint32_t expectedChecksum = legacyRecord
+                                              ? socCalibrationDetailsChecksum(packedSoc, unixTime,
+                                                                              previousUnixTime, dwellMs)
+                                              : socCalibrationDetailsChecksum(packedSoc, unixTime,
+                                                                              previousUnixTime, dwellMs,
+                                                                              modeledLossMilliAh, marker);
+        if ((!legacyRecord && !extendedRecord) || socCalibrationDetails[5] != marker ||
+            checksum != expectedChecksum ||
+            (packedSoc & 0xFFFE0000U) != 0U ||
+            (unixTime != 0U && !RtcTime::isSupportedUnixTime(unixTime)) ||
+            (previousUnixTime != 0U && !RtcTime::isSupportedUnixTime(previousUnixTime))) return false;
+        details.unixTimeS = unixTime;
+        details.previousUnixTimeS = previousUnixTime;
+        details.qualifyingDwellMs = dwellMs;
+        details.preCalibrationSocRaw = static_cast<uint16_t>(packedSoc);
+        details.preCalibrationSocValid = (packedSoc & (1UL << 16U)) != 0U;
+        details.modeledSelfDischargeMilliAh = modeledLossMilliAh;
+        details.modeledSelfDischargeValid = extendedRecord && details.preCalibrationSocValid;
+        details.modeledSelfDischargeComplete = details.modeledSelfDischargeValid &&
+                                                marker == kSocCalibrationDetailsCompleteMarker;
         return true;
     }
 

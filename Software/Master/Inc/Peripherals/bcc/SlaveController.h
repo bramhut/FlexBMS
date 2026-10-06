@@ -3,6 +3,8 @@
 #include "bcc/MeasurementFrame.h"
 #include "CAN.h"
 #include "RuntimeConfiguration.h"
+#include "CurrentLimitGuard.h"
+#include "SafetyPolicy.h"
 #include <cstddef>
 
 /*******************************************************************************
@@ -11,6 +13,8 @@
 
 namespace SlaveController
 {
+    CurrentLimitGuard::Event getCurrentLimitEvent();
+    SafetyPolicy::Values getSafetyPolicy();
     struct RegisterRequest
     {
         uint8_t cid;
@@ -89,12 +93,40 @@ namespace SlaveController
         CRITICAL
     };
 
+    struct SocCalibrationDetails
+    {
+        uint32_t unixTimeS{};
+        uint32_t previousUnixTimeS{};
+        uint32_t qualifyingDwellMs{};
+        uint16_t preCalibrationSocRaw{};
+        bool preCalibrationSocValid{};
+        uint32_t modeledSelfDischargeMilliAh{};
+        bool modeledSelfDischargeValid{};
+        bool modeledSelfDischargeComplete{};
+    };
+
+    struct SelfDischargeSnapshot
+    {
+        uint8_t rateTenthPercentPer30Days{};
+        uint32_t equivalentCurrentMicroAmps{};
+        uint64_t accumulatedSinceCalibrationMicroAh{};
+        bool socValid{};
+        bool intervalComplete{};
+    };
+
     /*! @brief Persistent directional energy counters in micro-watt-hours. */
     struct EnergySnapshot
     {
         bool valid{};
         uint64_t chargedEnergyUWh{};
         uint64_t dischargedEnergyUWh{};
+    };
+
+    /*! @brief RAM-only estimated balancing charge removed per cell since boot. */
+    struct BalancingChargeSnapshot
+    {
+        size_t cellCount{};
+        std::array<uint32_t, MAX_MEASUREMENT_CELLS> milliAmpHours{};
     };
 
     /*******************************************************************************
@@ -123,6 +155,9 @@ namespace SlaveController
 
     /*! @brief Return the latest persistent charge/discharge energy counters. */
     EnergySnapshot getEnergySnapshot();
+
+    /*! @brief Copy estimated per-cell balancing charge removed since STM32 boot. */
+    bool getBalancingChargeSnapshot(uint8_t slaveIndex, BalancingChargeSnapshot &snapshot);
 
     /*!
      * @brief Get the current state of the BMS
@@ -181,6 +216,8 @@ namespace SlaveController
 
     /*! @brief Return the UTC instant of the last automatic full-SOC calibration. */
     bool getLastSoCCalibrationUnixTime(uint32_t &unixTime);
+    bool getLastSoCCalibrationDetails(SocCalibrationDetails &details);
+    SelfDischargeSnapshot getSelfDischargeSnapshot();
 
     /*!
      * @brief Set the State of Charge [raw]

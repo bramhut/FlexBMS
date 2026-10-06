@@ -5,7 +5,8 @@
 namespace RuntimeConfiguration
 {
     constexpr uint16_t LEGACY_CONFIG_VERSION = 2U;
-    constexpr uint16_t CONFIG_VERSION = 3U;
+    constexpr uint16_t PREVIOUS_CONFIG_VERSION = 3U;
+    constexpr uint16_t CONFIG_VERSION = 5U;
     constexpr uint8_t MAX_SLAVES = 32U;
     constexpr uint8_t CURRENT_SENSE_NONE = 0U;
     constexpr uint32_t APPLICATION_FLASH_BYTES = 508U * 1024U;
@@ -19,6 +20,8 @@ namespace RuntimeConfiguration
         bool invertCurrent{};
         bool balanceEnabled{};
         bool startupDiagnostics{};
+        uint8_t selfDischargeRateTenthPercentPer30Days{};
+        uint8_t coldAllowanceDeciC{30U};
     };
 
     enum class LoadStatus : uint8_t
@@ -28,6 +31,12 @@ namespace RuntimeConfiguration
         VersionMismatch,
         Corrupt,
     };
+
+    constexpr uint8_t selfDischargeRateForLegacyWrite(LoadStatus status,
+                                                       uint8_t persistedRate)
+    {
+        return status == LoadStatus::Valid ? persistedRate : 0U;
+    }
 
     struct LoadResult
     {

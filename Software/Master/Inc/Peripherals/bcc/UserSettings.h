@@ -4,6 +4,10 @@
 #include "bcc/bcc.h"
 #include "bcc/bcc_utils.h"
 
+// Match the current-measurement circuit load across slaves. This does not
+// make their unused, grounded inputs sources of pack current or SoC.
+inline constexpr bool EQUALIZE_CURRENT_MEASUREMENT_LOAD = true;
+
 struct SafetyLimits_t
 {
     double OVERVOLTAGE_LIMIT;
@@ -91,7 +95,7 @@ const StaticSettings_t DEFAULT_STATIC_SETTINGS = {
     .MIN_BALANCING_DIFF_VOLTAGE = 0.010,
     .STOP_BALANCING_DIFF_VOLTAGE = 0.005,
     .BALANCING_MIN_CURRENT = -0.100,
-    .BALANCING_MAX_CURRENT_C = 1.0 / 10.0,
+    .BALANCING_MAX_CURRENT_C = 1.0 / 50.0,
     .MAX_SIMULTANEOUS_BALANCING_CELLS_PER_SLAVE = 12U,
     .IMPROVED_BALANCING_ACCURACY = true,    
 
@@ -109,7 +113,6 @@ const StaticSettings_t DEFAULT_STATIC_SETTINGS = {
 
 #define BMS_BAL_RESISTANCE (20.0 + 2.0 + 0.8) // [Ohm] The balancing resistance on the BMS slave board
 #define MC33771C_AVG_CURRENT_DRAW 9e-3        // [A] The average current draw of the MC33771C in normal operation
-#define CURRENT_NOISE_THRESHOLD 15e-3         // [A] The threshold for which current is considered noise (and therefore set to zero)
 
 #define MC33771C_SYS_CFG1_VALUE(isense) (                                                                                                  \
     MC33771C_SYS_CFG1_CYCLIC_TIMER(MC33771C_SYS_CFG1_CYCLIC_TIMER_DISABLED_ENUM_VAL) |                                                     \

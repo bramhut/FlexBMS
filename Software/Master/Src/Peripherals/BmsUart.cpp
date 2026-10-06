@@ -1,4 +1,6 @@
 #include "BmsUart.h"
+#include "ServiceResponse.h"
+#include "Peripherals/CurrentUnits.h"
 
 #include "BccBreadcrumb.h"
 #include "BoardIO.h"
@@ -12,6 +14,8 @@
 #include "bcc/SlaveController.h"
 #include "bcc/bcc_utils.h"
 #include "RuntimeConfiguration.h"
+#include "Peripherals/SelfDischarge.h"
+#include "Peripherals/SelfDischarge.h"
 #include "main.h"
 #include "pcc.h"
 #include "queue.h"
@@ -61,6 +65,8 @@ namespace BmsUart
             HV_VOLTAGES = 0x06U,
             ENERGY = 0x07U,
             GOODWE_CAN_DIAGNOSTICS = 0x08U,
+            SOC_CALIBRATION = 0x09U,
+            BALANCING_CHARGE = 0x0AU,
             SERVICE_REQUEST = 0x10U,
             SERVICE_RESPONSE = 0x11U,
             EVENT = 0x12U,
@@ -81,6 +87,7 @@ namespace BmsUart
             GET_CONFIG = 0x0BU,
             SET_CONFIG = 0x0CU,
             GET_DIAGNOSTIC_REPORT = 0x0DU,
+            GET_SAFETY_LIMITS = 0x0EU,
         };
 
         enum ServiceResult : uint8_t
@@ -617,16 +624,17 @@ namespace BmsUart
 
         void sendPack(const SlaveController::MeasurementSummary &measurement)
         {
-            std::array<uint8_t, 24U> payload = {};
-            writeLe32(payload.data(), measurement.packVoltageUv);
-            writeLe16(payload.data() + 4U, static_cast<uint16_t>(static_cast<int16_t>(BCC_CURRENT_TO_RAW(measurement.packCurrentA))));
-            writeLe16(payload.data() + 6U, measurement.socRaw);
-            writeLe32(payload.data() + 8U, measurement.minCellVoltageUv);
-            writeLe32(payload.data() + 12U, measurement.maxCellVoltageUv);
-            writeLe16(payload.data() + 16U, measurement.minNtcTemperatureRaw);
-            writeLe16(payload.data() + 18U, measurement.maxNtcTemperatureRaw);
-            writeLe16(payload.data() + 20U, measurement.minIcTemperatureRaw);
-            writeLe16(payload.data() + 22U, measurement.maxIcTemperatureRaw);
+            std::array<uint8_t, 27U> payload{};
+            payload[0] = 2U; // PACK schema 2: signed microamps.
+            writeLe32(payload.data() + 1U, measurement.packVoltageUv);
+            writeLe32(payload.data() + 5U, static_cast<uint32_t>(CurrentUnits::microAmps(measurement.packCurrentA)));
+            writeLe16(payload.data() + 9U, measurement.socRaw);
+            writeLe32(payload.data() + 11U, measurement.minCellVoltageUv);
+            writeLe32(payload.data() + 15U, measurement.maxCellVoltageUv);
+            writeLe16(payload.data() + 19U, measurement.minNtcTemperatureRaw);
+            writeLe16(payload.data() + 21U, measurement.maxNtcTemperatureRaw);
+            writeLe16(payload.data() + 23U, measurement.minIcTemperatureRaw);
+            writeLe16(payload.data() + 25U, measurement.maxIcTemperatureRaw);
             broadcastFrame(PACK, 0U, payload.data(), payload.size());
         }
 
@@ -646,6 +654,34 @@ namespace BmsUart
             broadcastFrame(ENERGY, 0U, payload.data(), payload.size());
         }
 
+        void sendSocCalibration()
+        {
+            std::array<uint8_t, 34U> payload{};
+            payload[0] = 2U; // Adds live and most-recent modeled self-discharge details.
+            SlaveController::SocCalibrationDetails details{};
+            const bool calibrationValid = SlaveController::getLastSoCCalibrationDetails(details);
+            const SlaveController::SelfDischargeSnapshot selfDischarge =
+                SlaveController::getSelfDischargeSnapshot();
+            if (calibrationValid)
+            {
+                payload[1] |= 1U;
+                writeLe16(payload.data() + 2U, details.preCalibrationSocRaw);
+                writeLe32(payload.data() + 4U, details.unixTimeS);
+                writeLe32(payload.data() + 8U, details.previousUnixTimeS);
+                writeLe32(payload.data() + 12U, details.qualifyingDwellMs);
+                if (details.preCalibrationSocValid) payload[1] |= 1U << 1U;
+                if (details.modeledSelfDischargeValid) payload[1] |= 1U << 4U;
+                if (details.modeledSelfDischargeComplete) payload[1] |= 1U << 5U;
+            }
+            if (selfDischarge.socValid) payload[1] |= 1U << 2U;
+            if (selfDischarge.intervalComplete) payload[1] |= 1U << 3U;
+            payload[16] = selfDischarge.rateTenthPercentPer30Days;
+            writeLe32(payload.data() + 18U, selfDischarge.equivalentCurrentMicroAmps);
+            writeLe64(payload.data() + 22U, selfDischarge.accumulatedSinceCalibrationMicroAh);
+            writeLe32(payload.data() + 30U, details.modeledSelfDischargeMilliAh);
+            broadcastFrame(SOC_CALIBRATION, 0U, payload.data(), payload.size());
+        }
+
         void sendGoodweCanDiagnostics()
         {
             constexpr size_t HEADER_BYTES = 40U;
@@ -657,8 +693,13 @@ namespace BmsUart
             static_assert(PAYLOAD_BYTES == 156U);
 
             const GoodweCan::Diagnostics diagnostics = GoodweCan::getDiagnostics();
-            std::array<uint8_t, PAYLOAD_BYTES> payload{};
-            payload[0] = 1U; // GoodWe diagnostics payload schema.
+            std::array<uint8_t, PAYLOAD_BYTES + 11U> payload{};
+            payload[0] = 2U; // Includes the latest current-limit violation.
+            const auto event = SlaveController::getCurrentLimitEvent();
+            payload[156] = event.direction;
+            writeLe32(payload.data() + 157U, static_cast<uint32_t>(event.measuredMilliA));
+            writeLe16(payload.data() + 161U, event.limitDeciA);
+            writeLe32(payload.data() + 163U, event.uptimeMs);
             payload[1] = static_cast<uint8_t>(GOODWE_CAN_PROTOCOL);
             if (GOODWE_CAN_A_ENABLE_45A) payload[2] |= 1U << 0U;
             if (GOODWE_CAN_A_ENABLE_460) payload[2] |= 1U << 1U;
@@ -752,6 +793,22 @@ namespace BmsUart
                 }
                 broadcastFrame(CELL, 0U, cellPayload.data(), cellPayload.size());
 
+                SlaveController::BalancingChargeSnapshot balancingCharge{};
+                if (SlaveController::getBalancingChargeSnapshot(
+                        static_cast<uint8_t>(slaveIndex), balancingCharge))
+                {
+                    std::array<uint8_t, 58U> balancingPayload{};
+                    balancingPayload[0] = static_cast<uint8_t>(slaveIndex);
+                    balancingPayload[1] = static_cast<uint8_t>(balancingCharge.cellCount);
+                    for (size_t cellIndex = 0U; cellIndex < balancingCharge.cellCount; ++cellIndex)
+                    {
+                        writeLe32(balancingPayload.data() + 2U + cellIndex * 4U,
+                                  balancingCharge.milliAmpHours[cellIndex]);
+                    }
+                    broadcastFrame(BALANCING_CHARGE, 0U, balancingPayload.data(),
+                                   static_cast<uint16_t>(2U + balancingCharge.cellCount * 4U));
+                }
+
                 std::array<uint8_t, 11U> temperaturePayload = {};
                 temperaturePayload[0] = static_cast<uint8_t>(slaveIndex);
                 for (size_t ntcIndex = 0U; ntcIndex < 4U; ++ntcIndex)
@@ -802,15 +859,10 @@ namespace BmsUart
         bool sendServiceResponse(Link link, uint8_t sequence, uint8_t serviceId, ServiceResult result,
                                  const uint8_t *data = nullptr, uint16_t dataLength = 0U)
         {
-            std::array<uint8_t, 20U> payload = {};
-            if (dataLength > payload.size() - 2U || (dataLength != 0U && data == nullptr)) return false;
-            payload[0] = serviceId;
-            payload[1] = static_cast<uint8_t>(result);
-            if (dataLength != 0U)
-            {
-                std::memcpy(payload.data() + 2U, data, dataLength);
-            }
-            return sendFrameTo(link, SERVICE_RESPONSE, sequence, payload.data(), static_cast<uint16_t>(2U + dataLength));
+            std::array<uint8_t, ServiceResponse::HeaderBytes + SafetyPolicy::DataBytes> payload{};
+            const size_t length = ServiceResponse::encode(payload, serviceId, static_cast<uint8_t>(result), data, dataLength);
+            if (length == 0U) return false;
+            return sendFrameTo(link, SERVICE_RESPONSE, sequence, payload.data(), static_cast<uint16_t>(length));
         }
 
         bool sendServiceResponse(uint8_t sequence, uint8_t serviceId, ServiceResult result,
@@ -846,6 +898,8 @@ namespace BmsUart
             data[15] = values.invertCurrent ? 1U : 0U;
             data[16] = values.balanceEnabled ? 1U : 0U;
             data[17] = values.startupDiagnostics ? 1U : 0U;
+            data[18] = values.selfDischargeRateTenthPercentPer30Days;
+            data[19] = values.coldAllowanceDeciC;
         }
 
         bool configurationWriteAllowed()
@@ -1142,6 +1196,13 @@ namespace BmsUart
                 return;
             }
 
+            case GET_SAFETY_LIMITS:
+            {
+                if (frame.length != 1U) { sendServiceResponse(frame.sequence, serviceId, INVALID); return; }
+                const auto response = SafetyPolicy::encode(SlaveController::getSafetyPolicy());
+                sendServiceResponse(frame.link, frame.sequence, serviceId, OK, response.data(), response.size());
+                return;
+            }
             case GET_CONFIG:
             {
                 if (frame.length != 1U)
@@ -1150,7 +1211,7 @@ namespace BmsUart
                     return;
                 }
                 const RuntimeConfiguration::LoadResult configuration = RuntimeConfiguration::load();
-                std::array<uint8_t, 18U> response = {};
+                std::array<uint8_t, ServiceResponse::ConfigurationDataBytes> response = {};
                 writeConfigurationResponse(response.data(), configuration);
                 sendServiceResponse(frame.link, frame.sequence, serviceId, OK, response.data(), response.size());
                 return;
@@ -1183,11 +1244,17 @@ namespace BmsUart
 
             case SET_CONFIG:
             {
-                if (frame.length != 14U || frame.payload[11] > 1U || frame.payload[12] > 1U || frame.payload[13] > 1U)
+                if ((frame.length != 14U && frame.length != 15U && frame.length != 16U) ||
+                    frame.payload[11] > 1U || frame.payload[12] > 1U || frame.payload[13] > 1U ||
+                    (frame.length >= 15U && frame.payload[14] > SelfDischarge::kMaximumRateTenthPercent) ||
+                    (frame.length == 16U && frame.payload[15] > 100U))
                 {
                     sendServiceResponse(frame.sequence, serviceId, INVALID);
                     return;
                 }
+                const RuntimeConfiguration::LoadResult currentConfiguration =
+                    frame.length < 16U ? RuntimeConfiguration::load()
+                                        : RuntimeConfiguration::LoadResult{};
                 RuntimeConfiguration::Values values = {
                     .slaveCount = frame.payload[1],
                     .currentSenseSlave = frame.payload[2],
@@ -1196,6 +1263,15 @@ namespace BmsUart
                     .invertCurrent = frame.payload[11] != 0U,
                     .balanceEnabled = frame.payload[12] != 0U,
                     .startupDiagnostics = frame.payload[13] != 0U,
+                    .selfDischargeRateTenthPercentPer30Days = static_cast<uint8_t>(
+                        frame.length >= 15U
+                            ? frame.payload[14]
+                            : RuntimeConfiguration::selfDischargeRateForLegacyWrite(
+                                  currentConfiguration.status,
+                                  currentConfiguration.values.selfDischargeRateTenthPercentPer30Days)),
+                    .coldAllowanceDeciC = frame.length == 16U ? frame.payload[15] :
+                        (currentConfiguration.status == RuntimeConfiguration::LoadStatus::Valid ?
+                         currentConfiguration.values.coldAllowanceDeciC : uint8_t{30U}),
                 };
                 if (!SlaveController::validateRuntimeConfiguration(values))
                 {
@@ -1290,6 +1366,7 @@ namespace BmsUart
                 if (now - lastStatusMs >= HEARTBEAT_PERIOD_MS)
                 {
                     sendStatus();
+                    sendSocCalibration();
                     lastStatusMs = now;
                 }
                 if (now - lastSnapshotMs >= SNAPSHOT_PERIOD_MS &&

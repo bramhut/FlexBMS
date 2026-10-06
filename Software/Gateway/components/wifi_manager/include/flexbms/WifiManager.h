@@ -29,6 +29,14 @@ namespace FlexBms::Wifi
         bool secure = false;
     };
 
+    struct StationConnection
+    {
+        bool valid = false;
+        std::array<char, 18U> bssid{};
+        uint8_t channel = 0;
+        int8_t rssi = 0;
+    };
+
     struct ScanResults
     {
         std::array<ScanNetwork, 20U> networks{};
@@ -48,6 +56,7 @@ namespace FlexBms::Wifi
     // Station credentials are write-only. The SSID is exposed only as local
     // status; the password is never returned from this component.
     const char *getStationSsid();
+    StationConnection getStationConnection();
     AccessPoint getAccessPoint();
     bool isAccessPointActive();
     bool allowsBmsServices();

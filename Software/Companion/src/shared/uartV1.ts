@@ -11,12 +11,14 @@ export const messageType = {
   hvVoltages: 0x06,
   energy: 0x07,
   goodweCanDiagnostics: 0x08,
+  socCalibration: 0x09,
+  balancingCharge: 0x0a,
   serviceRequest: 0x10,
   serviceResponse: 0x11,
   event: 0x12,
 } as const
 
-export const serviceId = { getStatus: 0x01, setRunRequest: 0x02, acknowledgeFaults: 0x03, readRegister: 0x04, setRtc: 0x05, getDeviceInfo: 0x06, enterStm32Bootloader: 0x07, getRtc: 0x08, setBalancingEnabled: 0x09, getConfig: 0x0b, setConfig: 0x0c, getDiagnosticReport: 0x0d } as const
+export const serviceId = { getSafetyLimits: 0x0e, getStatus: 0x01, setRunRequest: 0x02, acknowledgeFaults: 0x03, readRegister: 0x04, setRtc: 0x05, getDeviceInfo: 0x06, enterStm32Bootloader: 0x07, getRtc: 0x08, setBalancingEnabled: 0x09, getConfig: 0x0b, setConfig: 0x0c, getDiagnosticReport: 0x0d } as const
 
 export type UartV1Frame = { type: number; sequence: number; payload: Uint8Array }
 
@@ -80,10 +82,38 @@ export function decodeStatus(payload: Uint8Array): Status | undefined {
   return { bms_state: payload[0], hv_state: payload[1], flags, slave_count: payload[4], bms_active_errors: readLe32(payload, 5), bms_latched_errors: readLe32(payload, 9), hv_active_errors: readLe32(payload, 13), hv_latched_errors: readLe32(payload, 17), warnings: readLe32(payload, 21), uptime_ms: readLe32(payload, 25), measurements_fresh: (flags & (1 << 3)) !== 0, run_request: (flags & (1 << 2)) !== 0, balancing_enabled: (flags & (1 << 5)) !== 0, soc_valid: (flags & (1 << 6)) !== 0, current_sensing_enabled: (flags & (1 << 7)) !== 0, soc_last_calibration_unix_s: (flags & (1 << 8)) !== 0 ? readLe32(payload, 29) : undefined, watchdog_breadcrumb: payload.length >= 37 && (flags & (1 << 9)) !== 0 ? readLe32(payload, 33) : undefined, watchdog_diagnostic: payload.length === 41 && (flags & (1 << 10)) !== 0 ? readLe32(payload, 37) : undefined }
 }
 
+export function decodeSocCalibration(payload: Uint8Array): NonNullable<Status['soc_calibration']> | undefined {
+  const legacy = payload.length === 16 && payload[0] === 1
+  const extended = payload.length === 34 && payload[0] === 2
+  if ((!legacy && !extended) || (payload[1] & (legacy ? ~3 : ~0x3f)) !== 0) return undefined
+  const valid = (payload[1] & 1) !== 0
+  const result: NonNullable<Status['soc_calibration']> = { valid }
+  if (valid) {
+    const unixTime = readLe32(payload, 4)
+    const previousUnixTime = readLe32(payload, 8)
+    if ((payload[1] & 2) !== 0) result.pre_soc_raw = readLe16(payload, 2)
+    if (unixTime !== 0) result.unix_time_s = unixTime
+    if (previousUnixTime !== 0) result.previous_unix_time_s = previousUnixTime
+    result.qualifying_dwell_ms = readLe32(payload, 12)
+  }
+  if (extended) {
+    if (payload[16] > 50 || payload[17] !== 0) return undefined
+    result.self_discharge_rate_tenth_percent_per_30_days = payload[16]
+    result.self_discharge_soc_valid = (payload[1] & (1 << 2)) !== 0
+    result.self_discharge_interval_complete = (payload[1] & (1 << 3)) !== 0
+    result.self_discharge_equivalent_current_uA = readLe32(payload, 18)
+    result.self_discharge_accumulated_since_calibration_uAh = Number(readLe64(payload, 22))
+    result.last_calibration_self_discharge_mAh = readLe32(payload, 30)
+    result.last_calibration_self_discharge_valid = (payload[1] & (1 << 4)) !== 0
+    result.last_calibration_self_discharge_complete = (payload[1] & (1 << 5)) !== 0
+  }
+  return result
+}
+
 export function decodePack(payload: Uint8Array): Snapshot['pack'] | undefined {
-  if (payload.length !== 24) return undefined
-  const current = readLe16(payload, 4)
-  return { pack_voltage_uV: readLe32(payload), pack_current_raw: current > 0x7fff ? current - 0x10000 : current, soc_raw: readLe16(payload, 6), min_cell_uV: readLe32(payload, 8), max_cell_uV: readLe32(payload, 12), min_ntc_raw: readLe16(payload, 16), max_ntc_raw: readLe16(payload, 18), min_ic_raw: readLe16(payload, 20), max_ic_raw: readLe16(payload, 22) }
+  if (payload.length !== 27 || payload[0] !== 2) return undefined
+  const current = readLe32(payload, 5) | 0
+  return { pack_voltage_uV: readLe32(payload, 1), pack_current_uA: current, soc_raw: readLe16(payload, 9), min_cell_uV: readLe32(payload, 11), max_cell_uV: readLe32(payload, 15), min_ntc_raw: readLe16(payload, 19), max_ntc_raw: readLe16(payload, 21), min_ic_raw: readLe16(payload, 23), max_ic_raw: readLe16(payload, 25) }
 }
 
 export function decodeHvVoltages(payload: Uint8Array): Snapshot['hv_voltages'] | undefined {
@@ -100,7 +130,9 @@ export function decodeGoodweCanDiagnostics(payload: Uint8Array): Snapshot['goodw
   const headerBytes = 40
   const transmitIds = [0x453, 0x455, 0x456, 0x457, 0x458, 0x45a, 0x460]
   const receiveIds = [0x420, 0x425, 0x305]
-  if (payload.length !== 156 || payload[0] !== 1) return undefined
+  const extended = payload.length === 167 && payload[0] === 2
+  if (!extended && !(payload.length === 156 && payload[0] === 1)) return undefined
+  if (extended && payload[156] > 2) return undefined
   const signed16 = (offset: number) => { const value = readLe16(payload, offset); return value > 0x7fff ? value - 0x10000 : value }
   let offset = headerBytes
   const transmitFrames = transmitIds.map(id => {
@@ -116,6 +148,10 @@ export function decodeGoodweCanDiagnostics(payload: Uint8Array): Snapshot['goodw
   })
   return {
     schema_version: payload[0],
+    violation_direction: extended ? payload[156] : undefined,
+    violation_current_ma: extended ? readLe32(payload, 157) | 0 : undefined,
+    violation_limit_deci_a: extended ? readLe16(payload, 161) : undefined,
+    violation_uptime_ms: extended ? readLe32(payload, 163) : undefined,
     protocol: payload[1],
     request_45a_enabled: (payload[2] & 1) !== 0,
     compatibility_460_enabled: (payload[2] & 2) !== 0,
@@ -144,6 +180,13 @@ export function decodeGoodweCanDiagnostics(payload: Uint8Array): Snapshot['goodw
 export function decodeCell(payload: Uint8Array): Snapshot['cells'][number] | undefined {
   if (payload.length !== 51) return undefined
   return { slave_index: payload[0], balance_mask: readLe16(payload, 1), cell_voltage_uV: Array.from({ length: 12 }, (_, index) => readLe32(payload, 3 + index * 4)) }
+}
+
+export function decodeBalancingCharge(payload: Uint8Array): { slave_index: number; balancing_mAh: number[] } | undefined {
+  if (payload.length < 6 || payload.length > 58) return undefined
+  const cellCount = payload[1]
+  if (cellCount < 1 || cellCount > 14 || payload.length !== 2 + cellCount * 4) return undefined
+  return { slave_index: payload[0], balancing_mAh: Array.from({ length: cellCount }, (_, index) => readLe32(payload, 2 + index * 4)) }
 }
 
 export function decodeTemperature(payload: Uint8Array): Snapshot['temperatures'][number] | undefined {

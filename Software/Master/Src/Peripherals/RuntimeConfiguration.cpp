@@ -20,7 +20,8 @@ namespace RuntimeConfiguration
 
         bool isSupportedVersion(uint16_t version)
         {
-            return version == CONFIG_VERSION || version == LEGACY_CONFIG_VERSION;
+            return version == CONFIG_VERSION || version == 4U || version == PREVIOUS_CONFIG_VERSION ||
+                   version == LEGACY_CONFIG_VERSION;
         }
 
         struct Record
@@ -52,6 +53,7 @@ namespace RuntimeConfiguration
             .invertCurrent = false,
             .balanceEnabled = true,
             .startupDiagnostics = true,
+            .selfDischargeRateTenthPercentPer30Days = 0U,
         };
 
         uint32_t crc32(const uint8_t *data, size_t length)
@@ -98,6 +100,12 @@ namespace RuntimeConfiguration
                 // Version 2 had no persisted startup-diagnostics field. Treat
                 // legacy records as the safe, enabled configuration.
                 .startupDiagnostics = record.version == LEGACY_CONFIG_VERSION || (record.reservedData & 1U) != 0U,
+                .selfDischargeRateTenthPercentPer30Days =
+                    static_cast<uint8_t>(record.version >= 4U
+                                             ? ((record.reservedData >> 8U) & 0xFFU)
+                                             : 0U),
+                .coldAllowanceDeciC = static_cast<uint8_t>(record.version >= 5U ?
+                    ((record.reservedData >> 16U) & 0xFFU) : 30U),
             };
         }
 
@@ -114,6 +122,8 @@ namespace RuntimeConfiguration
             record.batteryCapacityMilliAh = values.batteryCapacityMilliAh;
             record.balanceEnabled = values.balanceEnabled ? 1U : 0U;
             record.reservedData = values.startupDiagnostics ? 1U : 0U;
+            record.reservedData |= static_cast<uint32_t>(values.selfDischargeRateTenthPercentPer30Days) << 8U;
+            record.reservedData |= static_cast<uint32_t>(values.coldAllowanceDeciC) << 16U;
             record.crc = crc32(reinterpret_cast<const uint8_t *>(&record), offsetof(Record, crc));
             return record;
         }
@@ -172,7 +182,8 @@ namespace RuntimeConfiguration
         if (values.slaveCount == 0U || values.slaveCount > MAX_SLAVES ||
             values.currentSenseSlave > values.slaveCount ||
             values.shuntResistanceMicroOhms == 0U || values.shuntResistanceMicroOhms > MICROOHMS_PER_OHM ||
-            values.batteryCapacityMilliAh == 0U || values.batteryCapacityMilliAh > 10'000'000U)
+            values.batteryCapacityMilliAh == 0U || values.batteryCapacityMilliAh > 10'000'000U ||
+            values.selfDischargeRateTenthPercentPer30Days > 50U || values.coldAllowanceDeciC > 100U)
         {
             return false;
         }

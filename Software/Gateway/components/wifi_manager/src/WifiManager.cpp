@@ -478,6 +478,12 @@ namespace FlexBms::Wifi
             wifi_config_t config{};
             std::memcpy(config.sta.ssid, candidate.ssid.data(), std::strlen(candidate.ssid.data()));
             std::memcpy(config.sta.password, candidate.password.data(), std::strlen(candidate.password.data()));
+            // An SSID may have several APs. Fast scan stops at the first match
+            // and can repeatedly pick a distant AP on an earlier channel.
+            // Apply this on every candidate/retry, without pinning a BSSID.
+            config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+            config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+            config.sta.bssid_set = false;
             const esp_err_t result = esp_wifi_set_config(WIFI_IF_STA, &config);
             if (result != ESP_OK)
             {
@@ -632,7 +638,8 @@ namespace FlexBms::Wifi
                 activeCandidate = CandidateKind::None;
                 activeFallbackNetwork = kNoFallbackNetwork;
                 mdnsRefreshRequested.store(true);
-                ESP_LOGW(kLogTag, "Wi-Fi disconnected (reason %u); selecting a visible network", event->reason);
+                ESP_LOGW(kLogTag, "Wi-Fi disconnected from " MACSTR " at %d dBm (reason %u); selecting a visible network",
+                         MAC2STR(event->bssid), event->rssi, event->reason);
                 if (accessPointActive.load())
                 {
                     // A station disconnect while the recovery AP is active
@@ -667,6 +674,9 @@ namespace FlexBms::Wifi
                 fallbackAuthenticationFailed.fill(false);
                 const auto *event = static_cast<const ip_event_got_ip_t *>(eventData);
                 ESP_LOGI(kLogTag, "Wi-Fi connected, IP " IPSTR, IP2STR(&event->ip_info.ip));
+                const auto connection = getStationConnection();
+                if (connection.valid) ESP_LOGI(kLogTag, "Station AP %s, channel %u, RSSI %d dBm",
+                                               connection.bssid.data(), connection.channel, connection.rssi);
                 mdnsRefreshRequested.store(true);
             }
         }
@@ -835,6 +845,17 @@ namespace FlexBms::Wifi
     State getState() { return state.load(); }
     bool consumeStatusChanged() { return statusChanged.exchange(false); }
     const char *getStationSsid() { return activeCredentials.ssid.data(); }
+    StationConnection getStationConnection()
+    {
+        StationConnection connection{};
+        wifi_ap_record_t record{};
+        if (state.load() != State::Connected || esp_wifi_sta_get_ap_info(&record) != ESP_OK) return connection;
+        connection.valid = true;
+        std::snprintf(connection.bssid.data(), connection.bssid.size(), MACSTR, MAC2STR(record.bssid));
+        connection.channel = record.primary;
+        connection.rssi = record.rssi;
+        return connection;
+    }
     AccessPoint getAccessPoint() { return accessPoint; }
     bool isAccessPointActive() { return accessPointActive.load(); }
     bool allowsBmsServices() { return state.load() == State::Connected; }

@@ -13,6 +13,10 @@ The implementation specification for the BMS-only Companion restructure and
 its Gateway browser API is
 [`architecture/companion-restructure-and-gateway-api.md`](architecture/companion-restructure-and-gateway-api.md).
 
+The temperature-derating and independent inverter-limit enforcement design,
+including approved decisions, implementation and validation tasks, is in
+[`architecture/temperature-derating-plan.md`](architecture/temperature-derating-plan.md).
+
 ## Prerequisite
 
 The repository currently targets Typst 0.15.1. Install it on Windows with:

@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ServiceView from './ServiceView.vue'
 import RecentChangesList from './RecentChangesList.vue'
-import { balancingDisplay, bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, describeWatchdogBreadcrumb, formatCellDifferenceMv, formatEnergy, formatPower, hvReasonNames, hvStateName, icCelsius, ntcCelsius, powerW, setBits, socPercent, warningDisplayNames } from '@/shared/model'
+import { balancingDisplay, bccDiagnosticNames, bccDiagnosticStatusNames, bmsFaultNames, bmsStateName, cellVoltageV, currentA, formatCurrent, describeWatchdogBreadcrumb, formatCellDifferenceMv, formatEnergy, formatPower, hvReasonNames, hvStateName, icCelsius, ntcCelsius, powerW, setBits, socPercent, warningDisplayNames } from '@/shared/model'
 import { serviceResultLabel } from '@/shared/service'
 import { advancingUnixTime, createUptimeTracker, displayedUptimeMs, formatUptime, resetUptimeTracker, sampleUptime } from '@/shared/time'
 import type { BccDiagnosticReport, BmsTransport, Capabilities, GatewayStatus, RecordedControllerEvent, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
@@ -126,11 +126,11 @@ const cellReference = computed(() => {
 const cellDeltaMv = computed(() => props.snapshot ? (props.snapshot.pack.max_cell_uV - props.snapshot.pack.min_cell_uV) / 1000 : 0)
 const currentValue = computed(() => {
   if (!props.status?.current_sensing_enabled) return 'Disabled'
-  return props.snapshot ? measurement(`${currentA(props.snapshot.pack.pack_current_raw).toFixed(2)} A`) : '—'
+  return props.snapshot ? measurement(formatCurrent(currentA(props.snapshot.pack.pack_current_uA))) : '—'
 })
 const powerValue = computed(() => {
   if (!props.status?.current_sensing_enabled) return 'Disabled'
-  return props.snapshot ? measurement(formatPower(powerW(props.snapshot.pack.pack_voltage_uV, props.snapshot.pack.pack_current_raw))) : '—'
+  return props.snapshot ? measurement(formatPower(powerW(props.snapshot.pack.pack_voltage_uV, props.snapshot.pack.pack_current_uA))) : '—'
 })
 const hvDisplay = computed(() => {
   const status = props.status

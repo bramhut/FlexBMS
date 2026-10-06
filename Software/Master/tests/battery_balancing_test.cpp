@@ -53,9 +53,11 @@ namespace
 
     constexpr bool currentGateIsDirectional()
     {
-        return BatteryBalancing::currentAllowsBalancing(31.4, 314.0, -0.1, 0.1) &&
-               !BatteryBalancing::currentAllowsBalancing(31.5, 314.0, -0.1, 0.1) &&
-               !BatteryBalancing::currentAllowsBalancing(-0.2, 314.0, -0.1, 0.1);
+        return BatteryBalancing::currentAllowsBalancing(6.28, 314.0, -0.1, 0.02) &&
+               BatteryBalancing::currentAllowsBalancing(-0.1, 314.0, -0.1, 0.02) &&
+               !BatteryBalancing::currentAllowsBalancing(6.29, 314.0, -0.1, 0.02) &&
+               !BatteryBalancing::currentAllowsBalancing(22.0, 314.0, -0.1, 0.02) &&
+               !BatteryBalancing::currentAllowsBalancing(-0.2, 314.0, -0.1, 0.02);
     }
 }
 
@@ -63,3 +65,20 @@ static_assert(selectionUsesThresholdsAndHysteresis());
 static_assert(selectionPrioritizesHighestVoltages());
 static_assert(equalVoltageSelectionIsCappedAndRotates());
 static_assert(currentGateIsDirectional());
+
+constexpr bool currentQualificationRequiresContinuousDwell()
+{
+    BatteryBalancing::CurrentQualification gate;
+    if (gate.update(true, 0U) || gate.update(true, 29'999U)) return false;
+    if (!gate.update(true, 30'000U) || !gate.update(true, 60'000U)) return false;
+    if (gate.update(false, 60'001U) || gate.update(true, 60'002U)) return false;
+    if (gate.update(true, 90'001U) || !gate.update(true, 90'002U)) return false;
+    gate.reset();
+    if (gate.update(true, 100'000U)) return false;
+    gate.reset();
+    constexpr uint32_t start = UINT32_MAX - 10'000U;
+    return !gate.update(true, start) &&
+           !gate.update(true, start + 29'999U) &&
+           gate.update(true, start + 30'000U);
+}
+static_assert(currentQualificationRequiresContinuousDwell());

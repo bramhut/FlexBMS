@@ -145,8 +145,8 @@ namespace
             Pack pack{};
             if (decodePack(frame, pack))
             {
-                ESP_LOGI(kLogTag, "PACK voltage=%" PRIu32 "uV current_raw=%d soc_raw=%u",
-                         pack.packVoltageUv, pack.packCurrentRaw, pack.socRaw);
+                ESP_LOGI(kLogTag, "PACK voltage=%" PRIu32 "uV current_uA=%" PRId32 " soc_raw=%u",
+                         pack.packVoltageUv, pack.packCurrentMicroAmps, pack.socRaw);
             }
             break;
         }

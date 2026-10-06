@@ -10,7 +10,7 @@ namespace EnergyCounter
     constexpr uint8_t kMarkerBackupRegister = 17U;
     constexpr uint32_t kRecordMarker = 0x454E4731U;
     constexpr uint32_t kChecksumSeed = 0xA3F19B27U;
-    constexpr uint64_t kMicroWhDenominator = 3'600'000'000ULL;
+    constexpr uint64_t kMicroWhDenominator = 3'600'000'000'000'000ULL;
 
     constexpr uint32_t elapsedMicroseconds(uint32_t now, uint32_t previous)
     {
@@ -49,13 +49,24 @@ namespace EnergyCounter
     }
 
     constexpr uint64_t integrateMicroWh(uint64_t counter, uint64_t &remainder,
-                                        uint32_t voltageUv, uint32_t currentRawMagnitude,
+                                        uint32_t voltageUv, uint32_t currentMicroAmpsMagnitude,
                                         uint32_t elapsedUs)
     {
-        const uint64_t powerUw = (voltageUv * static_cast<uint64_t>(currentRawMagnitude)) / 64ULL;
-        const uint64_t numerator = powerUw * elapsedUs + remainder;
-        const uint64_t increment = numerator / kMicroWhDenominator;
-        remainder = numerator % kMicroWhDenominator;
+        // Exact (uV * uA * us) / 3.6e15, without a 96-bit intermediate.
+        const uint64_t product = voltageUv * static_cast<uint64_t>(currentMicroAmpsMagnitude);
+        const uint64_t whole = product / kMicroWhDenominator;
+        const uint64_t fraction = product % kMicroWhDenominator;
+        uint64_t increment = 0, residual = 0;
+        for (int bit = 31; bit >= 0; --bit) {
+            increment *= 2;
+            residual *= 2;
+            if ((elapsedUs >> bit) & 1U) { increment += whole; residual += fraction; }
+            increment += residual / kMicroWhDenominator;
+            residual %= kMicroWhDenominator;
+        }
+        residual += remainder;
+        increment += residual / kMicroWhDenominator;
+        remainder = residual % kMicroWhDenominator;
         return saturatingAdd(counter, increment);
     }
 
@@ -72,7 +83,7 @@ namespace EnergyCounter
 
     // Integrates one complete, fresh measurement. Positive current is charge;
     // negative current is discharge. Invalid samples only end the interval.
-    void update(uint32_t packVoltageUv, int16_t packCurrentRaw, uint32_t timestampUs, bool valid);
+    void update(uint32_t packVoltageUv, int32_t packCurrentMicroAmps, uint32_t timestampUs, bool valid);
 
     Snapshot getSnapshot();
 }

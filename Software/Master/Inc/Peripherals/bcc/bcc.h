@@ -11,6 +11,7 @@
  ******************************************************************************/
 
 #include <stdbool.h>
+#include "Peripherals/CoulombCounterDelta.h"
 #include <stddef.h>
 #include "bcc_utils.h"
 #include "bcc_communication.h"
@@ -124,9 +125,10 @@ private:
     volatile uint32_t *mAmpHourStateChecksum;
 
     // Coulomb counter difference variables
-    uint16_t mCCPrevSamples = 0;
-    uint32_t mCCPrevTime = 0;
-    int32_t mCCPrevAccumulator = 0;
+    CoulombCounterDelta::Tracker mCounterTracker;
+    uint32_t mCounterSampleTimeUs = 0;
+    uint32_t mCounterDiscontinuities = 0;
+    bool mCurrentIntervalValid = false;
 
     // Current sensing variables
     double mIAvg = 0; // Average current [A]
@@ -284,6 +286,9 @@ public:
      * @return bcc_status_t Error code.
      */
     bcc_status_t resetBCCCoulombCounter();
+    void resetCurrentBaseline() { mCounterTracker.reset(); mCurrentIntervalValid = false; }
+    uint32_t currentSampleTimeUs() const { return mCounterSampleTimeUs; }
+    bool currentIntervalValid() const { return mCurrentIntervalValid; }
 
     /*! @brief Store an Ah value and mark the backup-domain estimate valid. */
     void setAhCounter(double amphour);

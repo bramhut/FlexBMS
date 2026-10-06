@@ -24,6 +24,8 @@ namespace FlexBms::UartV1
         HvVoltages = 0x06U,
         Energy = 0x07U,
         GoodweCanDiagnostics = 0x08U,
+        SocCalibration = 0x09U,
+        BalancingCharge = 0x0AU,
         ServiceRequest = 0x10U,
         ServiceResponse = 0x11U,
         Event = 0x12U,
@@ -57,7 +59,7 @@ namespace FlexBms::UartV1
     struct Pack
     {
         uint32_t packVoltageUv{};
-        int16_t packCurrentRaw{};
+        int32_t packCurrentMicroAmps{};
         uint16_t socRaw{};
         uint32_t minCellUv{};
         uint32_t maxCellUv{};
@@ -72,6 +74,25 @@ namespace FlexBms::UartV1
         bool valid{};
         uint32_t batteryVoltageUv{};
         uint32_t loadVoltageUv{};
+    };
+
+    struct SocCalibration
+    {
+        bool valid{};
+        bool preSocValid{};
+        uint16_t preSocRaw{};
+        uint32_t unixTimeS{};
+        uint32_t previousUnixTimeS{};
+        uint32_t qualifyingDwellMs{};
+        bool selfDischargeAvailable{};
+        bool selfDischargeSocValid{};
+        uint8_t selfDischargeRateTenthPercentPer30Days{};
+        uint32_t selfDischargeEquivalentCurrentMicroAmps{};
+        uint64_t selfDischargeAccumulatedSinceCalibrationMicroAh{};
+        bool selfDischargeIntervalComplete{};
+        uint32_t lastCalibrationSelfDischargeMilliAh{};
+        bool lastCalibrationSelfDischargeAvailable{};
+        bool lastCalibrationSelfDischargeComplete{};
     };
 
     struct Energy
@@ -97,6 +118,10 @@ namespace FlexBms::UartV1
 
     struct GoodweCanDiagnostics
     {
+        uint8_t violationDirection{};
+        int32_t violationCurrentMilliA{};
+        uint16_t violationLimitDeciA{};
+        uint32_t violationUptimeMs{};
         uint8_t schemaVersion{};
         uint8_t protocol{};
         bool request45aEnabled{};
@@ -128,6 +153,13 @@ namespace FlexBms::UartV1
         // Scheduled balancing-pulse selection, not instantaneous switch state.
         uint16_t balanceMask{};
         std::array<uint32_t, 12U> voltageUv{};
+    };
+
+    struct BalancingCharge
+    {
+        uint8_t slaveIndex{};
+        uint8_t cellCount{};
+        std::array<uint32_t, 14U> milliAmpHours{};
     };
 
     struct Temperature
@@ -167,7 +199,9 @@ namespace FlexBms::UartV1
     bool decodeHvVoltages(const Frame &frame, HvVoltages &voltages);
     bool decodeEnergy(const Frame &frame, Energy &energy);
     bool decodeGoodweCanDiagnostics(const Frame &frame, GoodweCanDiagnostics &diagnostics);
+    bool decodeSocCalibration(const Frame &frame, SocCalibration &calibration);
     bool decodeCell(const Frame &frame, Cell &cell);
+    bool decodeBalancingCharge(const Frame &frame, BalancingCharge &balancingCharge);
     bool decodeTemperature(const Frame &frame, Temperature &temperature);
 
     // Fast boot-time regression check for CRC, framing, fragmentation, and resynchronisation.

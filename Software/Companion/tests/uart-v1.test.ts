@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
+import { decodePack } from '../src/shared/uartV1.ts'
 import test from 'node:test'
-import { crc32, decodeEnergy, decodeGoodweCanDiagnostics, decodeHvVoltages, decodeStatus, encodeFrame, FrameDecoder, messageType, serviceId, writeLe16, writeLe32 } from '../src/shared/uartV1.ts'
+import { crc32, decodeBalancingCharge, decodeEnergy, decodeGoodweCanDiagnostics, decodeHvVoltages, decodeSocCalibration, decodeStatus, encodeFrame, FrameDecoder, messageType, serviceId, writeLe16, writeLe32 } from '../src/shared/uartV1.ts'
 
 test('UART v1 browser codec matches the canonical heartbeat vector', () => {
   const heartbeat = encodeFrame({ type: messageType.heartbeat, sequence: 0, payload: new Uint8Array() })
@@ -28,10 +29,43 @@ test('UART v1 decodes valid AMC3330 BAT+ and LOAD+ telemetry', () => {
   assert.equal(decodeHvVoltages(payload.slice(0, 11)), undefined)
 })
 
+test('PACK schema 2 preserves signed microamps and rejects legacy layouts', () => {
+  const payload = new Uint8Array(27)
+  payload[0] = 2
+  writeLe32(payload, 1, 324_000_000)
+  writeLe16(payload, 9, 43689)
+  writeLe32(payload, 11, 3_400_000)
+  writeLe32(payload, 15, 3_500_000)
+  writeLe16(payload, 25, 30123)
+  for (const current of [-2147483648, -9000, -1, 0, 1, 5000, 2147483647]) {
+    writeLe32(payload, 5, current)
+    const pack = decodePack(payload)!
+    assert.equal(pack.pack_current_uA, current)
+    assert.equal(pack.pack_voltage_uV, 324_000_000)
+    assert.equal(pack.soc_raw, 43689)
+    assert.equal(pack.max_ic_raw, 30123)
+  }
+  assert.equal(decodePack(new Uint8Array(24)), undefined)
+  payload[0] = 3
+  assert.equal(decodePack(payload), undefined)
+})
+
 test('UART v1 decodes 64-bit energy counters and rejects malformed payloads', () => {
   const payload = Uint8Array.from([1, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x99, 0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff])
   assert.deepEqual(decodeEnergy(payload), { valid: true, charged_energy_uWh: '1234605616436508552', discharged_energy_uWh: '18441921395520307353' })
   assert.equal(decodeEnergy(payload.slice(0, 16)), undefined)
+})
+
+test('UART v1 decodes per-cell balancing charge and rejects inconsistent counts', () => {
+  const payload = new Uint8Array(10)
+  payload[0] = 3
+  payload[1] = 2
+  writeLe32(payload, 2, 468)
+  writeLe32(payload, 6, 5678)
+  assert.deepEqual(decodeBalancingCharge(payload), { slave_index: 3, balancing_mAh: [468, 5678] })
+  assert.equal(decodeBalancingCharge(payload.slice(0, 9)), undefined)
+  payload[1] = 15
+  assert.equal(decodeBalancingCharge(payload), undefined)
 })
 
 test('UART v1 decodes GoodWe CAN counters, timestamps, signed current, and raw replies', () => {
@@ -76,6 +110,26 @@ test('UART v1 decodes GoodWe CAN counters, timestamps, signed current, and raw r
   assert.equal(decodeGoodweCanDiagnostics(payload), undefined)
 })
 
+test('UART v1 decodes signed current-limit events and rejects malformed diagnostic schemas', () => {
+  const payload = new Uint8Array(167)
+  payload[0] = 2
+  payload[156] = 2
+  writeLe32(payload, 157, -45_123)
+  writeLe16(payload, 161, 400)
+  writeLe32(payload, 163, 123_456)
+  const result = decodeGoodweCanDiagnostics(payload)
+  assert.equal(result?.violation_direction, 2)
+  assert.equal(result?.violation_current_ma, -45_123)
+  assert.equal(result?.violation_limit_deci_a, 400)
+  assert.equal(result?.violation_uptime_ms, 123_456)
+  assert.equal(decodeGoodweCanDiagnostics(payload.slice(0, 166)), undefined)
+  payload[156] = 3
+  assert.equal(decodeGoodweCanDiagnostics(payload), undefined)
+  payload[156] = 0
+  payload[0] = 3
+  assert.equal(decodeGoodweCanDiagnostics(payload), undefined)
+})
+
 test('UART v1 status exposes current sensing and SOC calibration validity', () => {
   const payload = new Uint8Array(33)
   payload.set([3, 4, 0xfc, 0x01, 1, 0x04, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 1, 0, 0, 0, 0x80, 0x51, 0x37, 0x66])
@@ -97,6 +151,41 @@ test('UART v1 status omits the SOC calibration time without its validity flag', 
   const status = decodeStatus(payload)
   assert.equal(status?.current_sensing_enabled, true)
   assert.equal(status?.soc_last_calibration_unix_s, undefined)
+})
+
+test('UART v1 preserves the signed full-charge correction inputs and timing', () => {
+  const payload = new Uint8Array(16)
+  payload[0] = 1
+  payload[1] = 3
+  writeLe16(payload, 2, 44083) // approximately 101.8%
+  writeLe32(payload, 4, 1_714_901_376)
+  writeLe32(payload, 8, 1_714_814_976)
+  writeLe32(payload, 12, 300_250)
+  assert.deepEqual(decodeSocCalibration(payload), {
+    valid: true, pre_soc_raw: 44083, unix_time_s: 1_714_901_376,
+    previous_unix_time_s: 1_714_814_976, qualifying_dwell_ms: 300_250,
+  })
+  payload[1] = 0
+  assert.deepEqual(decodeSocCalibration(payload), { valid: false })
+  assert.equal(decodeSocCalibration(payload.slice(0, 15)), undefined)
+})
+
+test('UART v1 decodes live self-discharge diagnostics and explicit invalid SoC state', () => {
+  const payload = new Uint8Array(34)
+  payload[0] = 2
+  payload[1] = (1 << 3) // interval complete, but SoC counter invalid
+  payload[16] = 10
+  writeLe32(payload, 18, 4361)
+  payload[22] = 0x40
+  writeLe32(payload, 30, 3140)
+  const decoded = decodeSocCalibration(payload)
+  assert.equal(decoded?.self_discharge_rate_tenth_percent_per_30_days, 10)
+  assert.equal(decoded?.self_discharge_soc_valid, false)
+  assert.equal(decoded?.self_discharge_interval_complete, true)
+  assert.equal(decoded?.self_discharge_equivalent_current_uA, 4361)
+  assert.equal(decoded?.self_discharge_accumulated_since_calibration_uAh, 64)
+  assert.equal(decoded?.last_calibration_self_discharge_mAh, 3140)
+  assert.equal(decoded?.valid, false)
 })
 
 test('UART v1 status decodes transfer and watchdog diagnostic breadcrumbs', () => {

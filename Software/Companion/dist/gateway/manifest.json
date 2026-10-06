@@ -1,17 +1,17 @@
 {
   "format": 1,
-  "companion_version": "0.1.65",
-  "build_id": "861f3f98373e2c9c",
+  "companion_version": "0.1.74",
+  "build_id": "7c18574d4623aae2",
   "files": [
     {
-      "path": "assets/index-CkoUDOSK.js",
-      "bytes": 134713,
-      "sha256": "7e941d00cbe0a4e96c53f42050830e3c90a5c2377dced4eaaec3a4cd770de475"
+      "path": "assets/index-22EJ4cTR.css",
+      "bytes": 21893,
+      "sha256": "fd57cd92d35cd69b0fafa3a08bfdb68da8cfd701d1aab76caf855eeec7bac0eb"
     },
     {
-      "path": "assets/index-CyFrNG9W.css",
-      "bytes": 20270,
-      "sha256": "478b5bd036b8f8b25d2bc4a6917d3238001ca47b69001a83332023df4b4d0583"
+      "path": "assets/index-DlV0ij5L.js",
+      "bytes": 158322,
+      "sha256": "2953148adf1ac6fddcb7262da042a4aa5f0adee3edfb54d892d5cefb45fa1d46"
     },
     {
       "path": "favicon-dark.svg",
@@ -31,8 +31,8 @@
     {
       "path": "index.html",
       "bytes": 595,
-      "sha256": "eb14fe47f3894fb4511ee3c4636557670ac2ec91937c65e19c81aa3344758ce5"
+      "sha256": "676e919112b2c7518b686ebed2ed10d90aaece9a5aafff8f0ed6157a85a1feff"
     }
   ],
-  "total_bytes": 170881
+  "total_bytes": 196113
 }

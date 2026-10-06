@@ -1,4 +1,5 @@
 #include "flexbms/GatewayApi.h"
+#include "flexbms/DeliveryQueue.h"
 #include "flexbms/GatewayAssets.h"
 #include "flexbms/FirmwareUpdate.h"
 #include "flexbms/MqttClient.h"
@@ -54,6 +55,8 @@ namespace FlexBms::GatewayApi
         UartV1::Energy energy{};
         UartV1::HvVoltages hvVoltages{};
         UartV1::GoodweCanDiagnostics goodweCanDiagnostics{};
+        UartV1::SocCalibration socCalibration{};
+        std::array<UartV1::BalancingCharge, kMaxSlaves> balancingCharge{};
         std::array<UartV1::Cell, kMaxSlaves> cells{};
         std::array<UartV1::Temperature, kMaxSlaves> temperatures{};
         std::array<bool, kMaxSlaves> hasCell{};
@@ -63,6 +66,8 @@ namespace FlexBms::GatewayApi
         bool hasEnergy = false;
         bool hasHvVoltages = false;
         bool hasGoodweCanDiagnostics = false;
+        bool hasSocCalibration = false;
+        std::array<bool, kMaxSlaves> hasBalancingCharge{};
 
         struct WebSocketDelivery
         {
@@ -70,8 +75,7 @@ namespace FlexBms::GatewayApi
             bool sendPending = false;
             bool retiring = false;
             int64_t nextCloseAttemptUs = 0;
-            char *queuedText = nullptr;
-            size_t queuedLength = 0U;
+            DeliveryQueue queue;
             uint32_t generation = 0U;
         };
         std::array<WebSocketDelivery, kMaxTrackedWebSockets> webSocketDeliveries{};
@@ -130,6 +134,7 @@ namespace FlexBms::GatewayApi
             case Service::GetRtc: return "get_rtc";
             case Service::GetDeviceInfo: return "get_device_info";
             case Service::ReadRegister: return "read_register";
+            case Service::GetSafetyLimits: return "get_safety_limits";
             case Service::GetConfig: return "get_config";
             case Service::SetConfig: return "set_config";
             case Service::GetDiagnosticReport: return "get_diagnostic_report";
@@ -214,8 +219,11 @@ namespace FlexBms::GatewayApi
         void resetWebSocketDelivery(WebSocketDelivery &delivery)
         {
             const uint32_t nextGeneration = delivery.generation + 1U;
-            std::free(delivery.queuedText);
-            delivery = {};
+            delivery.queue.clear();
+            delivery.socket = -1;
+            delivery.sendPending = false;
+            delivery.retiring = false;
+            delivery.nextCloseAttemptUs = 0;
             delivery.generation = nextGeneration == 0U ? 1U : nextGeneration;
         }
 
@@ -283,16 +291,14 @@ namespace FlexBms::GatewayApi
                     // server callback, avoiding a control-queue feedback loop.
                     delivery->retiring = true;
                     delivery->nextCloseAttemptUs = 0;
-                    std::free(delivery->queuedText);
-                    delivery->queuedText = nullptr;
-                    delivery->queuedLength = 0U;
+                    delivery->queue.clear();
                     ESP_LOGW(kLogTag, "Retiring unresponsive WebSocket client %d: %s", socket, esp_err_to_name(result));
                 }
             }
             unlockWebSocketDeliveries();
         }
 
-        bool queueWebSocketText(int socket, const char *text, size_t length)
+        bool queueWebSocketText(int socket, const char *text, size_t length, DeliveryQueue::Topic topic)
         {
             if (server == nullptr || text == nullptr ||
                 httpd_ws_get_fd_info(server, socket) != HTTPD_WS_CLIENT_WEBSOCKET)
@@ -314,15 +320,20 @@ namespace FlexBms::GatewayApi
                 return false;
             }
 
-            if (delivery->sendPending || delivery->queuedText != nullptr)
+            if (delivery->sendPending || !delivery->queue.empty())
             {
-                // Status publications are state, not an event log. Keep the
-                // newest one and send it after the current async frame.
-                std::free(delivery->queuedText);
-                delivery->queuedText = copy;
-                delivery->queuedLength = length;
+                const bool accepted = delivery->queue.push({copy, length}, topic);
+                if (!accepted) {
+                    // A reply must never disappear behind live state. Close a
+                    // saturated client explicitly instead of reporting success.
+                    delivery->retiring = true;
+                    delivery->nextCloseAttemptUs = 0;
+                    delivery->queue.clear();
+                    std::free(copy);
+                    ESP_LOGW(kLogTag, "WebSocket reply queue full: socket %d", socket);
+                }
                 unlockWebSocketDeliveries();
-                return true;
+                return accepted;
             }
 
             auto *message = new (std::nothrow) QueuedWebSocketText{};
@@ -354,9 +365,7 @@ namespace FlexBms::GatewayApi
                 delivery->sendPending = false;
                 delivery->retiring = true;
                 delivery->nextCloseAttemptUs = 0;
-                std::free(delivery->queuedText);
-                delivery->queuedText = nullptr;
-                delivery->queuedLength = 0U;
+                delivery->queue.clear();
             }
             unlockWebSocketDeliveries();
             std::free(message->text);
@@ -373,7 +382,7 @@ namespace FlexBms::GatewayApi
                 int socket = -1;
                 uint32_t generation = 0U;
                 lockWebSocketDeliveries();
-                if (delivery.socket >= 0 && !delivery.sendPending && !delivery.retiring && delivery.queuedText != nullptr)
+                if (delivery.socket >= 0 && !delivery.sendPending && !delivery.retiring && !delivery.queue.empty())
                 {
                     if (httpd_ws_get_fd_info(server, delivery.socket) != HTTPD_WS_CLIENT_WEBSOCKET)
                     {
@@ -384,15 +393,14 @@ namespace FlexBms::GatewayApi
                         message = new (std::nothrow) QueuedWebSocketText{};
                         if (message != nullptr)
                         {
-                            message->text = delivery.queuedText;
+                            const auto queued = delivery.queue.pop();
+                            message->text = queued.text;
                             message->frame.type = HTTPD_WS_TYPE_TEXT;
                             message->frame.payload = reinterpret_cast<uint8_t *>(message->text);
-                            message->frame.len = delivery.queuedLength;
+                            message->frame.len = queued.length;
                             message->generation = delivery.generation;
                             socket = delivery.socket;
                             generation = delivery.generation;
-                            delivery.queuedText = nullptr;
-                            delivery.queuedLength = 0U;
                             delivery.sendPending = true;
                         }
                     }
@@ -413,9 +421,7 @@ namespace FlexBms::GatewayApi
                     current->sendPending = false;
                     current->retiring = true;
                     current->nextCloseAttemptUs = 0;
-                    std::free(current->queuedText);
-                    current->queuedText = nullptr;
-                    current->queuedLength = 0U;
+                    current->queue.clear();
                 }
                 unlockWebSocketDeliveries();
                 std::free(message->text);
@@ -423,18 +429,32 @@ namespace FlexBms::GatewayApi
             }
         }
 
+        DeliveryQueue::Topic deliveryTopic(const cJSON *root)
+        {
+            const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+            if (cJSON_IsString(type)) {
+                if (std::strcmp(type->valuestring, "hello") == 0) return DeliveryQueue::Topic::Hello;
+                if (std::strcmp(type->valuestring, "gateway_status") == 0) return DeliveryQueue::Topic::GatewayStatus;
+                if (std::strcmp(type->valuestring, "bms_status") == 0) return DeliveryQueue::Topic::BmsStatus;
+                if (std::strcmp(type->valuestring, "snapshot") == 0) return DeliveryQueue::Topic::Snapshot;
+            }
+            return DeliveryQueue::Topic::Reliable;
+        }
+
         bool sendJsonTo(int socket, cJSON *root)
         {
+            const auto topic = deliveryTopic(root);
             char *text = cJSON_PrintUnformatted(root);
             cJSON_Delete(root);
             if (text == nullptr) return false;
-            const bool queued = queueWebSocketText(socket, text, std::strlen(text));
+            const bool queued = queueWebSocketText(socket, text, std::strlen(text), topic);
             cJSON_free(text);
             return queued;
         }
 
         void broadcast(cJSON *root)
         {
+            const auto topic = deliveryTopic(root);
             if (server == nullptr) { cJSON_Delete(root); return; }
             retireUnresponsiveWebSockets();
             size_t count = 8U;
@@ -448,7 +468,7 @@ namespace FlexBms::GatewayApi
                 // httpd_get_client_list includes ordinary HTTP sockets. Never
                 // write WebSocket framing to those sockets, and queue delivery
                 // so a slow browser cannot stall the UART receive loop.
-                (void)queueWebSocketText(sockets[index], text, std::strlen(text));
+                (void)queueWebSocketText(sockets[index], text, std::strlen(text), topic);
             }
             cJSON_free(text);
         }
@@ -472,6 +492,15 @@ namespace FlexBms::GatewayApi
             const bool hasWifiDisconnectReason = Wifi::getLastDisconnectReason(wifiDisconnectReason);
             cJSON_AddBoolToObject(root, "wifi_last_disconnect_reason_valid", hasWifiDisconnectReason);
             cJSON_AddNumberToObject(root, "wifi_last_disconnect_reason", wifiDisconnectReason);
+            const auto station = Wifi::getStationConnection();
+            if (station.valid) {
+                cJSON *connection = cJSON_AddObjectToObject(root, "wifi_connection");
+                cJSON_AddStringToObject(connection, "bssid", station.bssid.data());
+                cJSON_AddNumberToObject(connection, "channel", station.channel);
+                cJSON_AddNumberToObject(connection, "rssi_dbm", station.rssi);
+            } else {
+                cJSON_AddNullToObject(root, "wifi_connection");
+            }
             FirmwareUpdate::GatewayRollbackInfo rollback{};
             cJSON *rollbackJson = cJSON_AddObjectToObject(root, "last_ota_rollback");
             const bool hasRollback = FirmwareUpdate::getLastGatewayRollback(rollback);
@@ -600,6 +629,36 @@ namespace FlexBms::GatewayApi
             cJSON_AddBoolToObject(root, "soc_valid", (status.flags & (1U << 6U)) != 0U);
             cJSON_AddBoolToObject(root, "current_sensing_enabled", (status.flags & (1U << 7U)) != 0U);
             if ((status.flags & (1U << 8U)) != 0U) cJSON_AddNumberToObject(root, "soc_last_calibration_unix_s", status.socLastCalibrationUnixS);
+            if (hasSocCalibration)
+            {
+                cJSON *calibration = cJSON_AddObjectToObject(root, "soc_calibration");
+                cJSON_AddBoolToObject(calibration, "valid", socCalibration.valid);
+                if (socCalibration.valid)
+                {
+                    if (socCalibration.preSocValid) cJSON_AddNumberToObject(calibration, "pre_soc_raw", socCalibration.preSocRaw);
+                    if (socCalibration.unixTimeS != 0U) cJSON_AddNumberToObject(calibration, "unix_time_s", socCalibration.unixTimeS);
+                    if (socCalibration.previousUnixTimeS != 0U) cJSON_AddNumberToObject(calibration, "previous_unix_time_s", socCalibration.previousUnixTimeS);
+                    cJSON_AddNumberToObject(calibration, "qualifying_dwell_ms", socCalibration.qualifyingDwellMs);
+                }
+                if (socCalibration.selfDischargeAvailable)
+                {
+                    cJSON_AddNumberToObject(calibration, "self_discharge_rate_tenth_percent_per_30_days",
+                                            socCalibration.selfDischargeRateTenthPercentPer30Days);
+                    cJSON_AddBoolToObject(calibration, "self_discharge_soc_valid", socCalibration.selfDischargeSocValid);
+                    cJSON_AddNumberToObject(calibration, "self_discharge_equivalent_current_uA",
+                                            socCalibration.selfDischargeEquivalentCurrentMicroAmps);
+                    cJSON_AddNumberToObject(calibration, "self_discharge_accumulated_since_calibration_uAh",
+                                            static_cast<double>(socCalibration.selfDischargeAccumulatedSinceCalibrationMicroAh));
+                    cJSON_AddBoolToObject(calibration, "self_discharge_interval_complete",
+                                          socCalibration.selfDischargeIntervalComplete);
+                    cJSON_AddBoolToObject(calibration, "last_calibration_self_discharge_valid",
+                                          socCalibration.lastCalibrationSelfDischargeAvailable);
+                    cJSON_AddBoolToObject(calibration, "last_calibration_self_discharge_complete",
+                                          socCalibration.lastCalibrationSelfDischargeComplete);
+                    cJSON_AddNumberToObject(calibration, "last_calibration_self_discharge_mAh",
+                                            socCalibration.lastCalibrationSelfDischargeMilliAh);
+                }
+            }
         }
 
         cJSON *bmsStatusJson()
@@ -625,7 +684,7 @@ namespace FlexBms::GatewayApi
             addBmsStatus(stateJson);
             cJSON *packJson = cJSON_AddObjectToObject(root, "pack");
             cJSON_AddNumberToObject(packJson, "pack_voltage_uV", pack.packVoltageUv);
-            cJSON_AddNumberToObject(packJson, "pack_current_raw", pack.packCurrentRaw);
+            cJSON_AddNumberToObject(packJson, "pack_current_uA", pack.packCurrentMicroAmps);
             cJSON_AddNumberToObject(packJson, "soc_raw", pack.socRaw);
             cJSON_AddNumberToObject(packJson, "min_cell_uV", pack.minCellUv);
             cJSON_AddNumberToObject(packJson, "max_cell_uV", pack.maxCellUv);
@@ -660,6 +719,13 @@ namespace FlexBms::GatewayApi
 
                 cJSON *goodwe = cJSON_AddObjectToObject(root, "goodwe_can");
                 cJSON_AddNumberToObject(goodwe, "schema_version", goodweCanDiagnostics.schemaVersion);
+                if (goodweCanDiagnostics.schemaVersion >= 2U)
+                {
+                    cJSON_AddNumberToObject(goodwe, "violation_direction", goodweCanDiagnostics.violationDirection);
+                    cJSON_AddNumberToObject(goodwe, "violation_current_ma", goodweCanDiagnostics.violationCurrentMilliA);
+                    cJSON_AddNumberToObject(goodwe, "violation_limit_deci_a", goodweCanDiagnostics.violationLimitDeciA);
+                    cJSON_AddNumberToObject(goodwe, "violation_uptime_ms", goodweCanDiagnostics.violationUptimeMs);
+                }
                 cJSON_AddNumberToObject(goodwe, "protocol", goodweCanDiagnostics.protocol);
                 cJSON_AddBoolToObject(goodwe, "request_45a_enabled", goodweCanDiagnostics.request45aEnabled);
                 cJSON_AddBoolToObject(goodwe, "compatibility_460_enabled", goodweCanDiagnostics.compatibility460Enabled);
@@ -718,6 +784,15 @@ namespace FlexBms::GatewayApi
                 cJSON_AddNumberToObject(cell, "balance_mask", cells[slave].balanceMask);
                 cJSON *values = cJSON_AddArrayToObject(cell, "cell_voltage_uV");
                 for (uint32_t value : cells[slave].voltageUv) cJSON_AddItemToArray(values, cJSON_CreateNumber(value));
+                if (hasBalancingCharge[slave])
+                {
+                    cJSON *balancingValues = cJSON_AddArrayToObject(cell, "balancing_mAh");
+                    for (uint8_t index = 0U; index < balancingCharge[slave].cellCount; ++index)
+                    {
+                        cJSON_AddItemToArray(balancingValues,
+                                             cJSON_CreateNumber(balancingCharge[slave].milliAmpHours[index]));
+                    }
+                }
                 cJSON *temperature = cJSON_CreateObject();
                 cJSON_AddItemToArray(temperatureArray, temperature);
                 cJSON_AddNumberToObject(temperature, "slave_index", temperatures[slave].slaveIndex);
@@ -820,6 +895,11 @@ namespace FlexBms::GatewayApi
                 argumentLength = 0U;
                 return true;
             }
+            if (std::strcmp(name->valuestring, "get_safety_limits") == 0)
+            {
+                if (!objectHasExactly(args, {})) return false;
+                service = Service::GetSafetyLimits; argumentLength = 0U; return true;
+            }
             if (std::strcmp(name->valuestring, "get_config") == 0)
             {
                 if (!objectHasExactly(args, {})) return false;
@@ -843,12 +923,21 @@ namespace FlexBms::GatewayApi
                 uint32_t currentSenseSlave = 0U;
                 uint32_t shuntResistance = 0U;
                 uint32_t batteryCapacity = 0U;
+                uint32_t selfDischargeRate = 0U;
+                uint32_t coldAllowance = 30U;
+                const bool hasColdAllowance = cJSON_GetObjectItemCaseSensitive(args, "cold_allowance_deci_c") != nullptr;
                 cJSON *invertCurrent = cJSON_GetObjectItemCaseSensitive(args, "invert_current");
-                if (!objectHasExactly(args, {"slave_count", "current_sense_slave", "shunt_resistance_uohm", "battery_capacity_mah", "invert_current", "balance_enabled", "startup_diagnostics"}) ||
+                const bool hasSelfDischargeRate = cJSON_GetObjectItemCaseSensitive(
+                    args, "self_discharge_tenth_percent_per_30_days") != nullptr;
+                if ((!objectHasExactly(args, {"slave_count", "current_sense_slave", "shunt_resistance_uohm", "battery_capacity_mah", "invert_current", "balance_enabled", "startup_diagnostics"}) &&
+                     !objectHasExactly(args, {"slave_count", "current_sense_slave", "shunt_resistance_uohm", "battery_capacity_mah", "invert_current", "balance_enabled", "startup_diagnostics", "self_discharge_tenth_percent_per_30_days"}) &&
+                     !objectHasExactly(args, {"slave_count", "current_sense_slave", "shunt_resistance_uohm", "battery_capacity_mah", "invert_current", "balance_enabled", "startup_diagnostics", "self_discharge_tenth_percent_per_30_days", "cold_allowance_deci_c"})) ||
                     !jsonInteger(cJSON_GetObjectItemCaseSensitive(args, "slave_count"), 32U, slaveCount) ||
                     !jsonInteger(cJSON_GetObjectItemCaseSensitive(args, "current_sense_slave"), 32U, currentSenseSlave) ||
                     !jsonInteger(cJSON_GetObjectItemCaseSensitive(args, "shunt_resistance_uohm"), UINT32_MAX, shuntResistance) ||
                     !jsonInteger(cJSON_GetObjectItemCaseSensitive(args, "battery_capacity_mah"), UINT32_MAX, batteryCapacity) ||
+                    (hasSelfDischargeRate && !jsonInteger(cJSON_GetObjectItemCaseSensitive(args, "self_discharge_tenth_percent_per_30_days"), 50U, selfDischargeRate)) ||
+                    (hasColdAllowance && !jsonInteger(cJSON_GetObjectItemCaseSensitive(args, "cold_allowance_deci_c"), 100U, coldAllowance)) ||
                     !cJSON_IsBool(invertCurrent)) return false;
                 service = Service::SetConfig;
                 arguments[0] = static_cast<uint8_t>(slaveCount);
@@ -868,7 +957,18 @@ namespace FlexBms::GatewayApi
                 cJSON *startupDiagnostics = cJSON_GetObjectItemCaseSensitive(args, "startup_diagnostics");
                 if (!cJSON_IsBool(startupDiagnostics)) return false;
                 arguments[12] = cJSON_IsTrue(startupDiagnostics) ? 1U : 0U;
-                argumentLength = 13U;
+                if (hasSelfDischargeRate)
+                {
+                    arguments[13] = static_cast<uint8_t>(selfDischargeRate);
+                    argumentLength = 14U;
+                    if (hasColdAllowance) { arguments[14] = static_cast<uint8_t>(coldAllowance); argumentLength = 15U; }
+                }
+                else
+                {
+                    // Let STM32 retain the stored value when an older
+                    // Companion omits the newly introduced configuration.
+                    argumentLength = 13U;
+                }
                 return true;
             }
             if (std::strcmp(name->valuestring, "read_register") == 0)
@@ -1367,8 +1467,15 @@ namespace FlexBms::GatewayApi
         bool statusPublished = false;
         cJSON *eventToPublish = nullptr;
         lockTelemetryState();
+        const uint32_t previousControllerUptimeMs = status.uptimeMs;
         if (frame.type == UartV1::MessageType::Status && UartV1::decodeStatus(frame, status))
         {
+            if (hasStatus && status.uptimeMs < previousControllerUptimeMs &&
+                previousControllerUptimeMs < 0xF0000000U)
+            {
+                hasSocCalibration = false;
+                hasBalancingCharge.fill(false);
+            }
             hasStatus = true;
             statusPublished = true;
             if ((status.flags & (1U << 3U)) == 0U)
@@ -1378,6 +1485,7 @@ namespace FlexBms::GatewayApi
                 hasHvVoltages = false;
                 hasCell.fill(false);
                 hasTemperature.fill(false);
+                hasBalancingCharge.fill(false);
             }
         }
         else if (frame.type == UartV1::MessageType::Pack && UartV1::decodePack(frame, pack)) hasPack = true;
@@ -1385,6 +1493,8 @@ namespace FlexBms::GatewayApi
         else if (frame.type == UartV1::MessageType::HvVoltages && UartV1::decodeHvVoltages(frame, hvVoltages)) hasHvVoltages = true;
         else if (frame.type == UartV1::MessageType::GoodweCanDiagnostics &&
                  UartV1::decodeGoodweCanDiagnostics(frame, goodweCanDiagnostics)) hasGoodweCanDiagnostics = true;
+        else if (frame.type == UartV1::MessageType::SocCalibration &&
+                 UartV1::decodeSocCalibration(frame, socCalibration)) hasSocCalibration = true;
         else if (frame.type == UartV1::MessageType::Cell)
         {
             UartV1::Cell cell{};
@@ -1392,6 +1502,15 @@ namespace FlexBms::GatewayApi
             {
                 cells[cell.slaveIndex] = cell;
                 hasCell[cell.slaveIndex] = true;
+            }
+        }
+        else if (frame.type == UartV1::MessageType::BalancingCharge)
+        {
+            UartV1::BalancingCharge charge{};
+            if (UartV1::decodeBalancingCharge(frame, charge) && charge.slaveIndex < kMaxSlaves)
+            {
+                balancingCharge[charge.slaveIndex] = charge;
+                hasBalancingCharge[charge.slaveIndex] = true;
             }
         }
         else if (frame.type == UartV1::MessageType::Temperature)
@@ -1426,7 +1545,7 @@ namespace FlexBms::GatewayApi
         Service service = Service::SetRunRequest;
         int socket = -1;
         char requestId[kMaxRequestIdBytes + 1U] = {};
-        std::array<uint8_t, 64U> responseData{};
+        std::array<uint8_t, 255U> responseData{};
         const uint8_t copiedDataLength = std::min<uint8_t>(dataLength, static_cast<uint8_t>(responseData.size()));
         if (data != nullptr && copiedDataLength != 0U)
         {
@@ -1481,7 +1600,15 @@ namespace FlexBms::GatewayApi
                                                                      (static_cast<uint32_t>(responseData[2]) << 16U) |
                                                                      (static_cast<uint32_t>(responseData[3]) << 24U));
         }
-        else if (result == ServiceResult::Ok && service == Service::GetConfig && copiedDataLength == 18U)
+        else if (result == ServiceResult::Ok && service == Service::GetSafetyLimits)
+        {
+            // Opaque versioned bytes: Companion shares its validator with USB.
+            cJSON *value = cJSON_AddObjectToObject(root, "data");
+            cJSON *bytes = cJSON_AddArrayToObject(value, "safety_limits_payload");
+            for (size_t i=0; i<copiedDataLength; ++i) cJSON_AddItemToArray(bytes, cJSON_CreateNumber(responseData[i]));
+        }
+        else if (result == ServiceResult::Ok && service == Service::GetConfig &&
+                 (copiedDataLength == 18U || copiedDataLength == 19U || copiedDataLength == 20U))
         {
             cJSON *value = cJSON_AddObjectToObject(root, "data");
             const char *reason = responseData[0] == 0U ? "valid" : responseData[0] == 1U ? "blank" : responseData[0] == 2U ? "version_mismatch" : "corrupt";
@@ -1497,6 +1624,9 @@ namespace FlexBms::GatewayApi
             cJSON_AddBoolToObject(value, "invert_current", responseData[15] != 0U);
             cJSON_AddBoolToObject(value, "balance_enabled", responseData[16] != 0U);
             cJSON_AddBoolToObject(value, "startup_diagnostics", responseData[17] != 0U);
+            cJSON_AddNumberToObject(value, "self_discharge_tenth_percent_per_30_days",
+                                    copiedDataLength >= 19U ? responseData[18] : 0U);
+            cJSON_AddNumberToObject(value, "cold_allowance_deci_c", copiedDataLength >= 20U ? responseData[19] : 30U);
         }
         else if (result == ServiceResult::Ok && service == Service::GetDiagnosticReport && copiedDataLength == 6U)
         {
@@ -1577,15 +1707,30 @@ namespace FlexBms::GatewayApi
         cJSON *deviceInfo = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"get_device_info\",\"arguments\":{}}");
         const bool deviceInfoAccepted = parseService(deviceInfo, service, arguments, length) && service == Service::GetDeviceInfo && length == 0U;
         cJSON_Delete(deviceInfo);
+        cJSON *getSafety = cJSON_Parse(R"({"v":1,"type":"service","request_id":"x","service":"get_safety_limits","arguments":{}})");
+        const bool getSafetyAccepted = parseService(getSafety, service, arguments, length) && service == Service::GetSafetyLimits && length == 0U;
+        cJSON_Delete(getSafety);
         cJSON *getConfig = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"get_config\",\"arguments\":{}}" );
         const bool getConfigAccepted = parseService(getConfig, service, arguments, length) && service == Service::GetConfig && length == 0U;
         cJSON_Delete(getConfig);
         cJSON *getDiagnosticReport = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"get_diagnostic_report\",\"arguments\":{\"slave_index\":0}}");
         const bool getDiagnosticReportAccepted = parseService(getDiagnosticReport, service, arguments, length) && service == Service::GetDiagnosticReport && length == 1U && arguments[0] == 0U;
         cJSON_Delete(getDiagnosticReport);
-        cJSON *setConfig = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"set_config\",\"arguments\":{\"slave_count\":1,\"current_sense_slave\":1,\"shunt_resistance_uohm\":10000,\"battery_capacity_mah\":314000,\"invert_current\":false,\"balance_enabled\":true,\"startup_diagnostics\":true}}" );
-        const bool setConfigAccepted = parseService(setConfig, service, arguments, length) && service == Service::SetConfig && length == 13U && arguments[0] == 1U && arguments[1] == 1U && arguments[11] == 1U && arguments[12] == 1U;
+        cJSON *setConfig = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"x\",\"service\":\"set_config\",\"arguments\":{\"slave_count\":1,\"current_sense_slave\":1,\"shunt_resistance_uohm\":10000,\"battery_capacity_mah\":314000,\"invert_current\":false,\"balance_enabled\":true,\"startup_diagnostics\":true,\"self_discharge_tenth_percent_per_30_days\":10}}" );
+        const bool setConfigAccepted = parseService(setConfig, service, arguments, length) && service == Service::SetConfig && length == 14U && arguments[0] == 1U && arguments[1] == 1U && arguments[11] == 1U && arguments[12] == 1U && arguments[13] == 10U;
+        cJSON *configArguments = cJSON_GetObjectItemCaseSensitive(setConfig, "arguments");
+        cJSON *allowance = cJSON_AddNumberToObject(configArguments, "cold_allowance_deci_c", 0);
+        bool coldAllowanceAccepted = parseService(setConfig, service, arguments, length) && length == 15U && arguments[14] == 0U;
+        cJSON_SetNumberValue(allowance, 100);
+        coldAllowanceAccepted = coldAllowanceAccepted && parseService(setConfig, service, arguments, length) && length == 15U && arguments[14] == 100U;
+        cJSON_SetNumberValue(allowance, 101);
+        const bool excessiveAllowanceRejected = !parseService(setConfig, service, arguments, length);
+        cJSON_SetNumberValue(allowance, 1.5);
+        const bool fractionalAllowanceRejected = !parseService(setConfig, service, arguments, length);
         cJSON_Delete(setConfig);
+        cJSON *legacySetConfig = cJSON_Parse("{\"v\":1,\"type\":\"service\",\"request_id\":\"y\",\"service\":\"set_config\",\"arguments\":{\"slave_count\":1,\"current_sense_slave\":1,\"shunt_resistance_uohm\":10000,\"battery_capacity_mah\":314000,\"invert_current\":false,\"balance_enabled\":true,\"startup_diagnostics\":true}}" );
+        const bool legacySetConfigAccepted = parseService(legacySetConfig, service, arguments, length) && service == Service::SetConfig && length == 13U;
+        cJSON_Delete(legacySetConfig);
         cJSON *invalidCredentials = cJSON_Parse("{\"v\":1,\"type\":\"wifi_configure\",\"request_id\":\"x\",\"ssid\":\"\",\"password\":\"x\"}");
         const char *ssid = nullptr;
         const char *password = nullptr;
@@ -1600,6 +1745,6 @@ namespace FlexBms::GatewayApi
         const bool statusMessageValid = cJSON_IsString(messageType) && std::strcmp(messageType->valuestring, "bms_status") == 0 &&
                                         cJSON_IsObject(messageStatus) && cJSON_HasObjectItem(messageStatus, "measurements_fresh");
         cJSON_Delete(statusMessage);
-        return serviceRejected && getRtcAccepted && deviceInfoAccepted && getConfigAccepted && getDiagnosticReportAccepted && setConfigAccepted && credentialsRejected && scanAccepted && statusMessageValid;
+        return getSafetyAccepted && serviceRejected && getRtcAccepted && deviceInfoAccepted && getConfigAccepted && getDiagnosticReportAccepted && setConfigAccepted && coldAllowanceAccepted && excessiveAllowanceRejected && fractionalAllowanceRejected && legacySetConfigAccepted && credentialsRejected && scanAccepted && statusMessageValid;
     }
 }

@@ -44,7 +44,7 @@ namespace FlexBms::Mqtt
                     kRawMaximum -
                 kPercentHundredths * kPercentHundredths;
             return static_cast<uint16_t>(std::clamp<int64_t>(
-                rounded, 0LL, kPercentHundredths * kPercentHundredths));
+                rounded, 0LL, 2LL * kPercentHundredths * kPercentHundredths));
         }
 
         void addSocPercent(cJSON *root, uint16_t raw)
@@ -293,8 +293,8 @@ namespace FlexBms::Mqtt
             cJSON_AddStringToObject(root, "active_faults", faultLength == 0U ? "No faults" : faultText);
             if (hasPack && fresh)
             {
-                const float voltage = static_cast<float>(pack.packVoltageUv) / 1'000'000.0F;
-                const float current = static_cast<float>(pack.packCurrentRaw) / 64.0F;
+                const double voltage = static_cast<double>(pack.packVoltageUv) / 1'000'000.0;
+                const double current = static_cast<double>(pack.packCurrentMicroAmps) / 1'000'000.0;
                 cJSON_AddNumberToObject(root, "pack_voltage_v", voltage);
                 cJSON_AddNumberToObject(root, "pack_current_a", current);
                 cJSON_AddNumberToObject(root, "pack_power_w", voltage * current);

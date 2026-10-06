@@ -20,6 +20,7 @@ namespace FaultManager
         BalancingHardwareFault,
         BccCommunication,
         NoConfig,
+        InverterCurrentLimit,
     };
 
     enum class HvFault : uint8_t

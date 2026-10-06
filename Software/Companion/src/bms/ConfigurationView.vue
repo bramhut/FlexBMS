@@ -2,11 +2,13 @@
 import { computed, reactive, ref, watch } from 'vue'
 import type { BmsTransport, Capabilities, GatewayStatus, RuntimeConfiguration, ServiceResponse, WifiNetwork } from '@/transports/Transport'
 import { serviceResultLabel } from '@/shared/service'
+import { selfDischargeEquivalentMilliAmps } from '@/shared/model'
 
 const props = defineProps<{ transport: BmsTransport; capabilities: Capabilities; connected: boolean; gateway?: GatewayStatus }>()
 
-type EditableConfiguration = Omit<RuntimeConfiguration, 'reason' | 'expected_version' | 'stored_version' | 'battery_capacity_mah'> & {
+type EditableConfiguration = Omit<RuntimeConfiguration, 'reason' | 'expected_version' | 'stored_version' | 'battery_capacity_mah' | 'self_discharge_tenth_percent_per_30_days'> & {
   battery_capacity_ah: number
+  self_discharge_percent: number
 }
 
 const configuration = reactive<EditableConfiguration>({
@@ -17,8 +19,21 @@ const configuration = reactive<EditableConfiguration>({
   invert_current: false,
   balance_enabled: true,
   startup_diagnostics: true,
+  self_discharge_percent: 0,
+  cold_allowance_deci_c: 30,
 })
-const configurationReason = ref<RuntimeConfiguration['reason']>('blank')
+const configurationReason = ref<RuntimeConfiguration['reason'] | null>(null)
+const coldAllowanceC = computed({
+  get: () => configuration.cold_allowance_deci_c / 10,
+  set: (value: number) => {
+    const deciC = value * 10
+    const rounded = Math.round(deciC)
+    configuration.cold_allowance_deci_c = Math.abs(deciC - rounded) < 1e-6 ? rounded : deciC
+  },
+})
+const configurationLoaded = ref(false)
+const configurationReading = ref(false)
+let configurationConnectionGeneration = 0
 const configurationExpectedVersion = ref<number | null>(null)
 const configurationStoredVersion = ref<number | null>(null)
 const configurationError = ref('')
@@ -43,6 +58,7 @@ const wifiDisconnectReason = computed(() => {
 })
 
 const configurationStatus = computed(() => {
+  if (!configurationLoaded.value) return configurationReading.value ? 'Reading configuration…' : 'Configuration not loaded. Read the board configuration before saving.'
   if (configurationReason.value === 'valid') return `Active configuration (version ${configurationExpectedVersion.value ?? 'unknown'}).`
   if (configurationReason.value === 'version_mismatch') return `NO_CONFIG: stored version ${configurationStoredVersion.value ?? 'unknown'} is not supported by this firmware (expected ${configurationExpectedVersion.value ?? 'unknown'}).`
   if (configurationReason.value === 'corrupt') return 'NO_CONFIG: the stored configuration is corrupt. Factory defaults are shown.'
@@ -54,26 +70,40 @@ function describe(response: ServiceResponse): string {
 }
 
 async function refreshConfiguration(showFailure = true): Promise<void> {
-  if (!props.connected || !props.capabilities.runtime_configuration) return
+  if (!props.connected || !props.capabilities.runtime_configuration || configurationReading.value || configurationBusy.value) return
+  configurationReading.value = true
+  const generation = configurationConnectionGeneration
+  configurationLoaded.value = false
   configurationError.value = ''
-  const response = await props.transport.request('get_config', {})
-  const data = response.data
-  if (response.result !== 'ok' || data?.reason === undefined || data.expected_version === undefined || data.slave_count === undefined ||
-      data.current_sense_slave === undefined || data.shunt_resistance_uohm === undefined || data.battery_capacity_mah === undefined || data.invert_current === undefined || data.balance_enabled === undefined || data.startup_diagnostics === undefined) {
-    configurationError.value = describe(response)
-    if (showFailure) result.value = `Configuration read: ${describe(response)}`
-    return
+  try {
+    const response = await props.transport.request('get_config', {})
+    if (generation !== configurationConnectionGeneration || !props.connected) return
+    const data = response.data
+    if (response.result !== 'ok' || data?.reason === undefined || data.expected_version === undefined || data.slave_count === undefined ||
+        data.current_sense_slave === undefined || data.shunt_resistance_uohm === undefined || data.battery_capacity_mah === undefined || data.invert_current === undefined || data.balance_enabled === undefined || data.startup_diagnostics === undefined) {
+      configurationError.value = response.result === 'ok' ? 'Invalid configuration response' : describe(response)
+      if (showFailure) result.value = `Configuration read: ${configurationError.value}`
+      return
+    }
+    configurationReason.value = data.reason
+    configurationExpectedVersion.value = data.expected_version
+    configurationStoredVersion.value = data.stored_version ?? 0
+    configuration.slave_count = data.slave_count
+    configuration.current_sense_slave = data.current_sense_slave
+    configuration.shunt_resistance_uohm = data.shunt_resistance_uohm
+    configuration.battery_capacity_ah = data.battery_capacity_mah / 1000
+    configuration.invert_current = data.invert_current
+    configuration.balance_enabled = data.balance_enabled
+    configuration.startup_diagnostics = data.startup_diagnostics
+    configuration.self_discharge_percent = (data.self_discharge_tenth_percent_per_30_days ?? 0) / 10
+    configuration.cold_allowance_deci_c = data.cold_allowance_deci_c ?? 30
+    configurationLoaded.value = true
+  } catch {
+    configurationError.value = 'Configuration read failed'
+  } finally {
+    configurationReading.value = false
+    if (generation !== configurationConnectionGeneration && props.connected && props.capabilities.runtime_configuration) void refreshConfiguration(false)
   }
-  configurationReason.value = data.reason
-  configurationExpectedVersion.value = data.expected_version
-  configurationStoredVersion.value = data.stored_version ?? 0
-  configuration.slave_count = data.slave_count
-  configuration.current_sense_slave = data.current_sense_slave
-  configuration.shunt_resistance_uohm = data.shunt_resistance_uohm
-  configuration.battery_capacity_ah = data.battery_capacity_mah / 1000
-  configuration.invert_current = data.invert_current
-  configuration.balance_enabled = data.balance_enabled
-  configuration.startup_diagnostics = data.startup_diagnostics
 }
 
 function capacityMilliAh(): number | null {
@@ -88,10 +118,13 @@ function validateConfiguration(): string {
   if (!Number.isInteger(configuration.shunt_resistance_uohm) || configuration.shunt_resistance_uohm < 1 || configuration.shunt_resistance_uohm > 1_000_000) return 'Shunt resistance must be between 1 and 1,000,000 micro-ohms.'
   const milliAh = capacityMilliAh()
   if (milliAh === null || milliAh < 1 || milliAh > 10_000_000) return 'Battery capacity must be between 0.001 and 10,000 Ah, with at most three decimal places.'
+  if (!Number.isFinite(configuration.self_discharge_percent) || configuration.self_discharge_percent < 0 || configuration.self_discharge_percent > 5 || Math.abs(configuration.self_discharge_percent * 10 - Math.round(configuration.self_discharge_percent * 10)) > 1e-6) return 'Estimated self-discharge must be from 0 to 5% per 30 days in 0.1% steps.'
+  if (!Number.isInteger(configuration.cold_allowance_deci_c) || configuration.cold_allowance_deci_c < 0 || configuration.cold_allowance_deci_c > 100) return 'Cold-temperature allowance must be from 0 to 10°C in 0.1°C steps.'
   return ''
 }
 
 async function saveConfiguration(): Promise<void> {
+  if (!configurationLoaded.value || configurationReading.value || configurationBusy.value || !props.connected) return
   configurationError.value = validateConfiguration()
   const milliAh = capacityMilliAh()
   if (configurationError.value || milliAh === null) return
@@ -105,6 +138,8 @@ async function saveConfiguration(): Promise<void> {
       invert_current: configuration.invert_current,
       balance_enabled: configuration.balance_enabled,
       startup_diagnostics: configuration.startup_diagnostics,
+      self_discharge_tenth_percent_per_30_days: Math.round(configuration.self_discharge_percent * 10),
+      cold_allowance_deci_c: configuration.cold_allowance_deci_c,
     })
     result.value = `Configuration save: ${describe(response)}`
     if (response.result === 'ok') configurationReason.value = 'valid'
@@ -170,6 +205,8 @@ watch(() => props.gateway?.mqtt, mqtt => {
 }, { immediate: true })
 
 watch([() => props.connected, () => props.capabilities.runtime_configuration], ([connected, supported]) => {
+  ++configurationConnectionGeneration
+  if (!connected || !supported) configurationLoaded.value = false
   if (connected && supported) void refreshConfiguration(false)
 }, { immediate: true })
 </script>
@@ -184,14 +221,16 @@ watch([() => props.connected, () => props.capabilities.runtime_configuration], (
         <label class="configuration-field"><span>Current sensing slave</span><select v-model.number="configuration.current_sense_slave"><option :value="0">None</option><option v-for="index in configuration.slave_count" :key="index" :value="index">Slave {{ index }}</option></select><small>Choose one slave, or disable current sensing.</small></label>
         <label class="configuration-field"><span>Shunt resistance (µΩ)</span><input v-model.number="configuration.shunt_resistance_uohm" type="number" min="1" max="1000000" step="1" inputmode="numeric"><small>Enter the measured shunt value in micro-ohms.</small></label>
         <label class="configuration-field"><span>Battery capacity (Ah)</span><input v-model.number="configuration.battery_capacity_ah" type="number" min="0.001" max="10000" step="0.001" inputmode="decimal"><small>Precision: 0.001 Ah (1 mAh).</small></label>
+        <label class="configuration-field"><span>Estimated self-discharge (% / 30 days)</span><input v-model.number="configuration.self_discharge_percent" type="number" min="0" max="5" step="0.1" inputmode="decimal"><small>0 disables compensation. At this capacity, the estimate is {{ selfDischargeEquivalentMilliAmps(configuration.battery_capacity_ah, configuration.self_discharge_percent).toFixed(2) }} mA equivalent. Applied after STM32 reboot.</small></label>
+        <label class="configuration-field"><span>Cold-temperature allowance (°C)</span><input v-model.number="coldAllowanceC" type="number" min="0" max="10" step="0.1" inputmode="decimal"><small>Subtracted from the coldest busbar reading for cold-charge protection only. Default 3°C. Safety allowance, not a calibrated sensor correction. Applied after STM32 reboot.</small></label>
         <label class="configuration-checkbox"><input v-model="configuration.invert_current" type="checkbox"><span>Invert current direction</span><small>Use only if the installed current sensor reports the opposite sign.</small></label>
         <label class="configuration-checkbox"><input v-model="configuration.balance_enabled" type="checkbox" :disabled="!connected || !capabilities.runtime_configuration || configurationBusy"><span>Automatic cell balancing</span><small>Saved with the configuration and applied after reboot.</small></label>
         <label class="configuration-checkbox dangerous-configuration"><input v-model="configuration.startup_diagnostics" type="checkbox" :disabled="!connected || !capabilities.runtime_configuration || configurationBusy" @change="confirmStartupDiagnosticsChange"><span>Run startup diagnostics</span><small>Dangerous: disabling this is only for debugging or bench testing. It reduces startup checks for BCC and hardware problems.</small></label>
       </div>
       <p v-if="configurationError" class="warning-text">{{ configurationError }}</p>
       <div class="button-row configuration-actions">
-        <button :disabled="!connected || !capabilities.runtime_configuration || configurationBusy" @click="refreshConfiguration()">Read configuration</button>
-        <button class="primary" :disabled="!connected || !capabilities.runtime_configuration || configurationBusy" @click="saveConfiguration()">Save and reboot</button>
+        <button :disabled="!connected || !capabilities.runtime_configuration || configurationBusy || configurationReading" @click="refreshConfiguration()">Read configuration</button>
+        <button class="primary" :disabled="!connected || !capabilities.runtime_configuration || configurationBusy || configurationReading || !configurationLoaded" @click="saveConfiguration()">Save and reboot</button>
       </div>
       <p v-if="result" class="action-result">{{ result }}</p>
       <small v-if="!capabilities.runtime_configuration">Runtime configuration is unavailable in the current Gateway state.</small>
@@ -201,6 +240,7 @@ watch([() => props.connected, () => props.capabilities.runtime_configuration], (
       <div class="panel-heading"><div><h2>Networking</h2></div><p>Configure the Gateway network connection and Home Assistant MQTT integration.</p></div>
       <div class="configuration-subsection">
         <div class="subsection-heading"><h3>Wi-Fi</h3><p>State: {{ gateway?.wifi_state ?? 'unavailable' }}<span v-if="gateway?.wifi_ssid"> · {{ gateway.wifi_ssid }}</span></p></div>
+        <p v-if="connected && gateway?.wifi_state === 'connected' && gateway.wifi_connection" class="muted">Access point: {{ gateway.wifi_connection.bssid }} · Channel {{ gateway.wifi_connection.channel }} · {{ gateway.wifi_connection.rssi_dbm }} dBm (last status sample)</p>
         <p v-if="wifiDisconnectReason !== null" class="muted">Last station disconnect reason: ESP-IDF code {{ wifiDisconnectReason }}.</p>
         <p v-if="gateway?.setup_ap.active" class="muted">Setup AP {{ gateway.setup_ap.ssid }} is active. Open http://{{ gateway.setup_ap.address }}.</p>
         <p v-if="gateway?.setup_ap.active" class="muted">The setup AP is open temporarily. Monitoring and Wi-Fi setup are available there; BMS service controls are disabled.</p>

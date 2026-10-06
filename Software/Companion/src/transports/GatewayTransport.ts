@@ -1,9 +1,9 @@
-import { reconnectDelayMs } from '@/shared/reconnect'
+import { reconnectDelayMs } from '../shared/reconnect.ts'
 import type { BmsTransport, Capabilities, ConnectionState, GatewayStatus, MqttConfigurationResponse, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport'
-import { unavailableCapabilities } from './Transport'
+import { unavailableCapabilities } from './Transport.ts'
 
 type Listener<T> = (value: T) => void
-type Pending = { service: ServiceName; resolve: (result: ServiceResponse) => void; reject: (reason: Error) => void }
+type Pending = { service: ServiceName; resolve: (result: ServiceResponse) => void }
 type PendingWifiConfiguration = { resolve: (result: WifiConfigurationResponse) => void }
 type PendingWifiScan = { resolve: (result: WifiScanResponse) => void }
 type PendingMqttConfiguration = { resolve: (result: MqttConfigurationResponse) => void }
@@ -22,6 +22,8 @@ export class GatewayTransport implements BmsTransport {
   private pendingWifiScan = new Map<string, PendingWifiScan>()
   private pendingMqttConfiguration = new Map<string, PendingMqttConfiguration>()
   private nextRequestId = 1
+  private serviceTail: Promise<void> = Promise.resolve()
+  private queuedServices = 0
   private reconnectAttempt = 0
   private reconnectTimer: number | null = null
   private explicitlyDisconnected = false
@@ -44,12 +46,34 @@ export class GatewayTransport implements BmsTransport {
   onEvent(listener: Listener<{ event_id: number; value: number; gateway_uptime_ms?: number }>): () => void { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener) }
   onState(listener: (state: ConnectionState, gateway?: GatewayStatus) => void): () => void { const wrapped: Listener<[ConnectionState, GatewayStatus | undefined]> = ([state, gateway]) => listener(state, gateway); this.stateListeners.add(wrapped); return () => this.stateListeners.delete(wrapped) }
   request<S extends ServiceName>(service: S, args: ServiceArguments[S]): Promise<ServiceResponse> {
+    const socket = this.socket
+    if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.resolve({ request_id: '', service, result: 'transport_error' })
+    if (this.queuedServices >= 16) return Promise.resolve({ request_id: '', service, result: 'busy' })
+    ++this.queuedServices
+    const argumentsCopy = { ...args }
+    const run = async (): Promise<ServiceResponse> => {
+      const readOnly = ['get_safety_limits', 'get_device_info', 'get_config', 'get_rtc', 'read_register', 'get_diagnostic_report'].includes(service)
+      for (let attempt = 0; ; ++attempt) {
+        if (this.socket !== socket || socket.readyState !== WebSocket.OPEN || this.explicitlyDisconnected) return { request_id: '', service, result: 'transport_error' }
+        const response = await this.requestOnce(service, argumentsCopy)
+        // Retry only explicit rejection of reads, never an ambiguous timeout
+        // or a command that might already have changed the controller.
+        if (response.result !== 'busy' || !readOnly || attempt >= 3) return response
+        await new Promise(resolve => window.setTimeout(resolve, 250 * (attempt + 1)))
+      }
+    }
+    const result = this.serviceTail.then(run)
+    this.serviceTail = result.then(() => {}, () => {})
+    return result.finally(() => { --this.queuedServices })
+  }
+  private requestOnce<S extends ServiceName>(service: S, args: ServiceArguments[S]): Promise<ServiceResponse> {
     if (this.socket?.readyState !== WebSocket.OPEN) return Promise.resolve({ request_id: '', service, result: 'transport_error' })
     const request_id = this.allocateRequestId()
-    return new Promise((resolve, reject) => {
-      this.pending.set(request_id, { service, resolve, reject })
-      this.socket?.send(JSON.stringify({ v: 1, type: 'service', request_id, service, arguments: args }))
-      window.setTimeout(() => { const pending = this.pending.get(request_id); if (pending) { this.pending.delete(request_id); pending.resolve({ request_id, service, result: 'transport_error' }) } }, 5000)
+    return new Promise(resolve => {
+      const timer = window.setTimeout(() => { const pending = this.pending.get(request_id); if (pending) { this.pending.delete(request_id); pending.resolve({ request_id, service, result: 'transport_error' }) } }, 5000)
+      this.pending.set(request_id, { service, resolve: response => { window.clearTimeout(timer); resolve(response) } })
+      try { this.socket?.send(JSON.stringify({ v: 1, type: 'service', request_id, service, arguments: args })) }
+      catch { const pending = this.pending.get(request_id); this.pending.delete(request_id); pending?.resolve({ request_id, service, result: 'transport_error' }) }
     })
   }
   configureWifi(ssid: string, password: string): Promise<WifiConfigurationResponse> {
@@ -111,6 +135,13 @@ export class GatewayTransport implements BmsTransport {
     let parsed: Record<string, unknown>
     try { parsed = JSON.parse(message.data) as Record<string, unknown> } catch { return }
     if (parsed.v !== 1 || typeof parsed.type !== 'string') return
+    // Reject legacy/incompatible PACK JSON instead of interpreting raw units
+    // as microamps or publishing NaN into the dashboard/CSV path.
+    if (parsed.type === 'snapshot') {
+      const pack = parsed.pack as Record<string, unknown> | undefined
+      if (!pack || !Number.isInteger(pack.pack_current_uA) ||
+          (pack.pack_current_uA as number) < -2147483648 || (pack.pack_current_uA as number) > 2147483647) return
+    }
     if (parsed.type === 'hello') {
       const gatewayVersion = typeof parsed.gateway_version === 'string' ? parsed.gateway_version : undefined
       const gatewayBuildId = typeof parsed.gateway_build_id === 'string' ? parsed.gateway_build_id : undefined

@@ -1,6 +1,6 @@
 import type { BmsTransport, Capabilities, ConnectionState, MqttConfigurationResponse, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport.ts'
 import { unavailableCapabilities } from './Transport.ts'
-import { decodeCell, decodeEnergy, decodeGoodweCanDiagnostics, decodeHvVoltages, decodePack, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId } from '../shared/uartV1.ts'
+import { decodeBalancingCharge, decodeCell, decodeEnergy, decodeGoodweCanDiagnostics, decodeHvVoltages, decodePack, decodeSocCalibration, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId } from '../shared/uartV1.ts'
 
 type SerialPortLike = { open(options: { baudRate: number }): Promise<void>; close(): Promise<void>; readable?: ReadableStream<Uint8Array>; writable?: WritableStream<Uint8Array> }
 declare global { interface Navigator { serial?: { requestPort(): Promise<SerialPortLike> } } }
@@ -24,11 +24,13 @@ export class WebSerialTransport implements BmsTransport {
   private writeChain: Promise<void> = Promise.resolve()
   private decoder = new FrameDecoder()
   private status: Status | null = null
+  private socCalibration: Status['soc_calibration']
   private pack: Snapshot['pack'] | null = null
   private energy: Snapshot['energy']
   private hvVoltages: Snapshot['hv_voltages']
   private goodweCan: Snapshot['goodwe_can']
   private cells = new Map<number, Snapshot['cells'][number]>()
+  private balancingCharges = new Map<number, number[]>()
   private temperatures = new Map<number, Snapshot['temperatures'][number]>()
   private readonly capabilities: Capabilities = unavailableCapabilities()
 
@@ -40,6 +42,11 @@ export class WebSerialTransport implements BmsTransport {
     await port.open({ baudRate: 115200 })
     this.port = port
     this.decoder = new FrameDecoder()
+    this.status = null
+    this.socCalibration = undefined
+    this.cells.clear()
+    this.balancingCharges.clear()
+    this.temperatures.clear()
     this.setState('connected')
     void this.readFrames(port)
     void this.sendHeartbeat()
@@ -87,11 +94,12 @@ export class WebSerialTransport implements BmsTransport {
     if (service === 'acknowledge_faults') return Uint8Array.of(serviceId.acknowledgeFaults)
     if (service === 'get_rtc') return Uint8Array.of(serviceId.getRtc)
     if (service === 'get_device_info') return Uint8Array.of(serviceId.getDeviceInfo)
+    if (service === 'get_safety_limits') return Uint8Array.of(serviceId.getSafetyLimits)
     if (service === 'get_config') return Uint8Array.of(serviceId.getConfig)
     if (service === 'get_diagnostic_report') return Uint8Array.of(serviceId.getDiagnosticReport, (args as ServiceArguments['get_diagnostic_report']).slave_index)
     if (service === 'set_config') {
       const config = args as ServiceArguments['set_config']
-      const payload = new Uint8Array(14)
+      const payload = new Uint8Array(16)
       payload[0] = serviceId.setConfig
       payload[1] = config.slave_count
       payload[2] = config.current_sense_slave
@@ -100,6 +108,8 @@ export class WebSerialTransport implements BmsTransport {
       payload[11] = config.invert_current ? 1 : 0
       payload[12] = config.balance_enabled ? 1 : 0
       payload[13] = config.startup_diagnostics ? 1 : 0
+      payload[14] = config.self_discharge_tenth_percent_per_30_days
+      payload[15] = config.cold_allowance_deci_c
       return payload
     }
     const register = args as ServiceArguments['read_register']
@@ -146,8 +156,13 @@ export class WebSerialTransport implements BmsTransport {
     if (type === messageType.status) {
       const status = decodeStatus(payload)
       if (!status) return
+      if (this.status && status.uptime_ms < this.status.uptime_ms && this.status.uptime_ms < 0xf0000000) {
+        this.socCalibration = undefined
+        this.balancingCharges.clear()
+      }
+      if (this.socCalibration) status.soc_calibration = this.socCalibration
       this.status = status
-      if (!status.measurements_fresh) { this.pack = null; this.energy = undefined; this.hvVoltages = undefined; this.cells.clear(); this.temperatures.clear() }
+      if (!status.measurements_fresh) { this.pack = null; this.energy = undefined; this.hvVoltages = undefined; this.cells.clear(); this.balancingCharges.clear(); this.temperatures.clear() }
       this.emitStatus()
       this.emitSnapshotIfComplete()
       return
@@ -156,7 +171,9 @@ export class WebSerialTransport implements BmsTransport {
     if (type === messageType.energy) { const energy = decodeEnergy(payload); if (energy) { this.energy = energy; this.emitSnapshotIfComplete() }; return }
     if (type === messageType.hvVoltages) { const voltages = decodeHvVoltages(payload); if (voltages) { this.hvVoltages = voltages; this.emitSnapshotIfComplete() }; return }
     if (type === messageType.goodweCanDiagnostics) { const diagnostics = decodeGoodweCanDiagnostics(payload); if (diagnostics) { this.goodweCan = diagnostics; this.emitSnapshotIfComplete() }; return }
+    if (type === messageType.socCalibration) { const details = decodeSocCalibration(payload); if (details) { this.socCalibration = details; if (this.status) { this.status.soc_calibration = details; this.emitStatus(); this.emitSnapshotIfComplete() } }; return }
     if (type === messageType.cell) { const cell = decodeCell(payload); if (cell) { this.cells.set(cell.slave_index, cell); this.emitSnapshotIfComplete() }; return }
+    if (type === messageType.balancingCharge) { const charge = decodeBalancingCharge(payload); if (charge) { this.balancingCharges.set(charge.slave_index, charge.balancing_mAh); this.emitSnapshotIfComplete() }; return }
     if (type === messageType.temperature) { const temperature = decodeTemperature(payload); if (temperature) { this.temperatures.set(temperature.slave_index, temperature); this.emitSnapshotIfComplete() }; return }
     if (type === messageType.event && payload.length === 5) { this.applyEvent(payload[0], readLe32(payload, 1)); return }
     if (type === messageType.serviceResponse) this.completeService(sequence, payload)
@@ -172,9 +189,10 @@ export class WebSerialTransport implements BmsTransport {
     if (result === 'ok' && pending.service === 'read_register' && payload.length === 6) data = { slave_index: payload[2], register: payload[3], value: readLe16(payload, 4) }
     if (result === 'ok' && pending.service === 'get_rtc' && payload.length === 6) data = { unix_time_s: readLe32(payload, 2) }
     if (result === 'ok' && pending.service === 'get_device_info' && payload.length === 6) data = { firmware_version_packed: readLe32(payload, 2) }
-    if (result === 'ok' && pending.service === 'get_config' && payload.length === 20) {
+    if (result === 'ok' && pending.service === 'get_safety_limits') data = { safety_limits_payload: Array.from(payload.slice(2)) }
+    if (result === 'ok' && pending.service === 'get_config' && (payload.length === 20 || payload.length === 21 || payload.length === 22)) {
       const reasons = ['valid', 'blank', 'version_mismatch', 'corrupt'] as const
-      data = { reason: reasons[payload[2]] ?? 'corrupt', expected_version: readLe16(payload, 3), stored_version: readLe16(payload, 5), slave_count: payload[7], current_sense_slave: payload[8], shunt_resistance_uohm: readLe32(payload, 9), battery_capacity_mah: readLe32(payload, 13), invert_current: payload[17] !== 0, balance_enabled: payload[18] !== 0, startup_diagnostics: payload[19] !== 0 }
+      data = { reason: reasons[payload[2]] ?? 'corrupt', expected_version: readLe16(payload, 3), stored_version: readLe16(payload, 5), slave_count: payload[7], current_sense_slave: payload[8], shunt_resistance_uohm: readLe32(payload, 9), battery_capacity_mah: readLe32(payload, 13), invert_current: payload[17] !== 0, balance_enabled: payload[18] !== 0, startup_diagnostics: payload[19] !== 0, self_discharge_tenth_percent_per_30_days: payload.length >= 21 ? payload[20] : 0, cold_allowance_deci_c: payload.length >= 22 ? payload[21] : 30 }
     }
     if (result === 'ok' && pending.service === 'get_diagnostic_report' && payload.length === 8) data = { slave_index: payload[2], cid: payload[3], failed_checks: readLe16(payload, 4), status_code: payload[6], failed_diagnostic: payload[7] }
     pending.resolve({ request_id: '', service: pending.service, result, ...(data ? { data } : {}) })
@@ -189,7 +207,7 @@ export class WebSerialTransport implements BmsTransport {
       else if (event_id === 5) this.status.hv_active_errors = value
       else if (event_id === 6) this.status.hv_latched_errors = value
       else if (event_id === 7) this.status.warnings = value
-      else if (event_id === 8) { this.status.measurements_fresh = value !== 0; if (value === 0) { this.pack = null; this.energy = undefined; this.cells.clear(); this.temperatures.clear() } }
+      else if (event_id === 8) { this.status.measurements_fresh = value !== 0; if (value === 0) { this.pack = null; this.energy = undefined; this.cells.clear(); this.balancingCharges.clear(); this.temperatures.clear() } }
       this.emitStatus()
     }
     this.eventListeners.forEach(listener => listener({ event_id, value }))
@@ -199,7 +217,7 @@ export class WebSerialTransport implements BmsTransport {
   private emitSnapshotIfComplete(): void {
     if (!this.status?.measurements_fresh || !this.pack || this.status.slave_count === 0) return
     for (let slave = 0; slave < this.status.slave_count; slave += 1) if (!this.cells.has(slave) || !this.temperatures.has(slave)) return
-    this.snapshotListeners.forEach(listener => listener({ status: { ...this.status! }, pack: { ...this.pack! }, ...(this.energy ? { energy: { ...this.energy } } : {}), ...(this.hvVoltages ? { hv_voltages: { ...this.hvVoltages } } : {}), ...(this.goodweCan ? { goodwe_can: { ...this.goodweCan, transmit_frames: this.goodweCan.transmit_frames.map(frame => ({ ...frame })), receive_frames: this.goodweCan.receive_frames.map(frame => ({ ...frame, data: [...frame.data] })) } } : {}), cells: Array.from(this.cells.values()).sort((a, b) => a.slave_index - b.slave_index), temperatures: Array.from(this.temperatures.values()).sort((a, b) => a.slave_index - b.slave_index) }))
+    this.snapshotListeners.forEach(listener => listener({ status: { ...this.status! }, pack: { ...this.pack! }, ...(this.energy ? { energy: { ...this.energy } } : {}), ...(this.hvVoltages ? { hv_voltages: { ...this.hvVoltages } } : {}), ...(this.goodweCan ? { goodwe_can: { ...this.goodweCan, transmit_frames: this.goodweCan.transmit_frames.map(frame => ({ ...frame })), receive_frames: this.goodweCan.receive_frames.map(frame => ({ ...frame, data: [...frame.data] })) } } : {}), cells: Array.from(this.cells.values()).sort((a, b) => a.slave_index - b.slave_index).map(cell => ({ ...cell, ...(this.balancingCharges.has(cell.slave_index) ? { balancing_mAh: [...this.balancingCharges.get(cell.slave_index)!] } : {}) })), temperatures: Array.from(this.temperatures.values()).sort((a, b) => a.slave_index - b.slave_index) }))
   }
 
   private completeTransportError(sequence: number): void { const pending = this.pending.get(sequence); if (!pending) return; this.pending.delete(sequence); window.clearTimeout(pending.timeout); pending.resolve({ request_id: '', service: pending.service, result: 'transport_error' }) }

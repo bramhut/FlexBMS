@@ -188,8 +188,8 @@ namespace GoodweCan
             // a minimum downward on the inverter-facing wire format.
             data.chargeVoltageDeciV = toUnsignedDeciFloor(snapshot.chargeVoltageV);
             data.dischargeVoltageDeciV = toUnsignedDeciCeil(snapshot.dischargeVoltageV);
-            data.chargeCurrentDeciA = toUnsignedDeciFloor(snapshot.chargeCurrentA);
-            data.dischargeCurrentDeciA = toUnsignedDeciFloor(snapshot.dischargeCurrentA);
+            data.chargeCurrentDeciA = CurrentLimitGuard::encodeDeciAmps(snapshot.chargeCurrentA);
+            data.dischargeCurrentDeciA = CurrentLimitGuard::encodeDeciAmps(snapshot.dischargeCurrentA);
             data.packVoltageDeciV = static_cast<uint16_t>(std::clamp(
                 std::lround(static_cast<double>(snapshot.packVoltageUv) / 100000.0), 0L, 65535L));
             data.packCurrentDeciA = toSignedDeci(snapshot.packCurrentA);

@@ -5,9 +5,15 @@ export const formatCellDifferenceMv = (microvolts: number): string => {
   if (!Number.isFinite(microvolts)) return 'Unavailable'
   return String(Math.round(Math.max(0, microvolts) / 1_000))
 }
-export const currentA = (raw: number) => raw / 64
+export const currentA = (raw: number) => raw / 1_000_000
+// Presentation only; do not apply this to telemetry, power or integration.
+export const CURRENT_DISPLAY_DEADBAND_A = 0.015
+export const formatCurrent = (amps: number): string => `${(Math.abs(amps) < CURRENT_DISPLAY_DEADBAND_A ? 0 : amps).toFixed(2)} A`
 export const powerW = (voltageUv: number, currentRaw: number) => cellVoltageV(voltageUv) * currentA(currentRaw)
 export const socPercent = (raw: number) => Math.round((raw / 65535 * 3 - 1) * 10_000) / 100
+
+export const selfDischargeEquivalentMilliAmps = (capacityAh: number, ratePercentPer30Days: number) =>
+  capacityAh * ratePercentPer30Days / 72
 export const ntcCelsius = (raw: number) => raw / 65535 * 120 - 20
 // The STM32 BCC driver exports IC temperature as centikelvin.
 export const icCelsius = (raw: number) => raw / 100 - 273.15
@@ -37,7 +43,7 @@ export const isFresh = (snapshot: Snapshot | null) => snapshot !== null && snaps
 export const valueOrStale = (value: string, fresh: boolean) => fresh ? value : 'Stale'
 export const bmsStateName = (value: number) => ['Starting', 'Ready', 'Running', 'Error', 'Critical'][value] ?? `Unknown (${value})`
 export const hvStateName = (value: number) => ['Off', 'Self-test', 'Precharge', 'Contactor close', 'Run'][value] ?? `Unknown (${value})`
-export const bmsFaultNames = ['CONFIGURATION_INVALID', 'SLAVE_UNAVAILABLE', 'BCC_DIAGNOSTICS', 'CELL_VOLTAGE_LIMIT', 'THERMAL_LIMIT', 'CURRENT_LIMIT', 'BCC_INTEGRITY', 'ADC_FAULT', 'BALANCING_HARDWARE_FAULT', 'BCC_COMMUNICATION', 'NO_CONFIG']
+export const bmsFaultNames = ['CONFIGURATION_INVALID', 'SLAVE_UNAVAILABLE', 'BCC_DIAGNOSTICS', 'CELL_VOLTAGE_LIMIT', 'THERMAL_LIMIT', 'CURRENT_LIMIT', 'BCC_INTEGRITY', 'ADC_FAULT', 'BALANCING_HARDWARE_FAULT', 'BCC_COMMUNICATION', 'NO_CONFIG', 'INVERTER_CURRENT_LIMIT']
 export const bccDiagnosticNames = ['ADC1 channel verification', 'OV/UV functional verification', 'OV/UV detection', 'Cell-terminal open/short detection', 'Cell-voltage channel verification', 'Cell contact resistance', 'Cell-terminal leakage', 'Current measurement', 'Shunt connection', 'GPIO over/under-temperature', 'GPIO open-terminal detection', 'Cell-balancing open-load detection']
 export const bccDiagnosticStatusNames = ['Success', 'Parameter out of range', 'SPI communication failure', 'Communication timeout', 'Communication echo mismatch', 'Communication CRC error', 'Communication message-counter error', 'Empty communication response', 'Cannot enter diagnostic mode', 'Conversion data not ready']
 export const hvReasonNames = ['HV_SENSOR_DIAGNOSTIC', 'BATTERY_VOLTAGE_MISMATCH', 'LOAD_SIDE_ENERGISED', 'PRECHARGE_TIMEOUT', 'PRECHARGE_VOLTAGE_LOST', 'CONTACTOR_VOLTAGE_LOST']

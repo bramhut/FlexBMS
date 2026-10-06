@@ -1,18 +1,34 @@
 import assert from 'node:assert/strict'
+import { formatCurrent } from '../src/shared/model.ts'
 import test from 'node:test'
-import { balancingDisplay, bmsStatusSummary, currentA, describeWatchdogBreadcrumb, formatCellDifferenceMv, formatEnergy, formatPower, icCelsius, isFresh, ntcCelsius, powerW, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
+import { balancingDisplay, bmsStatusSummary, currentA, describeWatchdogBreadcrumb, formatCellDifferenceMv, formatEnergy, formatPower, icCelsius, isFresh, ntcCelsius, powerW, selfDischargeEquivalentMilliAmps, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
 import { reconnectDelayMs } from '../src/shared/reconnect.ts'
 import { serviceResultLabel } from '../src/shared/service.ts'
 import { advancingUnixTime, advancingUptimeMs, createUptimeTracker, displayedUptimeMs, formatUptime, sampleUptime } from '../src/shared/time.ts'
 import { unavailableCapabilities } from '../src/transports/Transport.ts'
 
 test('raw UART v1 units convert in the presentation layer', () => {
-  assert.equal(currentA(-64), -1)
+  assert.equal(currentA(-1_000_000), -1)
   assert.equal(socPercent(65535), 200)
   assert.equal(socPercent(43689), 100)
   assert.equal(socPercent(43688), 99.99)
   assert.equal(ntcCelsius(0), -20)
   assert.equal(icCelsius(29430).toFixed(2), '21.15')
+})
+
+test('current deadband is display-only and symmetric', () => {
+  assert.equal(formatCurrent(0.0149), '0.00 A')
+  assert.equal(formatCurrent(-0.0149), '0.00 A')
+  assert.equal(formatCurrent(-0), '0.00 A')
+  assert.equal(formatCurrent(0.016), '0.02 A')
+  assert.equal(formatCurrent(-0.016), '-0.02 A')
+  assert.equal(currentA(1), 0.000001)
+  assert.ok(Math.abs(powerW(320_000_000, 1) - 0.00032) < 1e-15)
+})
+test('self-discharge setting converts to the correct equivalent current', () => {
+  assert.equal(selfDischargeEquivalentMilliAmps(314, 1).toFixed(2), '4.36')
+  assert.equal(selfDischargeEquivalentMilliAmps(314, 0), 0)
+  assert.equal(selfDischargeEquivalentMilliAmps(10_000, 5).toFixed(2), '694.44')
 })
 test('cell differences use compact millivolt formatting', () => {
   assert.equal(formatCellDifferenceMv(0), '0')
@@ -31,7 +47,7 @@ test('energy display selects a useful unit for the current quantity', () => {
   assert.equal(formatEnergy('123', false), 'Unavailable')
 })
 test('power display selects W or four-significant-digit kW', () => {
-  assert.equal(powerW(320_820_000, 2284), 320.82 * (2284 / 64))
+  assert.equal(powerW(320_820_000, 35_687_500), 320.82 * 35.6875)
   assert.equal(formatPower(999.6), '1000 W')
   assert.equal(formatPower(1_234.56), '1.235 kW')
   assert.equal(formatPower(12_345.6), '12.35 kW')

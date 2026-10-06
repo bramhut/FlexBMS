@@ -207,16 +207,17 @@ namespace FlexBms::UartV1
 
     bool decodePack(const Frame &frame, Pack &pack)
     {
-        if (!frameHasPayload(frame, MessageType::Pack, 24U)) return false;
-        pack.packVoltageUv = readLe32(frame.payload.data());
-        pack.packCurrentRaw = static_cast<int16_t>(readLe16(frame.payload.data() + 4U));
-        pack.socRaw = readLe16(frame.payload.data() + 6U);
-        pack.minCellUv = readLe32(frame.payload.data() + 8U);
-        pack.maxCellUv = readLe32(frame.payload.data() + 12U);
-        pack.minNtcRaw = readLe16(frame.payload.data() + 16U);
-        pack.maxNtcRaw = readLe16(frame.payload.data() + 18U);
-        pack.minIcRaw = readLe16(frame.payload.data() + 20U);
-        pack.maxIcRaw = readLe16(frame.payload.data() + 22U);
+        if (!frameHasPayload(frame, MessageType::Pack, 27U) || frame.payload[0] != 2U) return false;
+        pack.packVoltageUv = readLe32(frame.payload.data() + 1U);
+        const uint32_t bits = readLe32(frame.payload.data() + 5U);
+        pack.packCurrentMicroAmps = static_cast<int32_t>(bits <= INT32_MAX ? static_cast<int64_t>(bits) : static_cast<int64_t>(bits) - 0x100000000LL);
+        pack.socRaw = readLe16(frame.payload.data() + 9U);
+        pack.minCellUv = readLe32(frame.payload.data() + 11U);
+        pack.maxCellUv = readLe32(frame.payload.data() + 15U);
+        pack.minNtcRaw = readLe16(frame.payload.data() + 19U);
+        pack.maxNtcRaw = readLe16(frame.payload.data() + 21U);
+        pack.minIcRaw = readLe16(frame.payload.data() + 23U);
+        pack.maxIcRaw = readLe16(frame.payload.data() + 25U);
         return true;
     }
 
@@ -226,6 +227,38 @@ namespace FlexBms::UartV1
         voltages.valid = (frame.payload[0] & 0x01U) != 0U;
         voltages.batteryVoltageUv = readLe32(frame.payload.data() + 4U);
         voltages.loadVoltageUv = readLe32(frame.payload.data() + 8U);
+        return true;
+    }
+
+    bool decodeSocCalibration(const Frame &frame, SocCalibration &calibration)
+    {
+        if (frame.type != MessageType::SocCalibration ||
+            !((frame.payload[0] == 1U && frame.length == 16U) ||
+              (frame.payload[0] == 2U && frame.length == 34U)) ||
+            (frame.payload[1] & (frame.payload[0] == 1U ? ~3U : ~0x3FU)) != 0U) return false;
+        calibration = {};
+        calibration.valid = (frame.payload[1] & 1U) != 0U;
+        if (calibration.valid)
+        {
+            calibration.preSocValid = (frame.payload[1] & 2U) != 0U;
+            calibration.preSocRaw = readLe16(frame.payload.data() + 2U);
+            calibration.unixTimeS = readLe32(frame.payload.data() + 4U);
+            calibration.previousUnixTimeS = readLe32(frame.payload.data() + 8U);
+            calibration.qualifyingDwellMs = readLe32(frame.payload.data() + 12U);
+        }
+        if (frame.payload[0] == 2U)
+        {
+            calibration.selfDischargeAvailable = true;
+            calibration.selfDischargeSocValid = (frame.payload[1] & (1U << 2U)) != 0U;
+            calibration.selfDischargeRateTenthPercentPer30Days = frame.payload[16];
+            if (calibration.selfDischargeRateTenthPercentPer30Days > 50U || frame.payload[17] != 0U) return false;
+            calibration.selfDischargeEquivalentCurrentMicroAmps = readLe32(frame.payload.data() + 18U);
+            calibration.selfDischargeAccumulatedSinceCalibrationMicroAh = readLe64(frame.payload.data() + 22U);
+            calibration.selfDischargeIntervalComplete = (frame.payload[1] & (1U << 3U)) != 0U;
+            calibration.lastCalibrationSelfDischargeMilliAh = readLe32(frame.payload.data() + 30U);
+            calibration.lastCalibrationSelfDischargeAvailable = (frame.payload[1] & (1U << 4U)) != 0U;
+            calibration.lastCalibrationSelfDischargeComplete = (frame.payload[1] & (1U << 5U)) != 0U;
+        }
         return true;
     }
 
@@ -244,10 +277,20 @@ namespace FlexBms::UartV1
         constexpr size_t transmitFrameBytes = 8U;
         constexpr size_t receiveFrameBytes = 20U;
         constexpr size_t payloadBytes = headerBytes + 7U * transmitFrameBytes + 3U * receiveFrameBytes;
-        if (!frameHasPayload(frame, MessageType::GoodweCanDiagnostics, payloadBytes) || frame.payload[0] != 1U) return false;
+        const bool extended = frameHasPayload(frame, MessageType::GoodweCanDiagnostics, payloadBytes + 11U) && frame.payload[0] == 2U;
+        if (!extended && !(frameHasPayload(frame, MessageType::GoodweCanDiagnostics, payloadBytes) && frame.payload[0] == 1U)) return false;
+        if (extended && frame.payload[156] > 2U) return false;
 
         diagnostics = {};
         diagnostics.schemaVersion = frame.payload[0];
+        if (extended)
+        {
+            diagnostics.violationDirection = frame.payload[156];
+            const uint32_t raw = readLe32(frame.payload.data() + 157U);
+            diagnostics.violationCurrentMilliA = static_cast<int32_t>(raw <= INT32_MAX ? static_cast<int64_t>(raw) : static_cast<int64_t>(raw) - 0x100000000LL);
+            diagnostics.violationLimitDeciA = readLe16(frame.payload.data() + 161U);
+            diagnostics.violationUptimeMs = readLe32(frame.payload.data() + 163U);
+        }
         diagnostics.protocol = frame.payload[1];
         diagnostics.request45aEnabled = (frame.payload[2] & (1U << 0U)) != 0U;
         diagnostics.compatibility460Enabled = (frame.payload[2] & (1U << 1U)) != 0U;
@@ -295,6 +338,32 @@ namespace FlexBms::UartV1
         for (size_t index = 0U; index < cell.voltageUv.size(); ++index)
         {
             cell.voltageUv[index] = readLe32(frame.payload.data() + 3U + index * 4U);
+        }
+        return true;
+    }
+
+    bool decodeBalancingCharge(const Frame &frame, BalancingCharge &balancingCharge)
+    {
+        if (frame.type != MessageType::BalancingCharge || frame.length < 6U ||
+            frame.length > 58U)
+        {
+            return false;
+        }
+
+        const uint8_t cellCount = frame.payload[1];
+        if (cellCount == 0U || cellCount > balancingCharge.milliAmpHours.size() ||
+            frame.length != 2U + static_cast<uint16_t>(cellCount) * 4U)
+        {
+            return false;
+        }
+
+        balancingCharge = {};
+        balancingCharge.slaveIndex = frame.payload[0];
+        balancingCharge.cellCount = cellCount;
+        for (uint8_t cellIndex = 0U; cellIndex < cellCount; ++cellIndex)
+        {
+            balancingCharge.milliAmpHours[cellIndex] = readLe32(
+                frame.payload.data() + 2U + static_cast<size_t>(cellIndex) * 4U);
         }
         return true;
     }
@@ -387,6 +456,46 @@ namespace FlexBms::UartV1
         malformedEnergy.length = 16U;
         if (decodeEnergy(malformedEnergy, decodedEnergy)) return false;
 
+        Frame calibrationFrame{};
+        calibrationFrame.type = MessageType::SocCalibration;
+        calibrationFrame.length = 16U;
+        calibrationFrame.payload[0] = 1U;
+        calibrationFrame.payload[1] = 3U;
+        calibrationFrame.payload[2] = 0xAAU;
+        calibrationFrame.payload[3] = 0xAAU;
+        calibrationFrame.payload[4] = 0x80U;
+        calibrationFrame.payload[5] = 0x51U;
+        calibrationFrame.payload[6] = 0x37U;
+        calibrationFrame.payload[7] = 0x66U;
+        calibrationFrame.payload[12] = 0x30U;
+        calibrationFrame.payload[13] = 0x75U;
+        SocCalibration decodedCalibration{};
+        if (!decodeSocCalibration(calibrationFrame, decodedCalibration) ||
+            !decodedCalibration.valid || !decodedCalibration.preSocValid ||
+            decodedCalibration.preSocRaw != 0xAAAAU ||
+            decodedCalibration.unixTimeS != 1714901376U ||
+            decodedCalibration.qualifyingDwellMs != 30000U) return false;
+        calibrationFrame.payload[0] = 2U;
+        if (decodeSocCalibration(calibrationFrame, decodedCalibration)) return false;
+
+        calibrationFrame.payload[0] = 2U;
+        calibrationFrame.length = 34U;
+        calibrationFrame.payload[1] = 0x3DU;
+        calibrationFrame.payload[16] = 10U;
+        calibrationFrame.payload[18] = 0x09U;
+        calibrationFrame.payload[19] = 0x11U;
+        calibrationFrame.payload[22] = 0x40U;
+        calibrationFrame.payload[30] = 0xE8U;
+        calibrationFrame.payload[31] = 0x03U;
+        if (!decodeSocCalibration(calibrationFrame, decodedCalibration) ||
+            !decodedCalibration.selfDischargeAvailable ||
+            decodedCalibration.selfDischargeRateTenthPercentPer30Days != 10U ||
+            decodedCalibration.selfDischargeEquivalentCurrentMicroAmps != 4361U ||
+            !decodedCalibration.selfDischargeIntervalComplete ||
+            !decodedCalibration.lastCalibrationSelfDischargeAvailable ||
+            !decodedCalibration.lastCalibrationSelfDischargeComplete ||
+            decodedCalibration.lastCalibrationSelfDischargeMilliAh != 1000U) return false;
+
         Frame goodweFrame{};
         goodweFrame.type = MessageType::GoodweCanDiagnostics;
         goodweFrame.length = 156U;
@@ -413,6 +522,26 @@ namespace FlexBms::UartV1
         }
         goodweFrame.payload[0] = 2U;
         if (decodeGoodweCanDiagnostics(goodweFrame, decodedGoodwe)) return false;
+
+        Frame balancingFrame{};
+        balancingFrame.type = MessageType::BalancingCharge;
+        balancingFrame.length = 10U;
+        balancingFrame.payload[0] = 3U;
+        balancingFrame.payload[1] = 2U;
+        balancingFrame.payload[2] = 0xD4U;
+        balancingFrame.payload[3] = 0x01U;
+        balancingFrame.payload[6] = 0x2EU;
+        balancingFrame.payload[7] = 0x16U;
+        BalancingCharge decodedBalancing{};
+        if (!decodeBalancingCharge(balancingFrame, decodedBalancing) ||
+            decodedBalancing.slaveIndex != 3U || decodedBalancing.cellCount != 2U ||
+            decodedBalancing.milliAmpHours[0] != 468U ||
+            decodedBalancing.milliAmpHours[1] != 5678U)
+        {
+            return false;
+        }
+        balancingFrame.length = 9U;
+        if (decodeBalancingCharge(balancingFrame, decodedBalancing)) return false;
 
         std::array<uint8_t, kMaxFrameBytes> encoded{};
         const Frame expected{.type = MessageType::Heartbeat, .sequence = 0U, .length = 0U};

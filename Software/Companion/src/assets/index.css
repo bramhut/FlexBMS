@@ -40,3 +40,22 @@ nav { display: flex; gap: .5rem; padding: 1rem 0; }
 @media (max-width: 900px) { .goodwe-power-metrics, .goodwe-health-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.goodwe-power-metrics .primary-metric:nth-child(odd):not(:first-child), .goodwe-health-metrics .primary-metric:nth-child(odd):not(:first-child) { border-left: 0; padding-left: 0; } }
 @media (max-width: 560px) { .goodwe-power-heading { align-items: flex-start; flex-direction: column; }.goodwe-power-metrics, .goodwe-health-metrics { grid-template-columns: 1fr; }.goodwe-power-metrics .primary-metric, .goodwe-health-metrics .primary-metric { padding: .55rem 0 0; border-top: 1px solid #e3e9f0; border-left: 0; }.goodwe-power-metrics .primary-metric:first-child, .goodwe-health-metrics .primary-metric:first-child { padding-top: 0; border-top: 0; }.goodwe-frame-details summary { align-items: flex-start; flex-direction: column; gap: .15rem; } }
 .action-warning { margin: .35rem 0 0; color: #922d3b; font-size: .85rem; font-weight: 650; }
+.soc-calibration-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .75rem; }
+.soc-calibration-metrics .primary-metric b { font-size: 1.08rem; overflow-wrap: anywhere; }
+@media (max-width: 900px) { .soc-calibration-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.soc-calibration-metrics .primary-metric:nth-child(odd):not(:first-child) { border-left: 0; padding-left: 0; } }
+@media (max-width: 560px) { .soc-calibration-metrics { grid-template-columns: 1fr; }.soc-calibration-metrics .primary-metric { padding: .55rem 0 0; border-top: 1px solid #e3e9f0; border-left: 0; }.soc-calibration-metrics .primary-metric:first-child { padding-top: 0; border-top: 0; } }
+
+/* Keep wide diagnostic tables inside their panel, never widen the page grid. */
+.diagnostics-page, .diagnostics-page > *, .diagnostics-content, .diagnostics-content > * { min-width: 0; max-width: 100%; }
+.diagnostics-content { display: grid; gap: 1rem; }
+.diagnostic-tabs { display: flex; flex-wrap: wrap; gap: .25rem; border-bottom: 1px solid #dbe2eb; padding-bottom: .5rem; }
+.diagnostic-tabs button { border: 0; background: transparent; color: #5e6a7d; padding: .5rem .8rem; }
+.diagnostic-tabs button[aria-selected="true"] { background: #e9f2fb; color: #1f5d9e; }
+.diagnostics-page summary { cursor: pointer; font-weight: 650; }
+.diagnostics-page summary small { margin-left: .7rem; font-weight: 400; }
+.diagnostics-page .panel-heading > * { min-width: 0; }
+.diagnostics-page .panel-heading p { overflow-wrap: anywhere; }
+.safety-table { table-layout: fixed; width: 100%; min-width: 0; }
+.safety-table th, .safety-table td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.safety-note { color: #5e6a7d; font-size: .88rem; line-height: 1.5; }
+@media (max-width: 700px) { .diagnostics-page .panel-heading { flex-direction: column; align-items: flex-start; gap: .3rem; } }

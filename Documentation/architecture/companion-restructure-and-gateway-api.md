@@ -616,3 +616,41 @@ and `npm run build:desktop` succeed from `Software/Companion`.
     CSV creation, register read, NTP RTC sync/status, fault clear, and run request.
     Hardware operation and contactor behaviour are not claimed validated by
     browser/unit tests alone.
+
+## Diagnostics organisation and safety-policy visibility (2026-10-06)
+
+Diagnostics now has four keyboard-accessible subtabs, without adding more
+top-level navigation:
+
+- Battery: calibration, self-discharge model and per-cell balancing mAh, in that order.
+- Safety limits: firmware-reported read-only voltage, temperature and current
+  policy, with balancing explicitly separated from hard protection.
+- Inverter: latest current-limit event and existing GoodWe diagnostics, with
+  raw frame details expandable.
+- Hardware & tools: HV measurements, compact expandable startup/reset reports,
+  CSV logging and read-only BCC register access.
+
+Diagnostic subtabs keep their content mounted, so switching between them does
+not clear register results or interrupt CSV capture. The existing main-page
+lifetime remains unchanged. Active faults still appear on the BMS dashboard.
+Grid children have a zero minimum width; only wide tables scroll horizontally.
+The safety view distinguishes derating, inhibition/recovery and latched safe-off.
+C-rate equivalents use the capacity returned in the same policy response.
+
+The byte contract is GET_SAFETY_LIMITS in the canonical UART document.
+SafetyLimitsView owns request generation and invalidation; safetyPolicy.ts is
+the shared decoder. The new service is read-only and participates in the
+existing serialized Gateway request path and bounded Busy-read retries.
+No safety decisions move to the browser or Gateway.
+
+Validation: local fixture at `tests/ui/diagnostics.html`, served with Vite,
+uses synthetic data and no battery connection. Browser inspection covered
+desktop and 390 px phone-width layouts, absence of page-wide horizontal
+overflow, unsupported firmware, disconnect clearing and controller-restart
+refresh. This inspection found and fixed the need to seed the uptime tracker
+with its initial sample. Production entry points do not import the fixture.
+
+Regression coverage includes signed and scaled policy fields, exact
+C++/TypeScript field order, malformed/unknown schemas, complete USB payloads,
+Gateway Busy retry and payload forwarding, and a host C++ service-buffer test.
+Hardware readback and end-to-end on-device testing remain separate validation.

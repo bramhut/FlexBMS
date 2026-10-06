@@ -11,6 +11,8 @@
 #include "bcc/bcc_communication.h"
 #include "bcc/bcc.h"
 #include "bcc/UserSettings.h"
+#include "bcc/FaultMasks.h"
+#include "Peripherals/CoulombIntegration.h"
 
 #include <algorithm>
 #include <cmath>
@@ -320,6 +322,8 @@ bcc_status_t BCC::regRead(const uint8_t regAddr, const uint8_t regCnt, uint16_t 
  */
 bcc_status_t BCC::regWrite(const uint8_t regAddr, const uint16_t regVal, const bool toUnassigned)
 {
+    if ((regAddr == MC33771C_ADC_CFG_OFFSET && (regVal & MC33771C_ADC_CFG_CC_RST_MASK)) ||
+        (regAddr == MC33771C_SYS_CFG1_OFFSET && (regVal & (MC33771C_SYS_CFG1_SOFT_RST_MASK | MC33771C_SYS_CFG1_GO2DIAG_MASK)))) resetCurrentBaseline();
     uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
     bcc_status_t status;
 
@@ -593,6 +597,7 @@ bcc_status_t BCC::assignCid(uint8_t devicesCnt)
  */
 bcc_status_t BCC::softwareReset()
 {
+    resetCurrentBaseline();
     return regWrite(MC33771C_SYS_CFG1_OFFSET, MC33771C_SYS_CFG1_SOFT_RST(MC33771C_SYS_CFG1_SOFT_RST_ACTIVE_ENUM_VAL));
 }
 
@@ -603,6 +608,7 @@ bcc_status_t BCC::softwareReset()
  */
 bcc_status_t BCC::resetBCCCoulombCounter()
 {
+    resetCurrentBaseline();
     return regUpdate(MC33771C_ADC_CFG_OFFSET, MC33771C_ADC_CFG_CC_RST_MASK, MC33771C_ADC_CFG_CC_RST(MC33771C_ADC_CFG_CC_RST_RESET_ENUM_VAL));
 }
 
@@ -848,6 +854,7 @@ bcc_status_t BCC::meas_GetRawValues()
     if (status == BCC_STATUS_SUCCESS)
     {
         timeReceivedLastMeasurement = millis();
+        mCounterSampleTimeUs = micros();
     }
 
     return status;
@@ -879,7 +886,7 @@ bcc_status_t BCC::meas_GetAmpHourAndIAvg(const double rShunt, const bool invertC
 
     BCC_MCU_Assert(amphour != NULL);
     BCC_MCU_Assert(Iavg != NULL);
-    if (!mCurrentSenseEnabled || !std::isfinite(capacityAh) || capacityAh <= 0.0)
+    if (!mCurrentSenseEnabled || !std::isfinite(capacityAh) || capacityAh <= 0.0 || !std::isfinite(rShunt) || rShunt <= 0.0)
     {
         return BCC_STATUS_PARAM_RANGE;
     }
@@ -890,7 +897,7 @@ bcc_status_t BCC::meas_GetAmpHourAndIAvg(const double rShunt, const bool invertC
     if (ahCounterIsValid())
     {
         const double retainedAh = *mAmpHour;
-        const double boundedAh = std::clamp(retainedAh, 0.0, capacityAh);
+        const double boundedAh = std::clamp(retainedAh, 0.0, capacityAh * 2.0);
         if (boundedAh != retainedAh)
         {
             setAhCounter(boundedAh);
@@ -899,6 +906,9 @@ bcc_status_t BCC::meas_GetAmpHourAndIAvg(const double rShunt, const bool invertC
 
     if (forceRead)
     {
+        // Release the previous hardware snapshot by reading outside 0x2D..0x2F.
+        uint16_t ignored;
+        if ((status = regRead(MC33771C_SYS_CFG1_OFFSET, 1U, &ignored)) != BCC_STATUS_SUCCESS) return status;
         // Read the coulomb counter registers
         status = regRead(MC33771C_CC_NB_SAMPLES_OFFSET, 3U, &mRawMeasurements[MSR_CC_NB_SAMPLES]);
         if (status != BCC_STATUS_SUCCESS)
@@ -907,71 +917,49 @@ bcc_status_t BCC::meas_GetAmpHourAndIAvg(const double rShunt, const bool invertC
         }
     }
 
+    if (forceRead) mCounterSampleTimeUs = micros();
     ccSamples = mRawMeasurements[MSR_CC_NB_SAMPLES];
     ccAccumulator = BCC_GET_COULOMB_CNT(mRawMeasurements[MSR_COULOMB_CNT1], mRawMeasurements[MSR_COULOMB_CNT2]);
 
-    // Calculate the sampling frequency of the coulomb counter
-    currentTime = micros();
-    uint16_t deltaSamples = ccSamples - mCCPrevSamples;
-
-    // If no new sample has arrived since the last run of this function, skip the calculation and return the previous value
-    if (deltaSamples == 0)
+    // Timestamp belongs to the counter acquisition, not later processing.
+    currentTime = mCounterSampleTimeUs;
+    const auto delta = mCounterTracker.sample(ccSamples, static_cast<uint32_t>(ccAccumulator), currentTime);
+    mCurrentIntervalValid = delta.result == CoulombCounterDelta::Result::Valid;
+    if (delta.result != CoulombCounterDelta::Result::Valid)
     {
+        if (delta.result == CoulombCounterDelta::Result::Discontinuity) {
+            if (mCounterDiscontinuities != UINT32_MAX) ++mCounterDiscontinuities;
+            PRINTF_WARN("[BCC] CID %u counter discontinuity #%lu; interval omitted\n", mCID, static_cast<unsigned long>(mCounterDiscontinuities));
+        }
+        // Keep protection current available while rebuilding the Ah baseline.
+        double instantaneous = 0;
+        status = meas_GetIsense(rShunt, &instantaneous, true);
+        if (status != BCC_STATUS_SUCCESS) return status;
+        mIAvg = (invertCurrent ? -instantaneous : instantaneous) -
+            (millis() - getTimeReceivedLastMeasurement() < 500 ? MC33771C_AVG_CURRENT_DRAW : 0.0);
         *amphour = *mAmpHour;
         *Iavg = mIAvg;
         return BCC_STATUS_SUCCESS;
     }
-    uint32_t deltaMicros = currentTime - mCCPrevTime;
-    double deltaT = deltaMicros / 1E6f;
-    mCCPrevSamples = ccSamples;
-    mCCPrevTime = currentTime;
-
-    // If for some reason the deltaT is zero, return an error (prevent divide by zero)
-    if (deltaMicros == 0)
-    {
-        return BCC_STATUS_PARAM_RANGE;
-    }
-    double ccFreq = (double)deltaSamples / deltaT;
-
-    // Calculate the coulomb count delta from the accumulator delta and the sampling frequency
-    int32_t deltaAccumulator = ccAccumulator - mCCPrevAccumulator;
-    mCCPrevAccumulator = ccAccumulator;
+    const double deltaT = delta.elapsedUs / 1E6;
+    const double ccFreq = static_cast<double>(delta.samples) / deltaT;
+    const int64_t deltaAccumulator = delta.accumulator;
     double deltaC = deltaAccumulator / ccFreq * 0.6E-6 / rShunt;
 
-    // Invert the current if necessary
-    if (invertCurrent)
+    // Preserve polarity and active-monitor compensation, including at idle.
+    deltaC = CoulombIntegration::correctedCharge(deltaC, deltaT, invertCurrent,
+        millis() - getTimeReceivedLastMeasurement() < 500 ? MC33771C_AVG_CURRENT_DRAW : 0.0);
+    // Internal current and charge integration must not discard small signals.
+    // Cosmetic zero suppression belongs only in the Companion display.
+    mIAvg = deltaC / deltaT;
+    const double ampHour = CoulombIntegration::accumulatedAh(*mAmpHour, deltaC, capacityAh);
+    if (ahCounterIsValid())
     {
-        deltaC = -deltaC;
-    }
-
-    // Also take the average current draw of the slave IC into account (if active)
-    if (millis() - getTimeReceivedLastMeasurement() < 500)
-    {
-        deltaC -= MC33771C_AVG_CURRENT_DRAW * deltaT;
-    }
-
-    // Calculate the average current in A
-    double iavg = deltaC / deltaT;
-
-    // Reading below this treshold are considered as noise
-    if (abs(iavg) < CURRENT_NOISE_THRESHOLD)
-    {
-        mIAvg = 0;
-        *amphour = *mAmpHour;
+        setAhCounter(ampHour);
     }
     else
     {
-        mIAvg = iavg;
-        const double ampHour = std::clamp(*mAmpHour + deltaC / 3600,
-                                          0.0, capacityAh);
-        if (ahCounterIsValid())
-        {
-            setAhCounter(ampHour);
-        }
-        else
-        {
-            *mAmpHour = ampHour;
-        }
+        *mAmpHour = ampHour;
     }
     *Iavg = mIAvg;
     *amphour = *mAmpHour;
@@ -1372,24 +1360,9 @@ bcc_status_t BCC::meas_GetNTCTemperatures(std::span<uint16_t> temperatures, doub
  *END**************************************************************************/
 void BCC::applyFaultMasks(uint16_t *faultValues)
 {
-    // TODO unit test this function
-
-    uint16_t mask = MC33771C_FAULT1_STATUS_CT_UV_FLT_MASK | // All Under-OVer thresholds are already check trough dedicated registers
-                    MC33771C_FAULT1_STATUS_CT_OV_FLT_MASK |
-                    MC33771C_FAULT1_STATUS_AN_UT_FLT_MASK |
-                    MC33771C_FAULT1_STATUS_AN_OT_FLT_MASK |
-                    MC33771C_FAULT1_STATUS_I2C_ERR_FLT_MASK | // I2C eeprom is not enabled
-                    MC33771C_FAULT1_STATUS_COM_LOSS_FLT_MASK; // For now we ignore this fault. If communication is lost for a long time the master will act approapriately.
-
-    faultValues[BCC_FS_FAULT1] &= ~mask;
-
-    mask = MC33771C_FAULT2_STATUS_IC_TSD_FLT_MASK; // We have a seperate fault for this one
-
-    faultValues[BCC_FS_FAULT2] &= ~mask;
-
-    mask = 0xBFFF; // Masks all End of time cell balancing notifications and Coulomb counter overflow. Bit 15 is not masked
-
-    faultValues[BCC_FS_FAULT3] &= ~mask;
+    BccFaultMasks::apply(faultValues[BCC_FS_FAULT1],
+                        faultValues[BCC_FS_FAULT2],
+                        faultValues[BCC_FS_FAULT3]);
 }
 
 /*!
