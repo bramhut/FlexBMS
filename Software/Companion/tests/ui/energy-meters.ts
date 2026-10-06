@@ -25,6 +25,13 @@ createApp({ setup: () => () => h('main', { style: 'padding:1rem;max-width:1100px
     h('button', { onClick: () => { status.value = structuredClone({ ...status.value, configuration: { ...status.value.configuration, meters: status.value.configuration.meters.map(m => ({ ...m })) }, meters: status.value.meters.map(m => ({ ...m })) }) } }, 'Refresh live status'),
     h('button', { onClick: () => { connected.value = !connected.value } }, 'Toggle connection'),
     h('button', { onClick: () => { allowed.value = !allowed.value } }, 'Toggle station permission'),
+    h('button', { onClick: () => { status.value = { ...status.value, meters: status.value.meters.map((meter, slot) => ({
+      ...meter, available: true, energy_fresh: true, last_success_age_ms: 250,
+      serial_number: 12345678 + slot, meter_code: 72, firmware_version: '1.2',
+      electrical: { current_l1_a: 8.25, current_l2_a: 12.5, current_l3_a: 3.75,
+        power_l1_w: 1897, power_l2_w: 2875, power_l3_w: 862, total_power_w: 5634, sample_age_ms: 250, failed_reads: 0 },
+      energy: { import_kwh: 1234.567, export_kwh: 89.012 },
+    })) } } }, 'Show sample readings'),
   ]),
   h(EnergyMetersConfiguration, { transport, connected: connected.value, allowed: allowed.value, status: status.value }),
 ]) }).mount('#app')

@@ -20,8 +20,17 @@ Companion **Configuration > RS485 energy meters** provides:
 | Baud rate | Shared bus | 9600; 1200, 2400, 4800, 9600, or 19200. |
 | Parity / stop bits | Shared, Advanced | None / 1; none, even, or odd; 1 or 2 stop bits; always 8 data bits. |
 
-Shared serial settings are shown when at least one slot is enabled. Configure
-the addresses and serial settings on the physical meters manually; the Gateway
+Each slot initially shows just its enable checkbox. Enabling it reveals the
+name, address and reverse-direction settings; switching it off hides those
+fields while retaining their values in the draft. Slots appear side by side
+on wider screens and stack on smaller screens. Shared serial settings are
+shown when at least one slot is enabled, with parity/stop bits in the Advanced
+disclosure. Save and Discard are enabled only while the draft has changes.
+Live readings group power, phase currents and energy by meter; a Diagnostics
+disclosure contains read age, failure count and identity. Read errors and
+availability remain visible without expanding diagnostics.
+
+Configure the addresses and serial settings on the physical meters manually; the Gateway
 never writes meter registers. Settings are persisted in a versioned Gateway
 NVS blob in the `energy_meters` namespace and applied without a BMS or Gateway
 reboot. Invalid requests leave the saved configuration unchanged. Unsupported
@@ -159,6 +168,15 @@ advanced serial options, successful save, and station-permission gating with
 no browser errors. The system overview was rebuilt using Typst 0.15.1.
 Physical-meter timing, wiring, persistence and HA commissioning remain to be
 verified on the installed equipment; no firmware was flashed during this work.
+
+The subsequent compact-panel update passed all 47 Companion checks and a
+Gateway build (application flash 1,420,150 / 1,572,864 bytes; Companion build ID
+`30b5af80e0f9e72c`). Browser checks covered zero/one/two visible settings,
+preserved name/direction while collapsing and refreshing, saving shared serial
+options, grouped sample readings, diagnostics, disconnect and permission
+gating, and a 375 px viewport without horizontal overflow. No browser errors
+were reported. The updated UI is local and was not flashed to the Gateway;
+the previously packaged release below predates this layout update.
 
 Release **0.2.0** was packaged on 2026-10-06 using
 `scripts/build-release.ps1 -Version 0.2.0`. Both firmware targets and the portable
