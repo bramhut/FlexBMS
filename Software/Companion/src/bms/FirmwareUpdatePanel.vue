@@ -3,8 +3,9 @@ import { computed, ref, watch } from 'vue'
 import { parseFirmwareBundle, type FirmwareBundle, type FirmwareTarget } from '@/shared/firmwareBundle'
 import type { Capabilities, FirmwareUpdateStage, GatewayStatus } from '@/transports/Transport'
 
-const props = defineProps<{ capabilities: Capabilities; connected: boolean; gateway?: GatewayStatus }>()
+const props = defineProps<{ capabilities: Capabilities; connected: boolean; gateway?: GatewayStatus; stm32Version?: string }>()
 const bundleFile = ref<File>()
+const bundleInput = ref<HTMLInputElement>()
 const bundle = ref<FirmwareBundle>()
 const selected = ref<Record<FirmwareTarget, boolean>>({ stm32: true, gateway: true })
 const result = ref('')
@@ -49,6 +50,10 @@ function flowState(index: number): 'complete' | 'active' | 'pending' | 'failed' 
 }
 function selectedFile(event: Event): File | undefined { return (event.target as HTMLInputElement).files?.[0] }
 function targetName(target: FirmwareTarget): string { return target === 'gateway' ? 'ESP32 Gateway' : 'STM32 BMS' }
+function installedVersion(target: FirmwareTarget): string {
+  if (!props.connected) return 'Disconnected'
+  return target === 'gateway' ? props.gateway?.gateway_version?.split('+', 1)[0] ?? 'Unavailable' : props.stm32Version ?? 'Unavailable'
+}
 function recordGatewayRestart(expectedVersion: string): void {
   const gateway = props.gateway
   if (!gateway) return
@@ -135,16 +140,18 @@ async function installSelected(): Promise<void> {
 
 <template>
   <section v-if="capabilities.firmware_update || update?.phase !== 'idle'" class="panel firmware-update-panel">
-    <div class="panel-heading"><div><h2>Firmware update</h2></div><p>Gateway recovery is also available through the local setup AP. STM32 updates require the station LAN.</p></div>
+    <div class="panel-heading"><div><h2>Firmware update</h2><p>Choose a FlexBMS bundle, then select the controllers to update.</p></div></div>
     <p v-if="!canUpdate" class="warning-text">Firmware updates require a Gateway Wi-Fi or setup-AP connection.</p>
-    <label class="bundle-picker">FlexBMS update bundle<input type="file" accept=".fbu" :disabled="!canUpdate || uploading" @change="chooseBundle($event)"></label>
+    <div class="bundle-picker"><span>FlexBMS update bundle</span><input ref="bundleInput" type="file" accept=".fbu" hidden :disabled="!canUpdate || uploading" @change="chooseBundle($event)"><div class="bundle-picker-row"><button type="button" :disabled="!canUpdate || uploading" @click="bundleInput?.click()">Choose bundle</button><span>{{ bundleFile?.name ?? 'No bundle selected' }}</span></div><small>FlexBMS_bundle.fbu · validated before installation</small></div>
     <template v-if="bundle">
       <p class="muted">Bundle version {{ bundle.version }}. Select the controllers to update.</p>
       <div v-for="target in (['stm32', 'gateway'] as FirmwareTarget[])" :key="target" class="firmware-target">
-        <label class="firmware-choice"><input v-model="selected[target]" type="checkbox" :disabled="uploading || (target === 'stm32' && !canUpdateStm32)"> <span><b>{{ targetName(target) }}</b><small>{{ bundle.images[target].version }} - {{ bundle.images[target].image_bytes.toLocaleString() }} bytes</small></span></label>
+        <label class="firmware-choice"><input v-model="selected[target]" type="checkbox" :disabled="uploading || (target === 'stm32' && !canUpdateStm32)"> <span><b>{{ targetName(target) }}</b><span class="firmware-comparison"><span>Installed {{ installedVersion(target) }}</span><span aria-hidden="true">→</span><b>Bundle {{ bundle.images[target].version }}</b></span><small>{{ (bundle.images[target].image_bytes / 1024).toFixed(1) }} KiB<span v-if="installedVersion(target) === bundle.images[target].version"> · Same release version</span></small></span></label>
       </div>
       <button class="danger" :disabled="!canUpdate || selectedTargets.length === 0 || uploading" @click="installSelected">{{ uploading ? `${currentTarget ? `Uploading ${targetName(currentTarget)}...` : 'Installing...'}` : `Install ${selectedTargets.length === 2 ? 'selected firmware' : targetName(selectedTargets[0])}` }}</button>
     </template>
+    <details class="technical-details"><summary>Connection requirements</summary><p>Gateway recovery is also available through the local setup AP. STM32 updates require the station LAN.</p></details>
+    <p v-if="setupApActive" class="muted">Only the Gateway can be updated through the setup AP. Connect through the station LAN to update the BMS.</p>
     <div v-if="update && update.phase !== 'idle'" class="firmware-progress-panel" aria-live="polite">
       <div class="firmware-flow" :aria-label="`${targetName(update.target)} update flow`">
         <div v-for="(step, index) in flowSteps" :key="step.stage" class="firmware-flow-step" :class="flowState(index)">

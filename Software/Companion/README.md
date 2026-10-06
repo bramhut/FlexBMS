@@ -5,8 +5,9 @@ creates the direct USB/Web Serial development build; `npm run build:gateway`
 creates the committed ESP32 Gateway bundle under `dist/gateway` and its manifest.
 
 The Gateway serves the latter on the trusted local LAN only. It is not an HV
-safety authority. STM32 firmware updating is manual by USB/ST-Link in this
-release. The Web Serial target uses the same CRC-framed BMS v1 protocol as the
+safety authority. The Firmware page supports Gateway-assisted updates from a
+FlexBMS bundle; STM32 updates require the station LAN. USB/ST-Link release
+flashing remains available for recovery. The Web Serial target uses the same CRC-framed BMS v1 protocol as the
 Gateway UART link; it requires a Chromium-family browser with Web Serial.
 
 The Gateway target also exposes **Configuration > RS485 energy meters** for
@@ -15,6 +16,21 @@ persists without a reboot, and requires the trusted station LAN. Direct USB
 does not expose this capability. See the
 [meter specification](../../Documentation/architecture/rs485-energy-meters.md)
 for settings, reported values, HA discovery and commissioning.
+
+The views share a responsive layout in both builds. Configuration groups the
+battery, current sensor, and operating settings, shows unsaved changes, and
+offers **Discard changes**. Shunt settings appear only when current sensing is
+enabled. Wi-Fi and MQTT show connection summaries with explicit **Edit** forms;
+live Gateway status updates preserve an open MQTT draft. Technical information
+remains available in expandable details. Slave labels use numbering from 1 in
+the UI; register requests and CSV indices retain their zero-based protocol form.
+
+For a local UI preview, run `npm run dev -- --host 127.0.0.1 --port 5178` and open
+`http://127.0.0.1:5178/tests/ui/companion.html`. It renders the actual view
+components with sample telemetry and mock services. Preview controls exercise
+connection loss, unavailable capabilities, configuration drafts, faults,
+activity, and CSV snapshots. Local firmware bundles can be inspected, but
+installation is blocked. This fixture is excluded from production builds.
 
 `npm run build:desktop` produces a portable Windows executable below a new
 timestamped `electron-dist/build-*/` directory and prints its exact path. It is

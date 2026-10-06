@@ -247,12 +247,12 @@ workflow without importing its vehicle, Electron, image, font, or raw-terminal
 features. It shows BMS/HV state, requested run state, pack voltage/current/
 SoC, AMC3330 BAT+ and LOAD+ values, active and latched BMS faults, active and latched HV reasons, minimum and
 maximum cell/temperature values, all slave cell voltages/balancing, and all
-slave temperatures. It includes browser-local CSV logging. The CSV column
+slave temperatures. Hardware & tools provides browser-local CSV logging. The CSV column
 names use converted engineering values and retain the reported zero-based slave
 index; the header is created once after the first complete fresh snapshot.
 
-Named action controls and the read-only register viewer are embedded in the
-dashboard. The run request is an immediate accessible switch: changing it sends
+Named action controls are embedded in the dashboard; the read-only register
+viewer is in Hardware & tools. The run request is an immediate accessible switch: changing it sends
 one explicit `set_run_request` request and a denied/failed request restores the
 last reported STM32 state. The Gateway obtains NTP time only after station
 connection and forwards UTC to the STM32; Companion exposes no manual setter.
@@ -263,12 +263,42 @@ status is Gateway-only. The
 compact register field descriptions are informational only; the read remains
 read-only.
 
+The current Companion groups diagnostics into Battery, Safety limits, Inverter,
+and Hardware & tools. Calibration and self-discharge summaries appear beside
+each other on desktop, with explanatory details expandable and incomplete
+estimates explicitly labelled. CSV recording state and row counts stay visible;
+the register viewer selects configured slaves by their one-based display label
+and sends the existing zero-based index. The inverter summary places receive
+age beside its reading and keeps CAN identifiers in frame details. Disconnected
+dashboard and inverter measurements are hidden until fresh telemetry returns.
+
+On desktop, the dashboard gives the overview two thirds of the upper row and
+stacks status and activity alongside it. Empty activity is collapsed. On narrow
+screens the main navigation uses two rows, energy totals stack, and wide tables
+scroll within their panels. Temperature and cell tables use consistent
+one-based slave labels; the balancing legend describes the per-cell marker.
+
+Configuration groups battery, current sensor, and operating settings. Shunt and
+polarity fields appear only with a selected current-sensing slave. A saved
+baseline drives the unsaved badge, Save, and Discard controls; an unsaved draft
+disables explicit configuration rereading. Blank, corrupt, or incompatible
+stored configuration can still be initialized by saving the displayed defaults.
+Wi-Fi and MQTT connection summaries expand into explicit editing forms, and
+MQTT status refreshes do not overwrite an open draft. The setup AP exposes its
+Wi-Fi form immediately. Existing service validation, capability restrictions,
+and the startup-diagnostics warning continue to apply.
+
+The development-only `Software/Companion/tests/ui/companion.html` preview uses
+the real components with mock services and sample data. It blocks firmware API
+requests and is not an entry point in either production bundle.
+
 The Firmware page displays the ESP32 Gateway version when connected through the
 Gateway and reads the STM32 version through `get_device_info`; direct Web Serial
 therefore still shows the STM32 version. Only the Gateway build renders firmware
-update controls, and only while connected in station mode without an active
-setup/recovery AP. It accepts the single `FlexBMS_bundle.fbu` release package,
-shows checkboxes for its STM32 and Gateway members, streams selected members to
+update controls. Station LAN connections allow both controllers; an active
+setup/recovery AP permits Gateway recovery only. It accepts the single
+`FlexBMS_bundle.fbu` release package, shows checkboxes and installed-to-bundle
+version comparisons for its STM32 and Gateway members, streams selected members to
 the target-specific HTTP endpoints, and reports the Gateway update state as a
 step flow with byte progress while uploading, programming, and verifying an
 STM32 image.

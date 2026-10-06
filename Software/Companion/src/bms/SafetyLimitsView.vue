@@ -74,7 +74,7 @@ onBeforeUnmount(invalidate)
     <template v-if="policy && connected">
       <section class="panel">
         <h2>Cell voltage</h2>
-        <table class="safety-table"><thead><tr><th>Direction / measurement</th><th>Starts limiting</th><th>Stops operation</th></tr></thead><tbody>
+        <table class="safety-table"><thead><tr><th>Direction / measurement</th><th>Starts limiting</th><th>Allowance reaches zero</th></tr></thead><tbody>
           <tr><th>Charge · highest cell</th><td>Above {{ voltage(policy.charge_derate_mv) }}</td><td>At {{ voltage(policy.charge_stop_mv) }} · zero charge allowance</td></tr>
           <tr><th>Discharge · lowest cell</th><td>Below {{ voltage(policy.discharge_derate_mv) }}</td><td>At {{ voltage(policy.discharge_stop_mv) }} · zero discharge allowance</td></tr>
         </tbody></table>

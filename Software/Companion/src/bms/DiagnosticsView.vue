@@ -23,6 +23,7 @@ function navigateTabs(event: KeyboardEvent, index: number): void {
 const lines = ref<string[]>([])
 const logging = ref(false)
 const slave = ref(0)
+const slaveCount = computed(() => props.status?.slave_count ?? 0)
 const registerText = ref('03')
 const registerValue = ref<number | null>(null)
 const registerError = ref('')
@@ -91,6 +92,7 @@ const age = (timestamp: number, count: number) => {
 const transmitRows = computed(() => goodwe.value?.transmit_frames.map(frame => ({ ...frame, idText: hexId(frame.id), age: age(frame.last_success_ms, frame.success_count) })) ?? [])
 const receiveRows = computed(() => goodwe.value?.receive_frames.map(frame => ({ ...frame, idText: hexId(frame.id), age: age(frame.last_seen_ms, frame.count), payload: payloadHex(frame.data) })) ?? [])
 const inverter425 = computed(() => goodwe.value?.receive_frames.find(frame => frame.id === 0x425))
+const inverterReceiveAge = computed(() => inverter425.value ? age(inverter425.value.last_seen_ms, inverter425.value.count) : 'Never')
 const inverter425Voltage = computed(() => {
   const frame = inverter425.value
   return frame && frame.length >= 4 ? `${((frame.data[0] | (frame.data[1] << 8)) / 10).toFixed(1)} V` : 'Waiting'
@@ -158,9 +160,10 @@ function balancingChargeValue(cell: Snapshot['cells'][number], index: number): s
 }
 
 async function readRegister(): Promise<void> {
+  if (!props.connected || !props.capabilities.read_register) return
   const value = Number.parseInt(registerText.value, 16)
-  if (!Number.isInteger(value) || value < 0 || value > 0xff || !Number.isInteger(slave.value) || slave.value < 0 || slave.value > 255) {
-    registerError.value = 'Enter a zero-based slave index and a hexadecimal register address from 00 to FF.'
+  if (!/^[0-9a-f]{1,2}$/i.test(registerText.value) || !Number.isInteger(slave.value) || slave.value < 0 || slave.value >= slaveCount.value) {
+    registerError.value = 'Select a configured slave and enter a hexadecimal register address from 00 to FF.'
     return
   }
   registerError.value = ''
@@ -170,6 +173,8 @@ async function readRegister(): Promise<void> {
 }
 
 watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendSnapshot(snapshot) })
+watch(slaveCount, count => { if (slave.value >= count) slave.value = 0 })
+watch([slave, registerText], () => { registerValue.value = null; registerError.value = ''; result.value = '' })
 </script>
 
 <template>
@@ -178,8 +183,9 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
       <button v-for="(tab, index) in diagnosticTabs" :key="tab.id" :id="'diagnostic-tab-' + tab.id" role="tab" :tabindex="diagnosticTab === tab.id ? 0 : -1" @keydown="navigateTabs($event, index)" :aria-selected="diagnosticTab === tab.id" :aria-controls="'diagnostics-' + tab.id" @click="diagnosticTab = tab.id">{{ tab.label }}</button>
     </div>
     <div v-show="diagnosticTab === 'battery'" :id="'diagnostics-battery'" role="tabpanel" :aria-labelledby="'diagnostic-tab-battery'" class="diagnostics-content">
+    <div class="battery-summary-grid">
     <section class="panel">
-      <div class="panel-heading"><div><h2>SoC calibration</h2></div><p>Most recent full-charge reference. Values survive STM32 restarts when RTC backup power is retained.</p></div>
+      <div class="panel-heading"><div><h2>SoC calibration</h2></div><p>Most recent full-charge reference.</p></div>
       <div class="soc-calibration-metrics">
         <div class="primary-metric"><span>Last calibrated</span><b>{{ calibrationDate }}</b><small>Local date and time when RTC was available</small></div>
         <div class="primary-metric"><span>Estimate beforehand</span><b>{{ preCalibrationSoc === undefined ? 'Unavailable' : `${preCalibrationSoc.toFixed(2)} %` }}</b><small>Before setting SoC to 100%</small></div>
@@ -188,16 +194,19 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
         <div class="primary-metric"><span>Qualifying dwell</span><b>{{ calibrationDwell }}</b><small>Continuous time meeting full-charge conditions</small></div>
       </div>
       <p v-if="!calibration?.valid && status?.soc_last_calibration_unix_s" class="muted">Detailed calibration values will appear after the next calibration with updated STM32 and Gateway firmware.</p>
+      <details class="technical-details"><summary>About calibration</summary><p>Values survive STM32 restarts when RTC backup power is retained. The correction is 100% minus the previous estimate; qualifying dwell is continuous time meeting full-charge conditions.</p></details>
     </section>
     <section class="panel">
-      <div class="panel-heading"><div><h2>Self-discharge model</h2></div><p>Modelled SoC loss using the configured rate. No power-off loss is estimated.</p></div>
+      <div class="panel-heading"><div><h2>Self-discharge model</h2></div><p>Modelled SoC loss; no power-off loss is estimated.</p></div>
       <div class="soc-calibration-metrics">
         <div class="primary-metric"><span>Configured rate</span><b>{{ selfDischargeRate }}</b></div>
         <div class="primary-metric"><span>Equivalent current</span><b>{{ selfDischargeCurrent }}</b></div>
-        <div class="primary-metric"><span>Modeled since calibration</span><b>{{ selfDischargeSinceCalibration }}</b><small>Not integrated while the SoC estimate is invalid; interval status resets on STM32 restart.</small></div>
-        <div class="primary-metric"><span>At most recent calibration</span><b>{{ lastCalibrationSelfDischarge }}</b><small>Saved with the calibration details in RTC backup registers.</small></div>
+        <div class="primary-metric"><span>Since calibration</span><b>{{ selfDischargeSinceCalibration }}</b></div>
+        <div class="primary-metric"><span>At last calibration</span><b>{{ lastCalibrationSelfDischarge }}</b></div>
       </div>
+      <details class="technical-details"><summary>About the estimate</summary><p>Loss is not integrated while the SoC estimate is invalid. Interval status resets on STM32 restart. The estimate at the last calibration is saved in RTC backup registers.</p></details>
     </section>
+    </div>
     <section class="panel">
       <div class="panel-heading"><div><h2>Cell balancing charge</h2></div><p>Estimated charge removed per cell since STM32 restart. RAM-only counters; balancing does not adjust SoC.</p></div>
       <p v-if="!snapshot?.cells.some(cell => cell.balancing_mAh)" class="muted">Waiting for balancing-charge diagnostics. Updated STM32 and Companion firmware are required.</p>
@@ -219,17 +228,17 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
       <p v-if="!goodwe" class="muted">Waiting for GoodWe CAN diagnostics. Both the updated STM32 and Gateway firmware are required.</p>
       <template v-else>
         <div class="goodwe-power-card">
-          <div class="goodwe-power-heading"><div><span class="section-label">Power exchange</span><small>Same physical current, shown using each device's sign convention.</small></div><strong class="direction-chip">{{ powerDirection }}</strong></div>
+          <div class="goodwe-power-heading"><div><span class="section-label">Power exchange</span><small>Same current, using each device's sign convention.</small></div><strong class="direction-chip">{{ fresh ? powerDirection : 'Unavailable' }}</strong></div>
           <div class="goodwe-power-metrics">
-            <div class="primary-metric"><span>BMS reported · 0x458</span><b>{{ reported458Current.toFixed(1) }} A</b><small>Positive is charging</small></div>
-            <div class="primary-metric"><span>GoodWe reported · 0x425</span><b>{{ inverter425Current }}</b><small>Negative is charging · candidate decode</small></div>
-            <div class="primary-metric"><span>Difference</span><b>{{ currentDifference }}</b><small>After normalizing direction</small></div>
-            <div class="primary-metric"><span>Bus voltage</span><b>{{ (goodwe.reported_458_voltage_deci_v / 10).toFixed(1) }} V</b><small>GoodWe: {{ inverter425Voltage }}</small></div>
+            <div class="primary-metric"><span>BMS reported</span><b>{{ fresh ? `${reported458Current.toFixed(1)} A` : '—' }}</b><small>Positive is charging</small></div>
+            <div class="primary-metric"><span>GoodWe reported</span><b>{{ fresh ? inverter425Current : '—' }}</b><small>Negative is charging · candidate decode<br>{{ fresh ? `Last received: ${inverterReceiveAge}` : 'Measurement age unavailable' }}</small></div>
+            <div class="primary-metric"><span>Difference</span><b>{{ fresh ? currentDifference : '—' }}</b><small>After normalizing direction</small></div>
+            <div class="primary-metric"><span>Bus voltage</span><b>{{ fresh ? `${(goodwe.reported_458_voltage_deci_v / 10).toFixed(1)} V` : '—' }}</b><small>GoodWe: {{ fresh ? inverter425Voltage : '—' }}</small></div>
           </div>
         </div>
 
         <div class="goodwe-health-metrics">
-          <div class="primary-metric"><span>CAN health</span><b :class="{ 'warning-text': goodwe.warning || goodwe.error_passive || goodwe.bus_off }">{{ canControllerState }}</b><small>CAN state: {{ canProtocolState }}</small></div>
+          <div class="primary-metric"><span>CAN health</span><b :class="{ 'warning-text': goodwe.warning || goodwe.error_passive || goodwe.bus_off }">{{ fresh ? canControllerState : 'Last known: ' + canControllerState }}</b><small>CAN state: {{ canProtocolState }}</small></div>
           <div class="primary-metric"><span>Transmit cycles</span><b>{{ goodwe.transmit_cycles }}</b><small>Since the STM32 restarted</small></div>
           <div class="primary-metric"><span>TX queue failures</span><b :class="{ 'warning-text': goodwe.transmit_failures > 0 }">{{ goodwe.transmit_failures }}</b><small>Last: {{ lastFailure }}</small></div>
           <div class="primary-metric"><span>Skipped snapshots</span><b :class="{ 'warning-text': goodwe.snapshot_unavailable_cycles > 1 }">{{ goodwe.snapshot_unavailable_cycles }}</b><small>BMS snapshot unavailable</small></div>
@@ -238,6 +247,7 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
 
         <details class="goodwe-frame-details">
           <summary><span>Frame details</span><small>{{ transmitRows.length }} transmitted · {{ receiveRows.length }} receive slots</small></summary>
+          <p class="muted">BMS values use frame 0x458; the candidate GoodWe voltage/current decode uses frame 0x425.</p>
           <div class="goodwe-technical-status"><span>Activity: {{ protocolActivity }}</span><span>Last error: {{ goodwe.protocol_last_error_code }}</span><span>HAL: 0x{{ goodwe.hal_error_code.toString(16).toUpperCase() }}</span><span>TX FIFO free: {{ goodwe.transmit_fifo_free_level }}</span></div>
           <h3>STM32 → GoodWe</h3>
           <div class="table-scroll"><table><thead><tr><th>Frame</th><th>Accepted into TX FIFO</th><th>Last accepted</th></tr></thead><tbody><tr v-for="frame in transmitRows" :key="frame.id"><th>{{ frame.idText }}</th><td>{{ frame.success_count }}</td><td>{{ frame.age }}</td></tr></tbody></table></div>
@@ -249,7 +259,7 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
       </template>
     </section>
     </div>
-    <div v-show="diagnosticTab === 'hardware'" :id="'diagnostics-hardware'" role="tabpanel" :aria-labelledby="'diagnostic-tab-hardware'" class="diagnostics-content">
+    <div v-show="diagnosticTab === 'hardware'" :id="'diagnostics-hardware'" role="tabpanel" :aria-labelledby="'diagnostic-tab-hardware'" class="diagnostics-content hardware-tools-grid">
     <section class="panel">
       <div class="panel-heading"><div><h2>HV measurements</h2></div><p>Raw high-voltage readings from the AMC3330 isolation amplifiers.</p></div>
       <div class="hv-metrics diagnostic-hv-metrics">
@@ -265,11 +275,12 @@ watch(() => props.snapshot, snapshot => { if (logging.value && snapshot) appendS
     <details class="panel"><summary>Reset diagnostics</summary><p>{{ describeWatchdogBreadcrumb(status?.watchdog_breadcrumb, status?.watchdog_diagnostic) ?? 'No watchdog detail is available.' }}</p><small>Historical reset information, not a live fault indication.</small></details>
     <section class="panel logging-panel">
       <div class="panel-heading"><div><h2>CSV logging</h2></div><p>No data is sent to the Gateway or stored on the BMS.</p></div>
+      <p class="recording-summary" role="status"><span class="state-badge" :class="{ ready: logging && fresh, pending: logging && !fresh }">{{ logging ? (fresh ? 'Recording' : 'Waiting for telemetry') : 'Stopped' }}</span><span>{{ Math.max(0, lines.length - 1).toLocaleString() }} rows recorded</span></p>
       <div class="button-row"><button class="primary" :disabled="!fresh || logging" @click="startLogging">Start logging</button><button :disabled="!logging" @click="stopLogging">Stop logging</button><button :disabled="lines.length < 2" @click="downloadCsv(lines)">Download {{ Math.max(0, lines.length - 1) }} rows</button></div>
     </section>
     <section class="panel register-panel">
-      <div class="panel-heading"><div><h2>Read BCC register</h2></div><p>Read-only. Slave indexes are zero-based.</p></div>
-      <div class="register-form"><label>Slave<input v-model.number="slave" type="number" min="0" max="255"></label><label>Register (hex)<input v-model="registerText" maxlength="2" inputmode="text"></label><button :disabled="!connected || !capabilities.read_register" @click="readRegister">Read register</button></div>
+      <div class="panel-heading"><div><h2>Read BCC register</h2></div><p>Read-only hardware inspection.</p></div>
+      <div class="register-form"><label>Slave<select v-model.number="slave" :disabled="!connected || !capabilities.read_register || !slaveCount"><option v-if="!slaveCount" :value="0">Waiting for slaves</option><option v-for="index in slaveCount" :key="index" :value="index - 1">Slave {{ index }}</option></select></label><label>Register (hex)<input v-model="registerText" maxlength="2" inputmode="text"></label><button :disabled="!connected || !capabilities.read_register || !slaveCount" @click="readRegister">Read register</button></div>
       <p v-if="registerError" class="warning-text">{{ registerError }}</p>
       <div v-if="registerValue !== null" class="register-result"><p><b>0x{{ registerKey }}</b> = <b>0x{{ registerValue.toString(16).padStart(4, '0').toUpperCase() }}</b></p><p class="mono">{{ bits }}</p><ul v-if="fields.length"><li v-for="field in fields" :key="field.name">{{ field.name }} ({{ field.bits }} bit{{ field.bits === 1 ? '' : 's' }})</li></ul><p v-else class="muted">No compact field description is available for this address.</p></div>
       <small>{{ availability('read_register') }}</small>

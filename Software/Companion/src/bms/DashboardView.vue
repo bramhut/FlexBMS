@@ -40,7 +40,7 @@ const formattedGatewayUptime = computed(() => {
   if (gatewayDisplayedUptimeMs.value === undefined) return 'Waiting for Gateway status.'
   return formatUptime(gatewayDisplayedUptimeMs.value)
 })
-const fresh = computed(() => Boolean(props.snapshot && props.status?.measurements_fresh))
+const fresh = computed(() => Boolean(props.connected && props.snapshot && props.status?.measurements_fresh))
 const measurement = (value: string) => fresh.value ? value : '—'
 type AttentionItem = { label: string; domain: 'BMS' | 'HV' | 'System'; state: 'live' | 'pending' | 'warning'; detail?: string }
 
@@ -254,31 +254,31 @@ onBeforeUnmount(() => {
           <div class="cell-summary"><span>Cells</span><b>{{ snapshot ? measurement(`${cellVoltageV(snapshot.pack.min_cell_uV).toFixed(3)}–${cellVoltageV(snapshot.pack.max_cell_uV).toFixed(3)} V`) : '—' }}</b><small>{{ snapshot ? measurement(`Δ ${cellDeltaMv.toFixed(1)} mV`) : '—' }} · {{ snapshot ? measurement(`NTC ${ntcCelsius(snapshot.pack.min_ntc_raw).toFixed(1)}–${ntcCelsius(snapshot.pack.max_ntc_raw).toFixed(1)} °C`) : '—' }} · {{ snapshot ? measurement(`IC ${icCelsius(snapshot.pack.min_ic_raw).toFixed(1)}–${icCelsius(snapshot.pack.max_ic_raw).toFixed(1)} °C`) : '—' }}</small></div>
         </div>
       </section>
-      <section class="panel attention">
+    <div class="dashboard-side">
+    <section class="panel attention">
         <div class="panel-heading"><div><h2>Status</h2></div><p v-if="status && attentionItems.length">{{ liveIssueCount ? `${liveIssueCount} live issue${liveIssueCount === 1 ? '' : 's'}` : '' }}{{ liveIssueCount && (pendingIssueCount || warningCount) ? ' · ' : '' }}{{ pendingIssueCount ? `${pendingIssueCount} acknowledgement pending` : '' }}{{ pendingIssueCount && warningCount ? ' · ' : '' }}{{ warningCount ? `${warningCount} warning${warningCount === 1 ? '' : 's'}` : '' }}</p></div>
         <p v-if="!status" class="attention-waiting">Waiting for BMS status.</p>
         <div v-else-if="attentionItems.length === 0" class="attention-ok"><span aria-hidden="true">✓</span><div><strong>System OK</strong><small>No active errors, acknowledgement pending, or warnings.</small></div></div>
         <div v-else class="attention-list"><article v-for="item in attentionItems" :key="`${item.domain}-${item.label}`" class="attention-item" :data-state="item.state"><span class="attention-icon" aria-hidden="true">{{ item.state === 'warning' ? '▲' : '!' }}</span><div><strong>{{ item.label }}</strong><small>{{ item.detail ?? `${item.state === 'live' ? 'Live error' : item.state === 'pending' ? 'Acknowledgement pending' : 'Warning'} · ${item.domain}` }}</small></div></article></div>
       </section>
-      <section class="panel activity">
+      <details v-if="recentEvents.length === 0" class="panel activity empty-activity"><summary>Activity <small>No changes this session</small></summary><p class="muted">Changes observed by this Companion session will appear here.</p></details>
+      <section v-else class="panel activity">
         <div class="panel-heading"><div><h2>Activity</h2></div><p>This Companion session</p></div>
-        <p v-if="recentEvents.length === 0" class="muted">No changes this session.</p>
-        <template v-else>
-          <RecentChangesList :events="recentEvents" :limit="3" />
-          <div class="activity-actions"><button @click="emit('showAll')">Show all</button></div>
-        </template>
+        <RecentChangesList :events="recentEvents" :limit="3" />
+        <div class="activity-actions"><button @click="emit('showAll')">Show all</button></div>
       </section>
+      </div>
     </section>
 
     <section class="panel">
       <div class="panel-heading cell-panel-heading">
         <div><h2>Cell voltage offsets</h2><p>{{ props.deltaViewEnabled ? 'Positive offset from lowest cell · mV' : 'Absolute cell voltage · V' }}</p></div>
-        <div class="cell-panel-actions"><span class="balancing-legend"><svg class="balancing-chevron header-balancing-chevron" viewBox="0 0 20 20" role="img" aria-label="Balancing active"><path d="M3 4.5 10 11.5 17 4.5" /><path d="M3 10.5 10 17.5 17 10.5" /></svg><span>Balancing active</span></span><button type="button" class="table-view-toggle" :aria-pressed="props.deltaViewEnabled" :title="props.deltaViewEnabled ? 'Switch to absolute cell voltages' : 'Switch to voltage offsets'" @click="toggleDeltaView">{{ props.deltaViewEnabled ? 'Δ view' : 'V view' }}</button><button type="button" class="heatmap-toggle" :aria-pressed="props.heatmapEnabled" @click="toggleHeatmap">Heatmap</button><p v-if="!fresh">Values remain hidden until a complete fresh snapshot arrives.</p></div>
+        <div class="cell-panel-actions"><span class="balancing-legend"><svg class="balancing-chevron header-balancing-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5 10 11.5 17 4.5" /><path d="M3 10.5 10 17.5 17 10.5" /></svg><span>Cell balancing marker</span></span><button type="button" class="table-view-toggle" :aria-pressed="props.deltaViewEnabled" :title="props.deltaViewEnabled ? 'Switch to absolute cell voltages' : 'Switch to voltage offsets'" @click="toggleDeltaView">{{ props.deltaViewEnabled ? 'Δ view' : 'V view' }}</button><button type="button" class="heatmap-toggle" :aria-pressed="props.heatmapEnabled" @click="toggleHeatmap">Heatmap</button><p v-if="!fresh">Values remain hidden until a complete fresh snapshot arrives.</p></div>
       </div>
       <div v-if="fresh && snapshot" class="table-scroll"><table><thead><tr class="cell-table-summary-row"><th colspan="13"><span class="cell-table-summary-metric"><span class="cell-table-summary-label">Lowest cell</span><span class="cell-table-summary-value">{{ cellReference ? `${cellReference.label} · ${cellReference.voltage}` : '—' }}</span></span><span class="cell-table-summary-metric"><span class="cell-table-summary-label">Spread</span><span class="cell-table-summary-secondary">{{ cellReference?.spread ?? '—' }}</span></span></th></tr><tr><th>Slave</th><th v-for="index in 12" :key="index">C{{ index }}</th></tr></thead><tbody><tr v-for="cell in snapshot.cells" :key="cell.slave_index"><th>Slave {{ cell.slave_index + 1 }}</th><td v-for="(value, index) in cell.cell_voltage_uV" :key="index" :style="cellHeatmapStyle(value)" :title="`${cellLabel(cell.slave_index, index)} · ${cellVoltageV(value).toFixed(3)} V`"><span class="cell-difference-content" :class="{ 'delta-view': props.deltaViewEnabled }"><span class="balancing-marker-slot"><svg v-if="(cell.balance_mask & (1 << index)) !== 0" class="balancing-chevron" viewBox="0 0 20 20" role="img" aria-label="Balancing active"><path d="M3 4.5 10 11.5 17 4.5" /><path d="M3 10.5 10 17.5 17 10.5" /></svg></span><span class="cell-difference-value">{{ cellDisplayValue(value) }}</span></span></td></tr></tbody></table></div>
     </section>
 
-    <section class="panel"><div class="panel-heading"><div><h2>Temperatures</h2></div></div><div v-if="fresh && snapshot" class="table-scroll"><table class="temperature-table"><thead><tr><th>Slave</th><th>NTC 0</th><th>NTC 1</th><th>NTC 2</th><th>NTC 3</th><th>IC</th></tr></thead><tbody><tr v-for="temperature in snapshot.temperatures" :key="temperature.slave_index"><th>Slave {{ temperature.slave_index }}</th><td v-for="(value, index) in temperature.ntc_raw" :key="index">{{ ntcCelsius(value).toFixed(1) }} °C</td><td>{{ icCelsius(temperature.ic_temp_raw).toFixed(1) }} °C</td></tr></tbody></table></div></section>
+    <section class="panel"><div class="panel-heading"><div><h2>Temperatures</h2></div></div><div v-if="fresh && snapshot" class="table-scroll"><table class="temperature-table"><thead><tr><th>Slave</th><th>NTC 0</th><th>NTC 1</th><th>NTC 2</th><th>NTC 3</th><th>IC</th></tr></thead><tbody><tr v-for="temperature in snapshot.temperatures" :key="temperature.slave_index"><th>Slave {{ temperature.slave_index + 1 }}</th><td v-for="(value, index) in temperature.ntc_raw" :key="index">{{ ntcCelsius(value).toFixed(1) }} °C</td><td>{{ icCelsius(temperature.ic_temp_raw).toFixed(1) }} °C</td></tr></tbody></table></div></section>
 
     <ServiceView :transport="transport" :capabilities="capabilities" :connected="connected" :acknowledgement-pending="acknowledgementPending" />
   </main>

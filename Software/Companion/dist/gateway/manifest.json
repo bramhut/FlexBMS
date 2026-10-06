@@ -1,17 +1,17 @@
 {
   "format": 1,
-  "companion_version": "0.2.0",
-  "build_id": "30b5af80e0f9e72c",
+  "companion_version": "0.2.1",
+  "build_id": "8fe361f96efa16a1",
   "files": [
     {
-      "path": "assets/index-CRQ-FakX.css",
-      "bytes": 25578,
-      "sha256": "ffdc9dde1e570ddc22a4114280ca01206219aa776e6dddf88815eecdc5190919"
+      "path": "assets/index-B23Sk_A0.js",
+      "bytes": 175116,
+      "sha256": "5cd01f50e612a085029cae25e9c785065a2056e330a94ffd16a5ea5c4e9b7c68"
     },
     {
-      "path": "assets/index-FgKVl2Li.js",
-      "bytes": 168929,
-      "sha256": "ff2eacd30465fffaf9a2701654b542f6d2d6515b82117c2daf30a7b1029ecb51"
+      "path": "assets/index-D4ysfq02.css",
+      "bytes": 30304,
+      "sha256": "aaa7fd4b341a8f25b0572e947299893430ac7f2241615e3a64d23f6d7dcbac39"
     },
     {
       "path": "favicon-dark.svg",
@@ -31,8 +31,8 @@
     {
       "path": "index.html",
       "bytes": 596,
-      "sha256": "6ef2c7733c251531055662e3bfe1fc4d802c81986d7e193368e1c6fc7d97da06"
+      "sha256": "146dc24845d9d88a8b7ab96e9582e9ad540f632a18df782fb1f985d0579a2a5b"
     }
   ],
-  "total_bytes": 210418
+  "total_bytes": 221331
 }
