@@ -4,8 +4,8 @@
 
 // Written by scripts/build-release.ps1 for every STM32 release image.
 inline constexpr uint8_t FIRMWARE_VERSION_MAJOR = 0U;
-inline constexpr uint8_t FIRMWARE_VERSION_MINOR = 1U;
-inline constexpr uint8_t FIRMWARE_VERSION_PATCH = 74U;
+inline constexpr uint8_t FIRMWARE_VERSION_MINOR = 2U;
+inline constexpr uint8_t FIRMWARE_VERSION_PATCH = 0U;
 inline constexpr uint8_t FIRMWARE_VERSION_BUILD = 0U;
 
 inline constexpr uint32_t FIRMWARE_VERSION_PACKED =

@@ -17,6 +17,10 @@ The temperature-derating and independent inverter-limit enforcement design,
 including approved decisions, implementation and validation tasks, is in
 [`architecture/temperature-derating-plan.md`](architecture/temperature-derating-plan.md).
 
+The optional Gateway RS485 meter configuration, register map, MQTT freshness,
+and commissioning procedure are in
+[`architecture/rs485-energy-meters.md`](architecture/rs485-energy-meters.md).
+
 ## Prerequisite
 
 The repository currently targets Typst 0.15.1. Install it on Windows with:

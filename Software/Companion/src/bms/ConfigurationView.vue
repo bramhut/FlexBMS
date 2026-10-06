@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import EnergyMetersConfiguration from './EnergyMetersConfiguration.vue'
 import { computed, reactive, ref, watch } from 'vue'
 import type { BmsTransport, Capabilities, GatewayStatus, RuntimeConfiguration, ServiceResponse, WifiNetwork } from '@/transports/Transport'
 import { serviceResultLabel } from '@/shared/service'
@@ -235,6 +236,8 @@ watch([() => props.connected, () => props.capabilities.runtime_configuration], (
       <p v-if="result" class="action-result">{{ result }}</p>
       <small v-if="!capabilities.runtime_configuration">Runtime configuration is unavailable in the current Gateway state.</small>
     </section>
+
+    <EnergyMetersConfiguration v-if="gateway?.energy_meters" :transport="transport" :connected="connected" :allowed="capabilities.energy_meters_configuration" :status="gateway.energy_meters" />
 
     <section class="panel networking-panel">
       <div class="panel-heading"><div><h2>Networking</h2></div><p>Configure the Gateway network connection and Home Assistant MQTT integration.</p></div>

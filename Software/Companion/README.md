@@ -9,6 +9,13 @@ safety authority. STM32 firmware updating is manual by USB/ST-Link in this
 release. The Web Serial target uses the same CRC-framed BMS v1 protocol as the
 Gateway UART link; it requires a Chromium-family browser with Web Serial.
 
+The Gateway target also exposes **Configuration > RS485 energy meters** for
+the optional zero/one/two SDM72D-M-2 extension. Configuration is Gateway-local,
+persists without a reboot, and requires the trusted station LAN. Direct USB
+does not expose this capability. See the
+[meter specification](../../Documentation/architecture/rs485-energy-meters.md)
+for settings, reported values, HA discovery and commissioning.
+
 `npm run build:desktop` produces a portable Windows executable below a new
 timestamped `electron-dist/build-*/` directory and prints its exact path. It is
 a thin Electron/Chromium wrapper around the direct USB Web Serial target: it

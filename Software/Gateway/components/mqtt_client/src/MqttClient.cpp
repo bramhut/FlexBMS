@@ -1,4 +1,6 @@
 #include "flexbms/MqttClient.h"
+#include "flexbms/EnergyMeters.h"
+#include "flexbms/MeterPublisher.h"
 
 #include "cJSON.h"
 #include "esp_event.h"
@@ -95,6 +97,19 @@ namespace FlexBms::Mqtt
         std::array<char, 128U> commandTopic{};
         std::array<char, 128U> discoveryTopic{};
         std::array<char, 80U> brokerUri{};
+        EnergyMeters::Publisher meterPublisher;
+
+        // Queue without waiting on network I/O. Backpressure leaves samples
+        // unpublished; Home Assistant expiry marks them unavailable.
+        bool publishMeter(const char *topic, const char *payload, bool retained)
+        {
+            return client != nullptr && state == State::Connected && esp_mqtt_client_get_outbox_size(client) < 8192 &&
+                esp_mqtt_client_enqueue(client, topic, payload, 0, 1, retained, true) >= 0;
+        }
+        void tickMeters(int64_t now, bool force)
+        {
+            if (state == State::Connected) meterPublisher.tick(EnergyMeters::getState(), now, force, deviceId.data(), baseTopic.data(), publishMeter);
+        }
 
         bool validText(const char *value, size_t maximum, bool allowEmpty)
         {
@@ -430,7 +445,9 @@ namespace FlexBms::Mqtt
         }
         if (stationConnected) startClient();
         const int64_t now = esp_timer_get_time();
+        const bool refreshMeters = discoveryDirty;
         if (state == State::Connected && discoveryDirty) { publishDiscovery(); discoveryDirty = false; }
+        tickMeters(now, refreshMeters);
         if (state == State::Connected && stateDirty && now - lastStatePublishUs >= kStatePeriodUs)
         {
             publishState();

@@ -334,10 +334,11 @@ The Gateway sends these server-to-browser messages:
 | `bms_status` | `status` | Current UART v1 `STATUS`, sent even while measurements are stale. |
 | `snapshot` | `status`, `pack`, optional `hv_voltages`, `cells`, `temperatures` | Complete current source-unit BMS view. `status` includes `measurements_fresh`. |
 | `event` | `event_id`, `value`, `gateway_uptime_ms` | Direct representation of a UART v1 event; informational only. |
-| `gateway_status` | `gateway_uptime_ms`, `gateway_partition`, `gateway_ota_pending_verification`, `wifi_state`, optional `wifi_ssid`, `last_ota_rollback`, `setup_ap`, `uart_state`, `mqtt_state`, `mqtt`, `time_sync`, `diagnostic_log` | Local Gateway state, uptime, running OTA partition and verification state, last rollback diagnostics, MQTT configuration/status, setup AP details, NTP state, and diagnostic-log availability. |
+| `gateway_status` | `gateway_uptime_ms`, `gateway_partition`, `gateway_ota_pending_verification`, `wifi_state`, optional `wifi_ssid`, `last_ota_rollback`, `setup_ap`, `uart_state`, `mqtt_state`, `mqtt`, `energy_meters`, `time_sync`, `diagnostic_log` | Local Gateway state, uptime, running OTA partition and verification state, last rollback diagnostics, MQTT configuration/status, setup AP details, NTP state, and diagnostic-log availability. |
 | `service_result` | `request_id`, `service`, `result`, optional `data` | Result for exactly one browser service request. |
 | `wifi_configuration_result` | `request_id`, `result` | Accepted or failed local credential persistence/restart request. |
 | `mqtt_configuration_result` | `request_id`, `result` | Accepted or failed local MQTT credential persistence/reconnect request. |
+| `energy_meters_configuration_result` | `request_id`, `result` | Gateway-local meter settings persistence/apply result: `accepted`, `invalid`, `denied`, or `error`. |
 | `wifi_scan_result` | `request_id`, `result`, optional `networks` | Completion of an on-demand nearby-network scan. |
 
 `gateway_status.time_sync` is `{ "state": "waiting_for_network | waiting_for_ntp |
@@ -542,14 +543,67 @@ Gateway failure. `service_result.data` is present only for a successful
 `read_register`, `get_rtc`, or `get_device_info` and has the fields in the
 common service table.
 
+### Optional Gateway energy meter configuration
+
+The optional SDM72D-M-2 extension is Gateway-local and read-only on the Modbus
+bus. It requires no UART v1 message or STM32 service. A Gateway supporting it
+includes `energy_meters` in `hello.gateway_status` and `gateway_status`, with
+`configuration`, `stored_configuration_valid`, `bus_state`, `bus_error`, and
+two slot diagnostics in `meters`. With any meter enabled, Gateway status is
+refreshed approximately once per second, independently of BMS telemetry.
+
+```json
+{
+  "v": 1,
+  "type": "energy_meters_configure",
+  "request_id": "meters-1",
+  "configuration": {
+    "baud_rate": 9600,
+    "parity": "none",
+    "stop_bits": 1,
+    "meters": [
+      {"enabled": true, "name": "Schuur feeder", "address": 1, "reverse_power_direction": false},
+      {"enabled": true, "name": "Heat pump", "address": 2, "reverse_power_direction": false}
+    ]
+  }
+}
+```
+
+The configuration always carries exactly two fixed slots; zero/one/two are
+enabled through the flags. The complete request is validated atomically,
+including unknown/duplicate fields, integers, serial options, name bounds,
+and unique enabled addresses. The response is
+`energy_meters_configuration_result`, with the same `request_id` and result
+`accepted`, `invalid`, `denied`, or `error`. A browser timeout/disconnect is
+reported locally as `transport_error`; ambiguous writes are never replayed.
+Accepted means the versioned NVS settings were committed; bus setup and reads
+then proceed asynchronously. A `gateway_status` follows the result. Saving is
+denied while the setup/recovery AP is active or firmware upload/install runs.
+Read-only status remains available when STM32 UART is lost.
+
+Each slot status includes `available`, `energy_fresh`, `failed_reads`,
+`last_error`, and `last_success_age_ms` (null before a successful sample).
+Fresh electrical data appears in `electrical` using MQTT state field names;
+fresh counters appear in `energy`. Stale/invalid values are omitted. Optional
+`serial_number`, `meter_code`, and `firmware_version` are read-only. The stored
+`configuration` uses exactly the same shape as the request. Companion shows
+the panel only when Gateway status supplies this extension; it preserves
+unsaved edits while live status changes and gates saves on
+`energy_meters_configuration`. The old Gateway/direct-USB targets retain their
+existing behavior. See [RS485 energy meters](rs485-energy-meters.md) for the
+full settings, register, MQTT, and commissioning contract.
+
 The `capabilities` object in `hello` has Boolean keys
 `monitor`, `csv_logging`, `set_run_request`, `set_balancing_enabled`, `acknowledge_faults`, `get_rtc`, `get_device_info`,
 `read_register`, `diagnostic_log_download`, `raw_terminal`, and
-`firmware_update`, `wifi_configuration`, and `mqtt_configuration`. In normal
-connected station mode the BMS-service keys, `wifi_configuration`,
-`mqtt_configuration`, and `firmware_update` are true. In provisioning or
+`firmware_update`, `wifi_configuration`, `mqtt_configuration`, and
+`energy_meters_configuration`. In normal connected station mode the
+BMS-service keys, `wifi_configuration`, `mqtt_configuration`,
+`energy_meters_configuration` (when the extension is available), and
+`firmware_update` are true. In provisioning or
 recovery AP mode, `wifi_configuration` stays true but every BMS-service key,
-`mqtt_configuration`, and `firmware_update` are false. `raw_terminal` remains
+`mqtt_configuration`, `energy_meters_configuration`, and `firmware_update` are
+false. Direct USB has `energy_meters_configuration: false`. `raw_terminal` remains
 false; `diagnostic_log_download` is false until the bounded Gateway log exists.
 
 The Gateway build reconnects automatically after abnormal WebSocket closure,

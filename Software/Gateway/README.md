@@ -36,6 +36,14 @@ Use that document for codec changes and protocol tests.
 The link is UART1, 1,000,000 bit/s, 8-N-1, no flow control. USB on GPIO18/GPIO19
 remains independent and provides the development console and native JTAG.
 
+The optional SDM72D-M-2 meter extension uses UART0 routed to GPIO7 TX, GPIO6
+RX, and GPIO0 RTS for the existing SP3485 RS485 transceiver. GPIO20/21 remain
+unconnected. Both meter slots are disabled by default; enable zero, one, or two
+from Companion **Configuration > RS485 energy meters**. See the
+[meter specification and commissioning steps](../../Documentation/architecture/rs485-energy-meters.md)
+for shared serial settings, per-meter names/addresses/direction, registers, and
+Home Assistant discovery. The extension only reads/reports measurements.
+
 ## Build in VS Code
 
 Install the PlatformIO IDE extension, open this `Software/Gateway` folder, and
@@ -55,6 +63,10 @@ pio run
 pio run --target upload --upload-port COMx
 pio device monitor --baud 115200
 ```
+
+On Windows set `$env:PYTHONIOENCODING='utf-8'` before the build so PlatformIO
+can read Vite's Unicode output. The pre-build script also aligns persisted
+SDK settings for RTU-only Modbus and a 500 ms meter response timeout.
 
 The Gateway main FreeRTOS task is configured for a 16 KiB stack. MQTT Device
 Discovery and compact-state JSON serialisation run from that task, so the

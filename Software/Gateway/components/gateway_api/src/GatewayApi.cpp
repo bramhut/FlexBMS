@@ -1,4 +1,6 @@
 #include "flexbms/GatewayApi.h"
+#include "flexbms/EnergyMeters.h"
+#include "flexbms/MeterJson.h"
 #include "flexbms/DeliveryQueue.h"
 #include "flexbms/GatewayAssets.h"
 #include "flexbms/FirmwareUpdate.h"
@@ -542,6 +544,7 @@ namespace FlexBms::GatewayApi
                 cJSON_AddStringToObject(mqttJson, "username", mqtt.username);
             }
             const TimeSync::Status timeSync = TimeSync::getStatus();
+            cJSON_AddItemToObject(root, "energy_meters", EnergyMeters::statusJson(EnergyMeters::getState(), esp_timer_get_time()));
             cJSON *timeSyncJson = cJSON_AddObjectToObject(root, "time_sync");
             cJSON_AddStringToObject(timeSyncJson, "state", TimeSync::stateName(timeSync.state));
             if (timeSync.hasLastSync) cJSON_AddNumberToObject(timeSyncJson, "last_sync_unix_s", timeSync.lastSyncUnixS);
@@ -579,6 +582,7 @@ namespace FlexBms::GatewayApi
             cJSON_AddBoolToObject(caps, "runtime_configuration", bmsServices);
             cJSON_AddBoolToObject(caps, "wifi_configuration", Wifi::getState() != Wifi::State::Unavailable);
             cJSON_AddBoolToObject(caps, "mqtt_configuration", Wifi::allowsBmsServices());
+            cJSON_AddBoolToObject(caps, "energy_meters_configuration", EnergyMeters::getState().available && Wifi::allowsBmsServices() && !Wifi::isAccessPointActive());
             cJSON_AddBoolToObject(caps, "diagnostic_log_download", false);
             cJSON_AddBoolToObject(caps, "raw_terminal", false);
             cJSON_AddBoolToObject(caps, "firmware_update", FirmwareUpdate::isAvailable());
@@ -1228,6 +1232,7 @@ namespace FlexBms::GatewayApi
             const bool isConfigure = cJSON_IsString(type) && std::strcmp(type->valuestring, "wifi_configure") == 0;
             const bool isScan = cJSON_IsString(type) && std::strcmp(type->valuestring, "wifi_scan") == 0;
             const bool isMqttConfigure = cJSON_IsString(type) && std::strcmp(type->valuestring, "mqtt_configure") == 0;
+            const bool isMetersConfigure = cJSON_IsString(type) && std::strcmp(type->valuestring, "energy_meters_configure") == 0;
             if (isService)
             {
                 Service requestedService{};
@@ -1330,6 +1335,27 @@ namespace FlexBms::GatewayApi
                     const char *requestId = cJSON_GetObjectItemCaseSensitive(root, "request_id")->valuestring;
                     const bool allowed = Wifi::allowsBmsServices() && !Wifi::isAccessPointActive();
                     sendMqttConfigurationResult(socket, requestId, allowed && Mqtt::configure(host, port, username, password) ? "accepted" : "error");
+                    publishGatewayStatus();
+                }
+            }
+            else if (isMetersConfigure)
+            {
+                cJSON *requestId = cJSON_GetObjectItemCaseSensitive(root, "request_id");
+                if (validRequestId(requestId))
+                {
+                    EnergyMeters::Configuration configuration{};
+                    const cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "v");
+                    const bool valid = objectHasExactly(root, {"v", "type", "request_id", "configuration"}) &&
+                        cJSON_IsNumber(version) && version->valuedouble == 1 &&
+                        EnergyMeters::parseConfiguration(cJSON_GetObjectItemCaseSensitive(root, "configuration"), configuration);
+                    const auto phase = FirmwareUpdate::getStatus().phase;
+                    const bool allowed = Wifi::allowsBmsServices() && !Wifi::isAccessPointActive() &&
+                        phase != FirmwareUpdate::Phase::Uploading && phase != FirmwareUpdate::Phase::Installing;
+                    cJSON *response = base("energy_meters_configuration_result");
+                    cJSON_AddStringToObject(response, "request_id", requestId->valuestring);
+                    cJSON_AddStringToObject(response, "result", !valid ? "invalid" : !allowed ? "denied" :
+                        EnergyMeters::configure(configuration) ? "accepted" : "error");
+                    (void)sendJsonTo(socket, response);
                     publishGatewayStatus();
                 }
             }

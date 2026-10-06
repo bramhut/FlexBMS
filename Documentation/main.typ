@@ -290,7 +290,7 @@ commissioning documentation.
     [USB], [Service computer to STM32], [Firmware, logs, and Companion access.],
     [CAN], [STM32 and inverter-side domain], [Battery status and inverter communication.],
     [Wi-Fi], [ESP32 to local network], [Local maintenance page, Wi-Fi provisioning, and future telemetry integration.],
-    [RS485], [ESP32 to inverter-side equipment], [Fallback or supplementary Modbus connection.],
+    [RS485], [ESP32 to external energy meters], [Optional read-only Modbus RTU polling of up to two SDM72D-M-2 meters.],
   )
 ]
 
@@ -1136,6 +1136,18 @@ page. The binary freshness, run-state, fault, and UART-health entities publish c
 states. Fault acknowledgement, balancing, firmware upload, registers, raw diagnostics, and inverter/EMS
 power control remain outside Home Assistant MQTT v1.
 
+An optional Gateway-local RS485 extension reads zero, one, or two SDM72D-M-2 meters. Both slots are
+disabled by default. The Companion configures each meter's name, slave address, and reverse power
+direction, plus shared baud rate (default 9600), parity, and stop bits. UART0 uses GPIO7 TX, GPIO6 RX,
+and GPIO0 driver enable independently of the STM32 UART1 link. The Gateway reads phase currents,
+phase and total signed active power every second, and import/export kWh every 30 seconds. Each enabled
+slot gets a separate HA device with stable Gateway-and-slot identity. Failed or stale reads become
+unavailable rather than zero; non-retained electrical and energy samples expire independently. Reversing
+direction negates active power and exchanges import/export energy while preserving current magnitudes.
+The extension performs no inverter regulation; Home Assistant owns that control. Settings persist in
+Gateway NVS and are editable only on the trusted station LAN. Register offsets, wiring, freshness, and
+commissioning checks are documented in `architecture/rs485-energy-meters.md`.
+
 == Companion application
 
 #status("CURRENT")
@@ -1222,7 +1234,7 @@ must never be interpreted as a current permission to charge, discharge, or close
   [`Hardware/ModuleBoard`], [Battery module-board schematic, PCB, and production data.],
   [`Software/Master`], [STM32G491 firmware and platform configuration.],
   [`Software/Companion`], [Current FlexBMS BMS maintenance UI with direct USB, Gateway, and portable Windows package outputs.],
-  [`Software/Gateway`], [ESP32 UART v1, Wi-Fi provisioning/recovery, compiled Companion serving, Home Assistant MQTT discovery, and OTA; CAN observation remains planned.],
+  [`Software/Gateway`], [ESP32 UART v1, Wi-Fi provisioning/recovery, compiled Companion serving, Home Assistant MQTT discovery, optional RS485 energy meters, and OTA; CAN observation remains planned.],
   [`Documentation/protocol/uart-v1.md`], [Canonical framed BMS protocol for Gateway UART and direct USB CDC, including test vectors.],
   [`Simulations`], [Electrical simulation files used during hardware development.],
   [`Documentation`], [This system overview and its Typst build setup.],

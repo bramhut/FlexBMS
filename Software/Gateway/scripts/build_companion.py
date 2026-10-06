@@ -8,8 +8,8 @@ import subprocess
 Import("env")
 
 
-def ensure_time_sync_config():
-    """Keep persisted PlatformIO sdkconfig aligned with the NTP requirements."""
+def ensure_gateway_config():
+    """Align persisted PlatformIO sdkconfig with required Gateway settings."""
     gateway_dir = Path(env["PROJECT_DIR"])
     sdkconfig = gateway_dir / f"sdkconfig.{env['PIOENV']}"
     if not sdkconfig.exists():
@@ -20,18 +20,22 @@ def ensure_time_sync_config():
         "CONFIG_ESP_MAIN_TASK_STACK_SIZE": "16384",
         "CONFIG_LWIP_SNTP_MAX_SERVERS": "4",
         "CONFIG_LWIP_SNTP_UPDATE_DELAY": "3600000",
+        "CONFIG_FMB_COMM_MODE_RTU_EN": "y",
+        "CONFIG_FMB_COMM_MODE_TCP_EN": "n",
+        "CONFIG_FMB_COMM_MODE_ASCII_EN": "n",
+        "CONFIG_FMB_MASTER_TIMEOUT_MS_RESPOND": "500",
     }
     lines = sdkconfig.read_text(encoding="utf-8").splitlines()
     seen = set()
     updated = []
     for line in lines:
-        key = line.split("=", 1)[0]
+        key = line[2:-11] if line.startswith("# CONFIG_") and line.endswith(" is not set") else line.split("=", 1)[0]
         if key in required:
-            updated.append(f"{key}={required[key]}")
+            updated.append(f"# {key} is not set" if required[key] == "n" else f"{key}={required[key]}")
             seen.add(key)
         else:
             updated.append(line)
-    updated.extend(f"{key}={value}" for key, value in required.items() if key not in seen)
+    updated.extend(f"# {key} is not set" if value == "n" else f"{key}={value}" for key, value in required.items() if key not in seen)
     if updated != lines:
         sdkconfig.write_text("\n".join(updated) + "\n", encoding="utf-8")
 
@@ -66,5 +70,5 @@ def build_companion():
 # firmware image, including when the previous firmware build was up-to-date.
 # This also applies to `pio run -t upload`, which first performs the normal
 # build phase.
-ensure_time_sync_config()
+ensure_gateway_config()
 build_companion()

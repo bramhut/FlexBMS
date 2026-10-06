@@ -1,4 +1,4 @@
-import type { BmsTransport, Capabilities, ConnectionState, MqttConfigurationResponse, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport.ts'
+import type { BmsTransport, Capabilities, ConnectionState, EnergyMeterConfiguration, EnergyMeterConfigurationResponse, MqttConfigurationResponse, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport.ts'
 import { unavailableCapabilities } from './Transport.ts'
 import { decodeBalancingCharge, decodeCell, decodeEnergy, decodeGoodweCanDiagnostics, decodeHvVoltages, decodePack, decodeSocCalibration, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId } from '../shared/uartV1.ts'
 
@@ -65,6 +65,7 @@ export class WebSerialTransport implements BmsTransport {
   getConnectionState(): ConnectionState { return this.state }
   getCapabilities(): Capabilities { return this.capabilities }
   async configureWifi(_ssid: string, _password: string): Promise<WifiConfigurationResponse> { return { request_id: '', result: 'transport_error' } }
+  async configureEnergyMeters(_configuration: EnergyMeterConfiguration): Promise<EnergyMeterConfigurationResponse> { return { request_id: '', result: 'transport_error' } }
   async configureMqtt(_host: string, _port: number, _username: string, _password: string): Promise<MqttConfigurationResponse> { return { request_id: '', result: 'transport_error' } }
   async scanWifi(): Promise<WifiScanResponse> { return { request_id: '', result: 'unavailable' } }
   onBmsStatus(listener: Listener<Status>): () => void { this.statusListeners.add(listener); return () => this.statusListeners.delete(listener) }

@@ -1,5 +1,5 @@
 import { reconnectDelayMs } from '../shared/reconnect.ts'
-import type { BmsTransport, Capabilities, ConnectionState, GatewayStatus, MqttConfigurationResponse, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport'
+import type { BmsTransport, Capabilities, ConnectionState, EnergyMeterConfiguration, EnergyMeterConfigurationResponse, GatewayStatus, MqttConfigurationResponse, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport'
 import { unavailableCapabilities } from './Transport.ts'
 
 type Listener<T> = (value: T) => void
@@ -21,6 +21,7 @@ export class GatewayTransport implements BmsTransport {
   private pendingWifiConfiguration = new Map<string, PendingWifiConfiguration>()
   private pendingWifiScan = new Map<string, PendingWifiScan>()
   private pendingMqttConfiguration = new Map<string, PendingMqttConfiguration>()
+  private pendingMeters = new Map<string, { resolve: (result: EnergyMeterConfigurationResponse) => void }>()
   private nextRequestId = 1
   private serviceTail: Promise<void> = Promise.resolve()
   private queuedServices = 0
@@ -94,6 +95,19 @@ export class GatewayTransport implements BmsTransport {
       window.setTimeout(() => { const pending = this.pendingMqttConfiguration.get(request_id); if (pending) { this.pendingMqttConfiguration.delete(request_id); pending.resolve({ request_id, result: 'transport_error' }) } }, 3000)
     })
   }
+  configureEnergyMeters(configuration: EnergyMeterConfiguration): Promise<EnergyMeterConfigurationResponse> {
+    if (this.socket?.readyState !== WebSocket.OPEN || !this.capabilities.energy_meters_configuration) return Promise.resolve({ request_id: '', result: 'transport_error' })
+    const request_id = this.allocateRequestId()
+    return new Promise(resolve => {
+      const timer = window.setTimeout(() => {
+        const pending = this.pendingMeters.get(request_id)
+        if (pending) { this.pendingMeters.delete(request_id); pending.resolve({ request_id, result: 'transport_error' }) }
+      }, 3000)
+      this.pendingMeters.set(request_id, { resolve: result => { window.clearTimeout(timer); resolve(result) } })
+      try { this.socket?.send(JSON.stringify({ v: 1, type: 'energy_meters_configure', request_id, configuration })) }
+      catch { const pending = this.pendingMeters.get(request_id); this.pendingMeters.delete(request_id); pending?.resolve({ request_id, result: 'transport_error' }) }
+    })
+  }
   scanWifi(): Promise<WifiScanResponse> {
     if (this.socket?.readyState !== WebSocket.OPEN) return Promise.resolve({ request_id: '', result: 'transport_error' })
     const request_id = this.allocateRequestId()
@@ -127,6 +141,8 @@ export class GatewayTransport implements BmsTransport {
       this.pendingWifiScan.clear()
       for (const pending of this.pendingMqttConfiguration.values()) pending.resolve({ request_id: '', result: 'transport_error' })
       this.pendingMqttConfiguration.clear()
+      for (const [request_id, pending] of this.pendingMeters) pending.resolve({ request_id, result: 'transport_error' })
+      this.pendingMeters.clear()
       if (!this.explicitlyDisconnected) this.scheduleReconnect()
     }
   }
@@ -164,6 +180,7 @@ export class GatewayTransport implements BmsTransport {
     if (parsed.type === 'service_result' && typeof parsed.request_id === 'string') { const pending = this.pending.get(parsed.request_id); if (pending) { this.pending.delete(parsed.request_id); pending.resolve(parsed as unknown as ServiceResponse) } }
     if (parsed.type === 'wifi_configuration_result' && typeof parsed.request_id === 'string') { const pending = this.pendingWifiConfiguration.get(parsed.request_id); if (pending) { this.pendingWifiConfiguration.delete(parsed.request_id); pending.resolve(parsed as unknown as WifiConfigurationResponse) } }
     if (parsed.type === 'wifi_scan_result' && typeof parsed.request_id === 'string') { const pending = this.pendingWifiScan.get(parsed.request_id); if (pending) { this.pendingWifiScan.delete(parsed.request_id); pending.resolve(parsed as unknown as WifiScanResponse) } }
+    if (parsed.type === 'energy_meters_configuration_result' && typeof parsed.request_id === 'string' && ['accepted', 'invalid', 'denied', 'error'].includes(String(parsed.result))) { const pending = this.pendingMeters.get(parsed.request_id); if (pending) { this.pendingMeters.delete(parsed.request_id); pending.resolve(parsed as unknown as EnergyMeterConfigurationResponse) } }
     if (parsed.type === 'mqtt_configuration_result' && typeof parsed.request_id === 'string') { const pending = this.pendingMqttConfiguration.get(parsed.request_id); if (pending) { this.pendingMqttConfiguration.delete(parsed.request_id); pending.resolve(parsed as unknown as MqttConfigurationResponse) } }
   }
   private scheduleReconnect(): void {

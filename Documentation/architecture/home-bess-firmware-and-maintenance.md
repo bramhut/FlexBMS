@@ -226,6 +226,19 @@ microsecond timer converted to seconds; BMS-controller uptime is the STM32
 `STATUS.uptime_ms` tick converted to seconds. Both reset on their respective
 controller reset and are diagnostic only.
 
+## Optional RS485 energy meters
+
+The Gateway also supports an optional read-only RS485 extension for up to two
+SDM72D-M-2 energy meters. It reports phase currents and signed phase/total power
+every second, import/export counters every 30 seconds, and discovers a separate
+HA device for each enabled slot. Per-meter names, slave addresses, reverse power
+direction, and shared serial settings persist locally. It uses UART0 and the
+existing RS485 interface independently of the STM32 UART1 link; it does not
+regulate the inverter or change BMS safety decisions. See
+[RS485 energy meters](rs485-energy-meters.md) for the implementation contract,
+freshness rules, and commissioning checks. The extension is disabled by default
+and its configuration is unavailable over the open recovery AP or direct USB.
+
 ## Status LED language
 
 The STM32 red and green status LEDs are active-low. The Gateway has one

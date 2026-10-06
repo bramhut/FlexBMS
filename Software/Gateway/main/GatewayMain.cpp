@@ -1,3 +1,4 @@
+#include "flexbms/EnergyMeters.h"
 #include "flexbms/Protocol.h"
 #include "flexbms/GatewayApi.h"
 #include "flexbms/FirmwareUpdate.h"
@@ -203,6 +204,7 @@ extern "C" void app_main(void)
         ESP_LOGW(kLogTag, "NTP time synchronisation unavailable for this boot");
     }
 
+    if (!FlexBms::EnergyMeters::start()) ESP_LOGW(kLogTag, "Optional energy meter extension unavailable");
     const bool gatewayApiStarted = FlexBms::GatewayApi::start(sendService);
     const bool mqttStarted = FlexBms::Mqtt::start(sendMqttRunRequest);
     bmsUartReady = configureUart();
@@ -285,6 +287,14 @@ extern "C" void app_main(void)
         FlexBms::Wifi::tick();
         FlexBms::Mqtt::tick(FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected);
         if (FlexBms::Mqtt::consumeStatusChanged()) FlexBms::GatewayApi::publishGatewayStatus();
+        static int64_t lastMeterStatusUs = 0;
+        const int64_t meterNow = esp_timer_get_time();
+        if (meterNow - lastMeterStatusUs >= 1'000'000)
+        {
+            if (FlexBms::EnergyMeters::anyEnabled(FlexBms::EnergyMeters::getState().configuration))
+                FlexBms::GatewayApi::publishGatewayStatus();
+            lastMeterStatusUs = meterNow;
+        }
         if (!gatewayBootConfirmed)
         {
             if (FlexBms::Wifi::getState() == FlexBms::Wifi::State::Connected)
