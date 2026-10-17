@@ -5,6 +5,7 @@
 #include "RuntimeConfiguration.h"
 #include "CurrentLimitGuard.h"
 #include "SafetyPolicy.h"
+#include "StartupDiagnostics.h"
 #include <cstddef>
 
 /*******************************************************************************
@@ -27,13 +28,7 @@ namespace SlaveController
         bcc_status_t status;
     };
 
-    struct DiagnosticReport
-    {
-        uint8_t cid{};
-        uint16_t failedChecks{};
-        uint8_t status{};
-        uint8_t failedDiagnostic{0xFFU};
-    };
+    using DiagnosticReport = StartupDiagnostics::Report;
 
     /*! @brief Coherent battery data and directional permissions for inverter CAN. */
     struct BatteryCanSnapshot

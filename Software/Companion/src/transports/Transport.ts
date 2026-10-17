@@ -2,7 +2,19 @@ export type CapabilityName = 'monitor' | 'csv_logging' | 'set_run_request' | 'se
 export type Capabilities = Record<CapabilityName, boolean>
 export type ServiceName = 'get_safety_limits' | 'set_run_request' | 'set_balancing_enabled' | 'acknowledge_faults' | 'get_rtc' | 'get_device_info' | 'read_register' | 'get_config' | 'set_config' | 'get_diagnostic_report'
 export type RuntimeConfiguration = { reason: 'valid' | 'blank' | 'version_mismatch' | 'corrupt'; expected_version: number; stored_version: number; slave_count: number; current_sense_slave: number; shunt_resistance_uohm: number; battery_capacity_mah: number; invert_current: boolean; balance_enabled: boolean; startup_diagnostics: boolean; self_discharge_tenth_percent_per_30_days: number; cold_allowance_deci_c: number }
-export type BccDiagnosticReport = { slave_index: number; cid: number; failed_checks: number; status_code: number; failed_diagnostic: number }
+export type BccDiagnosticReport = {
+  slave_index: number
+  cid: number
+  failed_checks: number
+  status_code: number
+  failed_diagnostic: number
+  register_address?: number
+  register_operation?: number
+  register_value?: number
+  attempt?: number
+  gpio_open_mask?: number
+  gpio_checked_mask?: number
+}
 export type ServiceArguments = { get_safety_limits: Record<string, never>; set_run_request: { requested: boolean }; set_balancing_enabled: { enabled: boolean }; acknowledge_faults: Record<string, never>; get_rtc: Record<string, never>; get_device_info: Record<string, never>; read_register: { slave_index: number; register: number }; get_config: Record<string, never>; set_config: Omit<RuntimeConfiguration, 'reason' | 'expected_version' | 'stored_version'>; get_diagnostic_report: { slave_index: number } }
 export type ServiceResult = 'ok' | 'denied' | 'invalid' | 'busy' | 'usb_host_active' | 'transport_error'
 export type ServiceResponse = { request_id: string; service: ServiceName; result: ServiceResult; data?: { safety_limits_payload?: number[]; slave_index?: number; register?: number; value?: number; unix_time_s?: number; firmware_version_packed?: number } & Partial<RuntimeConfiguration> & Partial<BccDiagnosticReport> }

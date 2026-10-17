@@ -4,7 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { csvHeader, csvRow, downloadCsv } from '@/shared/csv'
 import { registerFields } from '@/shared/registers'
 import { serviceResultLabel } from '@/shared/service'
-import { bccDiagnosticNames, bccDiagnosticStatusNames, cellVoltageV, socPercent, describeWatchdogBreadcrumb } from '@/shared/model'
+import { bccDiagnosticNames, bccDiagnosticStatusNames, cellVoltageV, socPercent, describeWatchdogBreadcrumb, describeDiagnosticRegister } from '@/shared/model'
 import { formatUptime } from '@/shared/time'
 import type { BccDiagnosticReport, BmsTransport, Capabilities, ServiceResponse, Snapshot, Status } from '@/transports/Transport'
 
@@ -269,8 +269,24 @@ watch([slave, registerText], () => { registerValue.value = null; registerError.v
     </section>
     <details class="panel diagnostic-report-panel" :open="diagnosticReports.length > 0">
       <summary>Startup diagnostic report <small>{{ diagnosticReports.length ? `${diagnosticReports.length} report(s)` : 'No report available' }}</small></summary>
-      <p v-if="!diagnosticReports.length" class="muted">No diagnostic report is available. A report appears when the BMS reports a BCC diagnostic failure.</p>
-      <div v-else class="table-scroll"><table><thead><tr><th>Slave</th><th>CID</th><th>Failed checks</th><th>Low-level result</th></tr></thead><tbody><tr v-for="report in reportRows" :key="report.slave_index"><th>Slave {{ report.slave_index + 1 }}</th><td>{{ report.cid }}</td><td>{{ report.failedNames.length ? report.failedNames.join(', ') : 'None recorded' }}</td><td>{{ report.status_code === 0 ? 'Functional result' : `${report.statusName} during ${report.failedName}` }}</td></tr></tbody></table></div>
+      <p v-if="!diagnosticReports.length" class="muted">No diagnostic report is available. Reopen Diagnostics after startup completes to refresh the reports.</p>
+      <template v-else>
+        <p>First failure per slave is retained until STM32 restart. This report is historical; see Status for live faults.</p>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Slave</th><th>CID</th><th>Failed checks</th><th>Low-level result</th><th>Last register transaction</th></tr></thead>
+            <tbody>
+              <tr v-for="report in reportRows" :key="report.slave_index">
+                <th>Slave {{ report.slave_index + 1 }}</th>
+                <td>{{ report.cid }}</td>
+                <td>{{ report.failedNames.length ? report.failedNames.join(', ') : 'None recorded' }}</td>
+                <td>{{ report.status_code === 0 ? 'Functional result' : `${report.statusName} during ${report.failedName}` }}</td>
+                <td>{{ describeDiagnosticRegister(report) || 'Unavailable on this firmware' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
     </details>
     <details class="panel"><summary>Reset diagnostics</summary><p>{{ describeWatchdogBreadcrumb(status?.watchdog_breadcrumb, status?.watchdog_diagnostic) ?? 'No watchdog detail is available.' }}</p><small>Historical reset information, not a live fault indication.</small></details>
     <section class="panel logging-panel">

@@ -71,13 +71,31 @@ async function refreshDiagnosticReports(status: Status): Promise<void> {
       const response = await transport.request('get_diagnostic_report', { slave_index: slaveIndex })
       const data = response.data
       if (response.result === 'ok' && data?.slave_index !== undefined && data.cid !== undefined && data.failed_checks !== undefined && data.status_code !== undefined && data.failed_diagnostic !== undefined) {
-        reports.push({ slave_index: data.slave_index, cid: data.cid, failed_checks: data.failed_checks, status_code: data.status_code, failed_diagnostic: data.failed_diagnostic })
+        reports.push({
+          slave_index: data.slave_index,
+          cid: data.cid,
+          failed_checks: data.failed_checks,
+          status_code: data.status_code,
+          failed_diagnostic: data.failed_diagnostic,
+          register_address: data.register_address,
+          register_operation: data.register_operation,
+          register_value: data.register_value,
+          attempt: data.attempt,
+          gpio_open_mask: data.gpio_open_mask,
+          gpio_checked_mask: data.gpio_checked_mask,
+        })
       }
     }
     if (reports.length > 0) diagnosticReports.value = reports
   } finally {
     diagnosticReportRequestInFlight = false
   }
+}
+
+function showDiagnostics(): void {
+  active.value = 'diagnostics'
+  recentChangesOpen.value = false
+  if (bmsStatus.value) void refreshDiagnosticReports(bmsStatus.value)
 }
 
 const offBmsStatus = transport.onBmsStatus(next => {
@@ -97,7 +115,7 @@ onBeforeUnmount(() => { offBmsStatus(); offSnapshot(); offEvent(); offState(); s
   <ConnectionHeader :label="transport.label" :message="connectionMessage" :tone="connectionTone" :allow-manual-connect="!gatewayTarget && state === 'disconnected'" @connect="connect" />
   <nav>
     <button :class="{ active: active === 'dashboard' }" @click="active = 'dashboard'">BMS dashboard</button>
-    <button :class="{ active: active === 'diagnostics' }" @click="active = 'diagnostics'; recentChangesOpen = false">Diagnostics</button>
+    <button :class="{ active: active === 'diagnostics' }" @click="showDiagnostics">Diagnostics</button>
     <button v-if="capabilities.runtime_configuration || capabilities.wifi_configuration || capabilities.mqtt_configuration" :class="{ active: active === 'configuration' }" @click="active = 'configuration'; recentChangesOpen = false">Configuration</button>
     <button :class="{ active: active === 'firmware' }" @click="active = 'firmware'; recentChangesOpen = false">Firmware</button>
   </nav>

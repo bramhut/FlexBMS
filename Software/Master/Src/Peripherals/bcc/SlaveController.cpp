@@ -118,6 +118,7 @@ namespace SlaveController
         bool startupDiagnosticsEnabled = true;
         std::array<DiagnosticReport, RuntimeConfiguration::MAX_SLAVES> diagnosticReports{};
         size_t diagnosticReportCount = 0U;
+        uint16_t diagnosticAttempt = 0U;
 
         uint8_t currentMeasurementSlaveIdx = 0; // Index of the slave responsible for current measurement
         bool currentMeasurementConfigured = false;
@@ -1561,10 +1562,8 @@ namespace SlaveController
         {
             for (auto &slave : mSlaves) slave.resetCurrentBaseline();
             const size_t reportCount = std::min(mSlaves.size(), diagnosticReports.size());
-            taskENTER_CRITICAL();
-            diagnosticReportCount = 0U;
-            taskEXIT_CRITICAL();
-            bool succes = true;
+            if (diagnosticAttempt != UINT16_MAX) ++diagnosticAttempt;
+            bool success = true;
             // Start measuring the time it takes to perform the diagnostics
             uint32_t startMicros = micros();
             for (size_t index = 0U; index < reportCount; ++index)
@@ -1572,29 +1571,34 @@ namespace SlaveController
                 auto &slave = mSlaves[index];
                 BCC_Diagnostics::diags_t result{};
                 uint8_t failedDiagnostic = BCC_Diagnostics::DIAGNOSTIC_NONE;
-                // If a generic issue arrises during a diagnostic, set succes to false
+                slave.clearRegisterTrace();
                 const bcc_status_t diagnosticStatus = BCC_Diagnostics::runStartupChecks(
                     &slave, settings.SAFETY_LIMITS, &result, &failedDiagnostic,
                     Watchdog::reportBccProgress);
                 const uint16_t failedChecks = diagnosticFailureMask(result);
+                const DiagnosticReport report = {
+                    .cid = slave.getCID(),
+                    .failedChecks = failedChecks,
+                    .status = static_cast<uint8_t>(diagnosticStatus),
+                    .failedDiagnostic = failedDiagnostic,
+                    .trace = slave.getRegisterTrace(),
+                    .attempt = diagnosticAttempt,
+                    .gpioOpenMask = static_cast<uint8_t>(result.gpioOpenMask),
+                    .gpioCheckedMask = StartupDiagnostics::temperatureInputMask(slave.getNTCCount()),
+                };
                 taskENTER_CRITICAL();
-                diagnosticReports[index] = {
-                        .cid = slave.getCID(),
-                        .failedChecks = failedChecks,
-                        .status = static_cast<uint8_t>(diagnosticStatus),
-                        .failedDiagnostic = failedDiagnostic,
-                    };
-                diagnosticReportCount = index + 1U;
+                StartupDiagnostics::retainFirstFailure(diagnosticReports[index], report);
+                diagnosticReportCount = std::max(diagnosticReportCount, index + 1U);
                 taskEXIT_CRITICAL();
                 if (diagnosticStatus != BCC_STATUS_SUCCESS)
                 {
-                    succes = false;
+                    success = false;
                 }
 
                 // Check if the result is not 0
                 if (failedChecks != 0U)
                 {
-                    succes = false;
+                    success = false;
                     PRINTF_INFO("[SC] Some diagnostics failed on CID %u: %04X\n", slave.getCID(), failedChecks);
                     PRINTF_INFO("  ADC1VER: %s\n", result.ADC1VER ? "FAIL" : "OK");
                     PRINTF_INFO("  OVUVVER: %s\n", result.OVUVVER ? "FAIL" : "OK");
@@ -1613,7 +1617,7 @@ namespace SlaveController
             }
             double diagTimeMS = (micros() - startMicros) / 1000.0;
             PRINTF_INFO("[SC] Diagnostics took %.2f ms, on average %.2f ms per slave\n", diagTimeMS, diagTimeMS / getNumOfSlaves());
-            return succes;
+            return success;
         }
 
         void handleRegisterRequests()
@@ -1932,7 +1936,10 @@ namespace SlaveController
                     }
                     if (!diagnosticsSuccessful)
                     {
-                        ++diagnosticsFailureCount;
+                        if (diagnosticsFailureCount < CID_INITIALIZATION_MAX_FAILURES)
+                        {
+                            ++diagnosticsFailureCount;
+                        }
                         if (diagnosticsFailureCount >= CID_INITIALIZATION_MAX_FAILURES)
                         {
                             updateFault(DIAGNOSTICS_FAULT, true);
@@ -1941,7 +1948,9 @@ namespace SlaveController
                         {
                             updateFault(DIAGNOSTICS_FAULT, false);
                         }
-                        setState(PERFORMING_DIAGNOSTICS);
+                        // The retry delay exceeds the BCC's 1024 ms COM reset.
+                        // Reassign CIDs and restore registers before diagnosing again.
+                        setState(DEVICE_INITIALIZATION);
 						initializationRetryNotBeforeMs = millis() + 2000U;
                     }
                     else
@@ -1992,6 +2001,12 @@ namespace SlaveController
                 if (currentState == RUNNING)
                 {
                     runningLoop();
+                }
+                else
+                {
+                    // The same BCC task owns these bounded reads during startup
+                    // and fault retry waits; no second SPI owner or mutex needed.
+                    handleRegisterRequests();
                 }
 
                 if (currentState == CRITICAL)

@@ -1,4 +1,4 @@
-import type { Snapshot, Status } from '../transports/Transport'
+import type { BccDiagnosticReport, Snapshot, Status } from '../transports/Transport'
 
 export const cellVoltageV = (raw: number) => raw / 1_000_000
 export const formatCellDifferenceMv = (microvolts: number): string => {
@@ -45,7 +45,15 @@ export const bmsStateName = (value: number) => ['Starting', 'Ready', 'Running', 
 export const hvStateName = (value: number) => ['Off', 'Self-test', 'Precharge', 'Contactor close', 'Run'][value] ?? `Unknown (${value})`
 export const bmsFaultNames = ['CONFIGURATION_INVALID', 'SLAVE_UNAVAILABLE', 'BCC_DIAGNOSTICS', 'CELL_VOLTAGE_LIMIT', 'THERMAL_LIMIT', 'CURRENT_LIMIT', 'BCC_INTEGRITY', 'ADC_FAULT', 'BALANCING_HARDWARE_FAULT', 'BCC_COMMUNICATION', 'NO_CONFIG', 'INVERTER_CURRENT_LIMIT']
 export const bccDiagnosticNames = ['ADC1 channel verification', 'OV/UV functional verification', 'OV/UV detection', 'Cell-terminal open/short detection', 'Cell-voltage channel verification', 'Cell contact resistance', 'Cell-terminal leakage', 'Current measurement', 'Shunt connection', 'GPIO over/under-temperature', 'GPIO open-terminal detection', 'Cell-balancing open-load detection']
-export const bccDiagnosticStatusNames = ['Success', 'Parameter out of range', 'SPI communication failure', 'Communication timeout', 'Communication echo mismatch', 'Communication CRC error', 'Communication message-counter error', 'Empty communication response', 'Cannot enter diagnostic mode', 'Conversion data not ready']
+export const bccDiagnosticStatusNames = ['Success', 'Parameter out of range', 'SPI communication failure', 'Communication timeout', 'Communication echo mismatch', 'Communication CRC error', 'Communication message-counter error', 'Empty communication response', 'Cannot enter diagnostic mode', 'Conversion data not ready', 'ADC conversion timeout (register communication succeeded)']
+export function describeDiagnosticRegister(report: Partial<BccDiagnosticReport>): string {
+  if (report.register_address === undefined || !report.register_operation) return ''
+  const hex = (value: number, digits: number) => value.toString(16).toUpperCase().padStart(digits, '0')
+  const operation = ['None', 'Read failed', 'Write failed', 'Read completed', 'Write completed'][report.register_operation] ?? 'Unknown'
+  const value = report.register_operation === 1 || report.register_value === undefined ? '' : ` = 0x${hex(report.register_value, 4)}`
+  const gpio = report.gpio_open_mask === undefined || report.gpio_checked_mask === undefined ? '' : ` · GPIO open 0x${hex(report.gpio_open_mask, 2)}, checked 0x${hex(report.gpio_checked_mask, 2)}`
+  return `Attempt ${report.attempt ?? '?'} · ${operation} · register 0x${hex(report.register_address, 2)}${value}${gpio}`
+}
 export const hvReasonNames = ['HV_SENSOR_DIAGNOSTIC', 'BATTERY_VOLTAGE_MISMATCH', 'LOAD_SIDE_ENERGISED', 'PRECHARGE_TIMEOUT', 'PRECHARGE_VOLTAGE_LOST', 'CONTACTOR_VOLTAGE_LOST']
 export const warningNames = ['WATCHDOG_RESET', 'STARTUP_DIAGNOSTICS_BYPASSED', 'BATTERY_VOLTAGE_MISMATCH_OFF', 'BCC_COMMUNICATION_RETRY']
 export const warningDisplayNames = ['Watchdog reset', 'Startup diagnostics bypassed', 'Pack-voltage mismatch (HV off)', 'BCC communication retry']

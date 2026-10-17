@@ -1,6 +1,6 @@
 import type { BmsTransport, Capabilities, ConnectionState, EnergyMeterConfiguration, EnergyMeterConfigurationResponse, MqttConfigurationResponse, ServiceArguments, ServiceName, ServiceResponse, Snapshot, Status, WifiConfigurationResponse, WifiScanResponse } from './Transport.ts'
 import { unavailableCapabilities } from './Transport.ts'
-import { decodeBalancingCharge, decodeCell, decodeEnergy, decodeGoodweCanDiagnostics, decodeHvVoltages, decodePack, decodeSocCalibration, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId } from '../shared/uartV1.ts'
+import { decodeBalancingCharge, decodeCell, decodeDiagnosticReport, decodeEnergy, decodeGoodweCanDiagnostics, decodeHvVoltages, decodePack, decodeSocCalibration, decodeStatus, decodeTemperature, encodeFrame, FrameDecoder, messageType, readLe16, readLe32, serviceId } from '../shared/uartV1.ts'
 
 type SerialPortLike = { open(options: { baudRate: number }): Promise<void>; close(): Promise<void>; readable?: ReadableStream<Uint8Array>; writable?: WritableStream<Uint8Array> }
 declare global { interface Navigator { serial?: { requestPort(): Promise<SerialPortLike> } } }
@@ -195,7 +195,10 @@ export class WebSerialTransport implements BmsTransport {
       const reasons = ['valid', 'blank', 'version_mismatch', 'corrupt'] as const
       data = { reason: reasons[payload[2]] ?? 'corrupt', expected_version: readLe16(payload, 3), stored_version: readLe16(payload, 5), slave_count: payload[7], current_sense_slave: payload[8], shunt_resistance_uohm: readLe32(payload, 9), battery_capacity_mah: readLe32(payload, 13), invert_current: payload[17] !== 0, balance_enabled: payload[18] !== 0, startup_diagnostics: payload[19] !== 0, self_discharge_tenth_percent_per_30_days: payload.length >= 21 ? payload[20] : 0, cold_allowance_deci_c: payload.length >= 22 ? payload[21] : 30 }
     }
-    if (result === 'ok' && pending.service === 'get_diagnostic_report' && payload.length === 8) data = { slave_index: payload[2], cid: payload[3], failed_checks: readLe16(payload, 4), status_code: payload[6], failed_diagnostic: payload[7] }
+    if (result === 'ok' && pending.service === 'get_diagnostic_report') {
+      const report = decodeDiagnosticReport(payload.subarray(2))
+      if (report) data = report
+    }
     pending.resolve({ request_id: '', service: pending.service, result, ...(data ? { data } : {}) })
   }
 

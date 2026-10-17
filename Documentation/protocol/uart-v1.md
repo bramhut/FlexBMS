@@ -603,7 +603,7 @@ reads, to the link and sequence that originated them.
 | `0x0A` | `COMMIT_STM32_BOOTLOADER` | None | None (successful request enters ROM immediately) |
 | `0x0B` | `GET_CONFIG` | None | 20-byte runtime configuration status and values |
 | `0x0C` | `SET_CONFIG` | `slave_count:u8, current_sense_slave:u8, shunt_resistance_uohm:u32, battery_capacity_mah:u32, invert_current:u8, balance_enabled:u8, startup_diagnostics:u8, self_discharge_tenth_percent_per_30_days:u8, cold_allowance_deci_c:u8` | None; the STM32 resets after responding `OK` |
-| `0x0D` | `GET_DIAGNOSTIC_REPORT` | `slave_index:u8` | Latest startup diagnostic result for that BCC |
+| `0x0D` | `GET_DIAGNOSTIC_REPORT` | `slave_index:u8` | Retained first failure, otherwise latest successful report for that BCC |
 | `0x0E` | `GET_SAFETY_LIMITS` | None | Versioned read-only safety policy; 174 data bytes in schema 1 |
 
 The STM32 calendar stores UTC only. It accepts `SET_RTC` only for 2000--2099
@@ -665,8 +665,43 @@ to enforce all other measurement, fault, balancing, and HV safety checks.
 `CTXOPEN`, `CELLVOLT`, `CONNRES`, `CTXLEAK`, `CURRMEAS`, `SHUNTNOTCONN`,
 `GPIOXOTUT`, `GPIOXOPEN`, and `CBXOPEN`. A non-zero `status_code` identifies a
 BCC communication or diagnostic-driver failure; `failed_diagnostic` identifies
-the check that was executing when it occurred. The report is held in RAM until
-the next startup diagnostic run.
+the check that was executing when it occurred. Status 10 distinguishes an ADC
+conversion that remained busy after a successful register read from status 3,
+which denotes a transport timeout.
+
+The response appends `register_address:u8`, `register_operation:u8`,
+`register_value:u16`, `attempt:u16`, `gpio_open_mask:u8`, and
+`gpio_checked_mask:u8` (14 data bytes total). The GPIO masks report all detected
+open inputs and the configured temperature inputs used for the pass/fail
+decision. GPIO0 through GPIO(NTC_COUNT-1) are configured temperature inputs;
+unused GPIOs are not treated as missing sensors. Operations are
+0 unavailable, 1 failed read, 2 failed write, 3 completed read, and 4 completed
+write. The value is invalid for failed reads; successful multi-register reads
+report the first register's value. Companion and Gateway also accept legacy
+six-byte reports and the 12-byte form without GPIO masks. The first failure per
+slave is retained in RAM until restart; later retries cannot replace it. Before
+the first failure, the latest successful report is available. A retained report
+is historical, not a live fault indication. Attempts are numbered from one and
+saturate at 65535.
+
+| Data offset | Field | Encoding |
+| --- | --- | --- |
+| 0 | Slave index | `u8`, zero-based |
+| 1 | CID | `u8` |
+| 2 | Failed-check mask | `u16`, little-endian |
+| 4 | Driver status | `u8` |
+| 5 | Executing diagnostic on driver failure | `u8`; only relevant for non-zero status |
+| 6 | Last register address | `u8` |
+| 7 | Register operation | `u8`, values defined above |
+| 8 | Register value | `u16`, little-endian |
+| 10 | Diagnostic attempt | `u16`, little-endian |
+| 12 | Raw GPIO open mask | `u8` |
+| 13 | Configured temperature-input mask | `u8` |
+
+Failed startup diagnostics re-enter device and register initialization after
+the non-blocking two-second retry wait. This reassigns CIDs after the monitor's
+1024 ms communication reset and restores registers altered by diagnostics.
+Read-only register requests are also serviced between startup/retry iterations.
 
 `SET_CONFIG` is accepted only while the HV system is safely off. The STM32
 validates the complete candidate, stores it in its reserved dual-slot FLASH

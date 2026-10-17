@@ -1015,7 +1015,7 @@ accepted and invoked the requested operation; STATUS and EVENT show the resultin
   [`0x0A`], [COMMIT_STM32_BOOTLOADER], [none], [none (successful request enters ROM immediately)],
   [`0x0B`], [GET_CONFIG], [none], [18-byte runtime configuration status and values],
   [`0x0C`], [SET_CONFIG], [`slave_count:u8, current_sense_slave:u8, shunt_resistance_uohm:u32, battery_capacity_mah:u32, invert_current:u8, balance_enabled:u8, startup_diagnostics:u8`], [none; the STM32 resets after responding `OK`],
-  [`0x0D`], [GET_DIAGNOSTIC_REPORT], [`slave_index:u8`], [latest startup diagnostic result for that BCC],
+  [`0x0D`], [GET_DIAGNOSTIC_REPORT], [`slave_index:u8`], [retained startup diagnostic report for that BCC],
 )
 
 `SET_RUN_REQUEST(0)` immediately removes the request through the STM32 PCC path. A request of 1
@@ -1052,8 +1052,14 @@ testing, while all other measurement, fault, balancing, and HV safety checks rem
 
 `GET_DIAGNOSTIC_REPORT` returns the slave index, BCC CID, failed-check bitmask,
 low-level status code, and the diagnostic that was executing when a driver
-failure occurred. The latest report is held in STM32 RAM until the next
-startup diagnostic run.
+failure occurred. Register context, the attempt number and raw/checked GPIO
+masks are included in extended reports. The first failure per slave is held
+in STM32 RAM until restart; otherwise the latest successful report is available.
+Reports are historical, while Status identifies live faults. GPIO open-terminal
+diagnostics only fail for configured temperature inputs; unused GPIOs remain
+visible in the raw mask. Failed startup diagnostics repeat CID and register
+initialization after the retry delay so communication resets cannot invalidate
+the next attempt.
 
 `PREPARE_STM32_BOOTLOADER` and `COMMIT_STM32_BOOTLOADER` form the STM32-update handoff.
 The Gateway must already have staged and CRC-checked the image. The STM32 validates the prepare

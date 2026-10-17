@@ -2512,7 +2512,10 @@ namespace BCC_Diagnostics
                 PRINTF_WARN("[DIAG] CID: %u, GPIOXOPEN diagnostic failed with status %u\n", bcc->getCID(), status);
                 return status;
             }
-            result->GPIOXOPEN = openStatus;
+            result->gpioOpenMask = openStatus;
+            // Startup temperature inputs occupy GPIO0..NTC_COUNT-1. Unused
+            // digital inputs are deliberately open and are not missing sensors.
+            result->GPIOXOPEN = StartupDiagnostics::hasOpenTemperatureInput(openStatus, bcc->getNTCCount());
             if (progressCallback != nullptr) progressCallback();
         }
         if (funcs.CBXOPEN)

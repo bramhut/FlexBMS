@@ -236,6 +236,7 @@ namespace BCC_Diagnostics
          * @note Execution time per slave: 1.0ms
          */
         bool CBXOPEN : 1 = false;
+        uint16_t gpioOpenMask{}; // Raw seven-input result, including unused pins.
     };
 
     /*! @brief Result of ADC1-A and ADC1-B functional verification. */

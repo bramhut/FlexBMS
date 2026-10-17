@@ -165,6 +165,21 @@ test('direct USB decodes a per-slave BCC diagnostic report', async () => {
   })
 })
 
+test('direct USB decodes retained startup failure context', async () => {
+  for (const includeGpio of [false, true]) await withSerial(async ({ reader, writes }) => {
+    const transport = new WebSerialTransport()
+    await transport.connect()
+    const responsePromise = transport.request('get_diagnostic_report', { slave_index: 0 })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const decoder = new FrameDecoder()
+    const request = writes.flatMap(frame => decoder.consume(frame)).find(frame => frame.type === messageType.serviceRequest)
+    assert.ok(request)
+    reader.enqueue(encodeFrame({ type: messageType.serviceResponse, sequence: request.sequence, payload: Uint8Array.of(serviceId.getDiagnosticReport, 0, 0, 1, 0, 0, 10, 0, 6, 3, 0x3f, 0x38, 1, 0, ...(includeGpio ? [0x70, 0x0f] : [])) }))
+    assert.deepEqual((await responsePromise).data, { slave_index: 0, cid: 1, failed_checks: 0, status_code: 10, failed_diagnostic: 0, register_address: 6, register_operation: 3, register_value: 0x383f, attempt: 1, ...(includeGpio ? { gpio_open_mask: 0x70, gpio_checked_mask: 0x0f } : {}) })
+    transport.disconnect()
+  })
+})
+
 test('direct USB includes AMC3330 BAT+ and LOAD+ telemetry in a complete snapshot', async () => {
   await withSerial(async ({ reader }) => {
     const transport = new WebSerialTransport()

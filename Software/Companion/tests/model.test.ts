@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict'
-import { formatCurrent } from '../src/shared/model.ts'
+import { formatCurrent, describeDiagnosticRegister } from '../src/shared/model.ts'
 import test from 'node:test'
 import { balancingDisplay, bmsStatusSummary, currentA, describeWatchdogBreadcrumb, formatCellDifferenceMv, formatEnergy, formatPower, icCelsius, isFresh, ntcCelsius, powerW, selfDischargeEquivalentMilliAmps, socPercent, valueOrStale, warningDisplayNames } from '../src/shared/model.ts'
 import { reconnectDelayMs } from '../src/shared/reconnect.ts'
 import { serviceResultLabel } from '../src/shared/service.ts'
 import { advancingUnixTime, advancingUptimeMs, createUptimeTracker, displayedUptimeMs, formatUptime, sampleUptime } from '../src/shared/time.ts'
 import { unavailableCapabilities } from '../src/transports/Transport.ts'
+
+test('startup register details distinguish a failed read from a valid busy ADC value', () => {
+  assert.equal(describeDiagnosticRegister({}), '')
+  assert.equal(describeDiagnosticRegister({ register_address: 6, register_operation: 1, register_value: 0, attempt: 1 }), 'Attempt 1 · Read failed · register 0x06')
+  assert.equal(describeDiagnosticRegister({ register_address: 6, register_operation: 3, register_value: 0x383f, attempt: 2 }), 'Attempt 2 · Read completed · register 0x06 = 0x383F')
+  assert.equal(describeDiagnosticRegister({ register_address: 0x1a, register_operation: 4, register_value: 0, attempt: 1, gpio_open_mask: 0x70, gpio_checked_mask: 0x0f }), 'Attempt 1 · Write completed · register 0x1A = 0x0000 · GPIO open 0x70, checked 0x0F')
+})
 
 test('raw UART v1 units convert in the presentation layer', () => {
   assert.equal(currentA(-1_000_000), -1)

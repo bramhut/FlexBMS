@@ -12,6 +12,7 @@
 
 #include <stdbool.h>
 #include "Peripherals/CoulombCounterDelta.h"
+#include "Peripherals/StartupDiagnostics.h"
 #include <stddef.h>
 #include "bcc_utils.h"
 #include "bcc_communication.h"
@@ -23,6 +24,8 @@
 class BCC
 {
 public:
+    StartupDiagnostics::RegisterTrace getRegisterTrace() const { return mRegisterTrace; }
+    void clearRegisterTrace() { mRegisterTrace = {}; }
     /*******************************************************************************
      * TYPE DEFINITIONS
      ******************************************************************************/
@@ -115,6 +118,7 @@ private:
 
     // Message count
     uint8_t mMsgCnt = 0; /*!< Last received value of Message counter (values 0-15). */
+    StartupDiagnostics::RegisterTrace mRegisterTrace{};
 
     // Ah and its validity record occupy four RTC backup registers. The backup
     // domain is powered by the CR2032, so a valid estimate survives an STM32

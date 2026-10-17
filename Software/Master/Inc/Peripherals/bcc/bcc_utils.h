@@ -545,6 +545,7 @@ enum bcc_status_t
                                           or as a response to an invalid request from MCU. */
     BCC_STATUS_DIAG_FAIL = 8U,       /*!< It is not allowed to enter diagnostic mode. */
     BCC_STATUS_DATA_RDY = 9U,       /*!< A new sequence of conversions is currently running. */
+    BCC_STATUS_CONVERSION_TIMEOUT = 10U, /*!< Register read succeeded, but EOC_N remained busy. */
 };
 
 /*! @brief Cluster Identification Address.

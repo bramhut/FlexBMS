@@ -1,7 +1,22 @@
 import assert from 'node:assert/strict'
-import { decodePack } from '../src/shared/uartV1.ts'
+import { decodeDiagnosticReport, decodePack } from '../src/shared/uartV1.ts'
 import test from 'node:test'
 import { crc32, decodeBalancingCharge, decodeEnergy, decodeGoodweCanDiagnostics, decodeHvVoltages, decodeSocCalibration, decodeStatus, encodeFrame, FrameDecoder, messageType, serviceId, writeLe16, writeLe32 } from '../src/shared/uartV1.ts'
+
+test('startup reports reject incomplete extensions and preserve little-endian register context', () => {
+  const bytes = Uint8Array.of(2, 3, 0, 4, 0, 11, 0x1a, 4, 0x34, 0x12, 0x02, 0x01, 0x70, 0x0f)
+  for (let length = 0; length <= 16; ++length) {
+    if ([6, 12, 14].includes(length)) continue
+    assert.equal(decodeDiagnosticReport(new Uint8Array(length)), null)
+  }
+  assert.deepEqual(decodeDiagnosticReport(bytes), {
+    slave_index: 2, cid: 3, failed_checks: 0x400, status_code: 0, failed_diagnostic: 11,
+    register_address: 0x1a, register_operation: 4, register_value: 0x1234, attempt: 258,
+    gpio_open_mask: 0x70, gpio_checked_mask: 0x0f,
+  })
+  assert.equal(decodeDiagnosticReport(bytes.subarray(0, 6))?.register_address, undefined)
+  assert.equal(decodeDiagnosticReport(bytes.subarray(0, 12))?.gpio_open_mask, undefined)
+})
 
 test('UART v1 browser codec matches the canonical heartbeat vector', () => {
   const heartbeat = encodeFrame({ type: messageType.heartbeat, sequence: 0, payload: new Uint8Array() })

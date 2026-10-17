@@ -1230,13 +1230,21 @@ namespace BmsUart
                     sendServiceResponse(frame.sequence, serviceId, DENIED);
                     return;
                 }
-                std::array<uint8_t, 6U> response = {
+                std::array<uint8_t, 14U> response = {
                     frame.payload[1],
                     report.cid,
                     static_cast<uint8_t>(report.failedChecks),
                     static_cast<uint8_t>(report.failedChecks >> 8U),
                     report.status,
                     report.failedDiagnostic,
+                    report.trace.address,
+                    static_cast<uint8_t>(report.trace.operation),
+                    static_cast<uint8_t>(report.trace.value),
+                    static_cast<uint8_t>(report.trace.value >> 8U),
+                    static_cast<uint8_t>(report.attempt),
+                    static_cast<uint8_t>(report.attempt >> 8U),
+                    report.gpioOpenMask,
+                    report.gpioCheckedMask,
                 };
                 sendServiceResponse(frame.link, frame.sequence, serviceId, OK, response.data(), response.size());
                 return;

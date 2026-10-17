@@ -205,7 +205,7 @@ The common service names are:
 | `read_register` | `slave_index: number`, `register: number` | `slave_index`, `register`, `value` |
 | `get_config` | none | persisted runtime configuration |
 | `set_config` | complete runtime configuration | none; STM32 reboots after saving |
-| `get_diagnostic_report` | `slave_index: number` | latest BCC diagnostic report for that slave |
+| `get_diagnostic_report` | `slave_index: number` | retained first failure, otherwise latest successful report for that slave |
 
 Actions show `Accepted`, `Denied`, `Invalid`, `Busy`, or `Transport error`.
 `Accepted` means the STM32 has invoked the request; the following snapshot and
@@ -502,8 +502,14 @@ with no arguments require `{}`. `set_config` requires the complete runtime
 configuration, including `balance_enabled` and `startup_diagnostics`.
 `get_diagnostic_report` returns the BCC/CID, failed-check bitmask, low-level
 status code, and the diagnostic that was executing when a driver failure
-occurred. The report is held in STM32 RAM until the next startup diagnostic
-run.
+occurred. Optional register-transaction details and an attempt number identify
+the last register accessed; optional raw and checked GPIO masks distinguish
+open unused pins from missing configured temperature inputs. The first failure
+for each slave is held in STM32 RAM until restart. Companion refreshes reports
+when Diagnostics is opened, including successful results. See the
+[UART protocol](../protocol/uart-v1.md) for the response layout and the
+[maintenance guide](home-bess-firmware-and-maintenance.md#startup-diagnostics-and-remote-inspection)
+for Gateway-only inspection.
 When the open setup/recovery AP is active, valid BMS service requests receive
 `denied` locally and do not reach UART.
 

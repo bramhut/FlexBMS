@@ -1654,7 +1654,7 @@ namespace FlexBms::GatewayApi
                                     copiedDataLength >= 19U ? responseData[18] : 0U);
             cJSON_AddNumberToObject(value, "cold_allowance_deci_c", copiedDataLength >= 20U ? responseData[19] : 30U);
         }
-        else if (result == ServiceResult::Ok && service == Service::GetDiagnosticReport && copiedDataLength == 6U)
+        else if (result == ServiceResult::Ok && service == Service::GetDiagnosticReport && (copiedDataLength == 6U || copiedDataLength == 12U || copiedDataLength == 14U))
         {
             cJSON *value = cJSON_AddObjectToObject(root, "data");
             cJSON_AddNumberToObject(value, "slave_index", responseData[0]);
@@ -1662,6 +1662,18 @@ namespace FlexBms::GatewayApi
             cJSON_AddNumberToObject(value, "failed_checks", static_cast<uint16_t>(responseData[2]) | (static_cast<uint16_t>(responseData[3]) << 8U));
             cJSON_AddNumberToObject(value, "status_code", responseData[4]);
             cJSON_AddNumberToObject(value, "failed_diagnostic", responseData[5]);
+            if (copiedDataLength >= 12U)
+            {
+                cJSON_AddNumberToObject(value, "register_address", responseData[6]);
+                cJSON_AddNumberToObject(value, "register_operation", responseData[7]);
+                cJSON_AddNumberToObject(value, "register_value", static_cast<uint16_t>(responseData[8]) | (static_cast<uint16_t>(responseData[9]) << 8U));
+                cJSON_AddNumberToObject(value, "attempt", static_cast<uint16_t>(responseData[10]) | (static_cast<uint16_t>(responseData[11]) << 8U));
+            }
+            if (copiedDataLength == 14U)
+            {
+                cJSON_AddNumberToObject(value, "gpio_open_mask", responseData[12]);
+                cJSON_AddNumberToObject(value, "gpio_checked_mask", responseData[13]);
+            }
         }
         (void)sendJsonTo(socket, root);
     }

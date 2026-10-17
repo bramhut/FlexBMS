@@ -62,6 +62,47 @@ state-changing requests so there is one active writer while any number of
 clients may monitor. Telemetry must report the requested state, actual HV
 state, and a concise blocking/rejection reason separately.
 
+## Startup diagnostics and remote inspection
+
+Startup diagnostics validate the monitor chain before fresh measurements and
+HV readiness are available. They run independently of the volatile Run request;
+passing diagnostics does not enable HV.
+
+Each slave's configured temperature inputs occupy GPIO0 through
+GPIO(NTC_COUNT-1). The GPIO open-terminal test retains the raw result for all
+seven GPIOs, but only an open configured temperature input fails startup.
+For example, four fitted inputs give a checked mask of `0x0F`; an open mask of
+`0x70` identifies unused GPIO4–6 and is expected. An open mask containing any
+bit in `0x0F` still blocks startup.
+
+Failed diagnostics use a non-blocking two-second retry delay, then repeat
+device initialization, CID assignment and register initialization. The delay
+exceeds the monitors' 1024 ms communication-reset timeout, so diagnostic retries
+must not reuse the old CID assignments or modified diagnostic registers.
+
+Companion's **Diagnostics → Hardware & tools** view shows the startup reports,
+including register context and the raw/checked GPIO masks. Opening Diagnostics
+refreshes the reports, including successful results. The first failed result
+per slave is retained until STM32 restart so later communication failures cannot
+replace it. Reports are historical; the dashboard's Status reports live faults.
+Read-only register requests are serviced between startup/retry iterations by
+the BCC task that already owns the SPI interface.
+
+For Gateway-only investigation, run the following from the repository root:
+
+```powershell
+.\scripts\read-startup-diagnostics.ps1 -GatewayUrl http://GATEWAY_ADDRESS/ -OutputPath diagnostics.json
+```
+
+The capture reads controller versions, runtime configuration, status and each
+slave's diagnostic report over the Gateway WebSocket. It does not change Run,
+configuration or fault acknowledgements. Each service result is included;
+`busy` or `denied` is not a passed diagnostic. `status_observed_at` timestamps the
+status sample; `captured_at` and `completed_at` bound the whole capture.
+`-TimeoutSeconds` sets a bounded capture deadline (60 seconds by default).
+The wire fields and compatibility forms are specified in
+[`../protocol/uart-v1.md`](../protocol/uart-v1.md).
+
 ## Repository layout and release ownership
 
 FlexBMS owns the BMS-only Companion source because it releases alongside the

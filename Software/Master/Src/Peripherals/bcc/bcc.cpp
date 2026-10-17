@@ -258,6 +258,8 @@ BCC::BCC(Config_t config, uint8_t cid) : mDevice(config.DEVICE_TYPE),
  */
 bcc_status_t BCC::regRead(const uint8_t regAddr, const uint8_t regCnt, uint16_t *regVal, const bool toUnassigned)
 {
+    mRegisterTrace = {.address = regAddr, .operation = StartupDiagnostics::RegisterOperation::ReadFailed};
+    uint16_t *const firstValue = regVal;
     uint8_t txBuf[BCC_MSG_SIZE]; /* TX buffer. */
     uint8_t regIdx;              /* Index of a received register. */
     bcc_status_t status;
@@ -308,6 +310,8 @@ bcc_status_t BCC::regRead(const uint8_t regAddr, const uint8_t regCnt, uint16_t 
         *regVal++ = BCC_GET_MSG_DATA(rxBufMsgIdx);
     }
 
+    mRegisterTrace.operation = StartupDiagnostics::RegisterOperation::ReadCompleted;
+    mRegisterTrace.value = *firstValue;
     return BCC_STATUS_SUCCESS;
 }
 
@@ -322,6 +326,7 @@ bcc_status_t BCC::regRead(const uint8_t regAddr, const uint8_t regCnt, uint16_t 
  */
 bcc_status_t BCC::regWrite(const uint8_t regAddr, const uint16_t regVal, const bool toUnassigned)
 {
+    mRegisterTrace = {.address = regAddr, .operation = StartupDiagnostics::RegisterOperation::WriteFailed, .value = regVal};
     if ((regAddr == MC33771C_ADC_CFG_OFFSET && (regVal & MC33771C_ADC_CFG_CC_RST_MASK)) ||
         (regAddr == MC33771C_SYS_CFG1_OFFSET && (regVal & (MC33771C_SYS_CFG1_SOFT_RST_MASK | MC33771C_SYS_CFG1_GO2DIAG_MASK)))) resetCurrentBaseline();
     uint8_t txBuf[BCC_MSG_SIZE]; /* Transmission buffer. */
@@ -345,6 +350,10 @@ bcc_status_t BCC::regWrite(const uint8_t regAddr, const uint16_t regVal, const b
     status = BCC_Communication::checkEchoFrame(txBuf);
     if (status != BCC_STATUS_SUCCESS)
     {
+    }
+    if (status == BCC_STATUS_SUCCESS)
+    {
+        mRegisterTrace.operation = StartupDiagnostics::RegisterOperation::WriteCompleted;
     }
     return status;
 }
@@ -775,7 +784,7 @@ bcc_status_t BCC::meas_WaitOnConversion(const bcc_avg_t avg)
         PRINTF_WARN("    Time since last conversion: %lu us\n", micros() - lastConversionStarted);
     }
 
-    return (complete) ? BCC_STATUS_SUCCESS : BCC_STATUS_COM_TIMEOUT;
+    return (complete) ? BCC_STATUS_SUCCESS : BCC_STATUS_CONVERSION_TIMEOUT;
 }
 
 /*!

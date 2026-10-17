@@ -1,4 +1,4 @@
-import type { Snapshot, Status } from '@/transports/Transport'
+import type { BccDiagnosticReport, Snapshot, Status } from '@/transports/Transport'
 
 export const uartV1 = { magic0: 0x46, magic1: 0x42, version: 1, headerBytes: 7, crcBytes: 4, maxPayloadBytes: 512 } as const
 
@@ -31,6 +31,28 @@ export function readLe64(bytes: Uint8Array, offset = 0): bigint {
 }
 export function writeLe16(bytes: Uint8Array, offset: number, value: number): void { bytes[offset] = value; bytes[offset + 1] = value >>> 8 }
 export function writeLe32(bytes: Uint8Array, offset: number, value: number): void { bytes[offset] = value; bytes[offset + 1] = value >>> 8; bytes[offset + 2] = value >>> 16; bytes[offset + 3] = value >>> 24 }
+
+export function decodeDiagnosticReport(data: Uint8Array): BccDiagnosticReport | null {
+  if (![6, 12, 14].includes(data.length)) return null
+  const report: BccDiagnosticReport = {
+    slave_index: data[0],
+    cid: data[1],
+    failed_checks: readLe16(data, 2),
+    status_code: data[4],
+    failed_diagnostic: data[5],
+  }
+  if (data.length >= 12) {
+    report.register_address = data[6]
+    report.register_operation = data[7]
+    report.register_value = readLe16(data, 8)
+    report.attempt = readLe16(data, 10)
+  }
+  if (data.length === 14) {
+    report.gpio_open_mask = data[12]
+    report.gpio_checked_mask = data[13]
+  }
+  return report
+}
 
 export function crc32(bytes: Uint8Array): number {
   let crc = 0xffffffff
