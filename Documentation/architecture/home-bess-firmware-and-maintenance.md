@@ -171,10 +171,11 @@ Companion checks, packages the desktop executable, builds Gateway firmware,
 and places `FlexBMS-Companion.exe`, `FlexBMS-Gateway.bin`,
 `FlexBMS-Gateway-factory.bin`, `FlexBMS-STM32.bin`, `flash-release.ps1`, and
 `SHA256SUMS.txt` in `release/FlexBMS-<version>/`. The interactive command
-prompts for a semantic version and synchronizes a new one to the Companion
-package files; `-Version` supports unattended builds. A repeat of an existing
-version requires explicit confirmation and creates a timestamped sibling
-directory rather than overwriting prior artifacts. It does not flash hardware.
+prompts for a plain `major.minor.patch` version and synchronizes it to the Companion
+package files and STM32 version header; `-Version` supports unattended builds.
+Existing release directories are preserved: increment the patch version for a
+new build. Release names have no timestamp or version suffix. The script does
+not flash hardware.
 
 `flash-release.ps1` is copied into every release directory. It verifies all
 release checksums before acting, then uses STM32CubeProgrammer over ST-Link/SWD

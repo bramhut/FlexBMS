@@ -1433,8 +1433,9 @@ version when a new one is entered, and builds the Companion, Gateway, and STM32 
 and one #raw("FlexBMS_bundle.fbu") OTA package containing both targets, versions, byte lengths, and CRC-32 values.
 `-Version` supports unattended use. Each release includes `flash-release.ps1`: ST-Link/SWD flashes the
 STM32 image, while a selected ESP32-C3 COM port flashes a complete Gateway factory image. Both actions
-start immediately after checksum verification. Repeating an existing version requires an explicit choice
-and creates a timestamped output without overwriting the prior release.
+start immediately after checksum verification. Release versions use plain #raw("major.minor.patch")
+with no suffix or timestamp. Existing release directories are preserved; increment the patch version
+for a new build.
 
 = Operating concept
 

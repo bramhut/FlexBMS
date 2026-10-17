@@ -42,8 +42,8 @@ if ([string]::IsNullOrWhiteSpace($platformio)) {
 if (-not (Test-Path -LiteralPath $releaseScript)) { throw "Release flash script was not found at $releaseScript." }
 
 function Assert-SemanticVersion([string]$Candidate) {
-    if ($Candidate -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
-        throw "Version '$Candidate' must use semantic version format, for example 0.1.1 or 0.2.0-rc.1."
+    if ($Candidate -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+        throw "Version '$Candidate' must use plain major.minor.patch format, for example 0.2.5."
     }
 }
 
@@ -154,27 +154,21 @@ else {
     $Version = if ([string]::IsNullOrWhiteSpace($enteredVersion)) { $currentVersion } else { $enteredVersion.Trim() }
 }
 Assert-SemanticVersion $Version
-Set-Stm32FirmwareVersion $Version
 
-$repeatRelease = $false
 $releaseBaseDirectory = Join-Path $repositoryRoot "release\FlexBMS-$Version"
 while (Test-Path -LiteralPath $releaseBaseDirectory) {
     if ($versionWasProvided) {
-        $repeatRelease = $true
-        break
+        throw "Release $Version already exists. Increment the patch version and build again."
     }
 
-    $enteredVersion = Read-Host "Release $Version already exists. Type a new version, R for a timestamped repeat, or press Enter to cancel"
+    $enteredVersion = Read-Host "Release $Version already exists. Type a new version (increment the patch), or press Enter to cancel"
     if ([string]::IsNullOrWhiteSpace($enteredVersion)) { throw 'Release cancelled.' }
-    if ($enteredVersion.Trim() -ieq 'R') {
-        $repeatRelease = $true
-        break
-    }
 
     $Version = $enteredVersion.Trim()
     Assert-SemanticVersion $Version
     $releaseBaseDirectory = Join-Path $repositoryRoot "release\FlexBMS-$Version"
 }
+Set-Stm32FirmwareVersion $Version
 
 if ($Version -ne $currentVersion) {
     Write-Host "Updating Companion release version from $currentVersion to $Version"
@@ -190,16 +184,6 @@ if ($Version -ne $currentVersion) {
 }
 
 $releaseDirectory = $releaseBaseDirectory
-if ($repeatRelease -or (Test-Path -LiteralPath $releaseDirectory)) {
-    $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $releaseDirectory = "$releaseBaseDirectory-$timestamp"
-    $duplicate = 2
-    while (Test-Path -LiteralPath $releaseDirectory) {
-        $releaseDirectory = "$releaseBaseDirectory-$timestamp-$duplicate"
-        $duplicate++
-    }
-    Write-Host "Creating timestamped repeat release in $releaseDirectory"
-}
 $desktopBuildDirectory = Join-Path $env:TEMP "flexbms-desktop-$Version-$PID"
 
 Push-Location $companionDirectory
