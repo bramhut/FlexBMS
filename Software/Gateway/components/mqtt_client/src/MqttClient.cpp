@@ -2,6 +2,8 @@
 #include "flexbms/EnergyMeters.h"
 #include "flexbms/MeterPublisher.h"
 
+#include "flexbms/AcquiredPublication.h"
+
 #include "cJSON.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
@@ -13,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -79,6 +82,8 @@ namespace FlexBms::Mqtt
         bool stateDirty = false;
         bool discoveryDirty = false;
         bool statusChanged = false;
+        std::atomic<bool> acquisitionResetRequested{false};
+        AcquiredPublication statusPublication{}, packPublication{}, energyPublication{};
         uint8_t startFailureCount = 0U;
         int64_t startNotBeforeUs = 0;
         int64_t lastStatePublishUs = 0;
@@ -93,6 +98,7 @@ namespace FlexBms::Mqtt
         std::array<char, 96U> baseTopic{};
         std::array<char, 128U> availabilityTopic{};
         std::array<char, 128U> stateTopic{};
+        std::array<char, 128U> statusTopic{}, packTopic{}, energyTopic{};
         std::array<char, 128U> eventTopic{};
         std::array<char, 128U> commandTopic{};
         std::array<char, 128U> discoveryTopic{};
@@ -171,15 +177,30 @@ namespace FlexBms::Mqtt
             std::snprintf(baseTopic.data(), baseTopic.size(), "flexbms/%s", deviceId.data());
             std::snprintf(availabilityTopic.data(), availabilityTopic.size(), "%s/availability", baseTopic.data());
             std::snprintf(stateTopic.data(), stateTopic.size(), "%s/state", baseTopic.data());
+            std::snprintf(statusTopic.data(), statusTopic.size(), "%s/state/status", baseTopic.data());
+            std::snprintf(packTopic.data(), packTopic.size(), "%s/state/pack", baseTopic.data());
+            std::snprintf(energyTopic.data(), energyTopic.size(), "%s/state/energy", baseTopic.data());
             std::snprintf(eventTopic.data(), eventTopic.size(), "%s/event", baseTopic.data());
             std::snprintf(commandTopic.data(), commandTopic.size(), "%s/command/run_request", baseTopic.data());
             std::snprintf(discoveryTopic.data(), discoveryTopic.size(), "homeassistant/device/%s/config", deviceId.data());
         }
 
-        void publish(const char *topic, const char *payload, bool retained)
+        bool publish(const char *topic, const char *payload, bool retained, int qos = 1)
         {
-            if (client == nullptr || state != State::Connected) return;
-            (void)esp_mqtt_client_publish(client, topic, payload, 0, 1, retained ? 1 : 0);
+            if (client == nullptr || state != State::Connected) return false;
+            return esp_mqtt_client_publish(client, topic, payload, 0, qos, retained ? 1 : 0) >= 0;
+        }
+
+        void resetAcquisitions()
+        {
+            statusPublication.reset();
+            packPublication.reset();
+            energyPublication.reset();
+        }
+
+        void applyAcquisitionReset()
+        {
+            if (acquisitionResetRequested.exchange(false)) resetAcquisitions();
         }
 
         void addComponent(cJSON *components, const char *key, const char *platform, const char *name, const char *uniqueId, const char *templateText,
@@ -196,6 +217,27 @@ namespace FlexBms::Mqtt
             if (entityCategory != nullptr) cJSON_AddStringToObject(component, "entity_category", entityCategory);
             if (suggestedDisplayPrecision >= 0) cJSON_AddNumberToObject(component, "suggested_display_precision", suggestedDisplayPrecision);
             if (stateClass != nullptr) cJSON_AddStringToObject(component, "state_class", stateClass);
+            const StateSource source = componentSource(key);
+            if (source != StateSource::Diagnostic)
+            {
+                const char *topic = source == StateSource::Status ? statusTopic.data() :
+                                    source == StateSource::Pack ? packTopic.data() : energyTopic.data();
+                cJSON_AddStringToObject(component, "stat_t", topic);
+                cJSON_AddNumberToObject(component, "qos", 0);
+                if (std::strcmp(platform, "switch") != 0)
+                {
+                    cJSON_AddBoolToObject(component, "force_update", true);
+                    cJSON_AddNumberToObject(component, "expire_after", 10);
+                }
+                else
+                {
+                    // Switch has no force_update. This existing STM32 source tick
+                    // changes only with a newly acquired STATUS, not Gateway polls.
+                    cJSON_AddStringToObject(component, "json_attributes_topic", topic);
+                    cJSON_AddStringToObject(component, "json_attributes_template",
+                        "{{ {'stm32_uptime_ms': value_json.stm32_uptime_ms} | to_json }}");
+                }
+            }
         }
 
         void publishDiscovery()
@@ -263,10 +305,48 @@ namespace FlexBms::Mqtt
             for (size_t bit = 0U; bit < count; ++bit) if ((mask & (1UL << bit)) != 0U) cJSON_AddItemToArray(array, cJSON_CreateString(names[bit]));
         }
 
-        void publishState()
+        void publishAcquired(cJSON *snapshot, AcquiredPublication &source,
+                             const char *topic, std::initializer_list<const char *> keys,
+                             int64_t now)
+        {
+            if (!source.due(now) || acquisitionResetRequested.load()) return;
+            cJSON *root = cJSON_CreateObject();
+            if (root == nullptr) return;
+            for (const char *key : keys)
+            {
+                const cJSON *value = cJSON_GetObjectItemCaseSensitive(snapshot, key);
+                if (value == nullptr)
+                {
+                    cJSON_Delete(root);
+                    return; // Required fields missing: never make cached HA values fresh.
+                }
+                else
+                {
+                    cJSON *copy = cJSON_Duplicate(value, true);
+                    if (copy == nullptr || !cJSON_AddItemToObject(root, key, copy))
+                    {
+                        cJSON_Delete(copy);
+                        cJSON_Delete(root);
+                        return; // Never send a partial acquisition on allocation failure.
+                    }
+                }
+            }
+            char *text = cJSON_PrintUnformatted(root);
+            // QoS 0 avoids storing old unacknowledged measurements in the client's
+            // reconnect outbox. No retain, no periodic resend without a new frame.
+            if (text != nullptr)
+            {
+                if (publish(topic, text, false, 0)) source.published();
+                cJSON_free(text);
+            }
+            cJSON_Delete(root);
+        }
+
+        void publishState(int64_t now)
         {
             if (state != State::Connected || !hasStatus) return;
             cJSON *root = cJSON_CreateObject();
+            if (root == nullptr) return;
             cJSON_AddStringToObject(root, "bms_state", bmsStateName(status.bmsState));
             cJSON_AddStringToObject(root, "hv_state", hvStateName(status.hvState));
             cJSON_AddBoolToObject(root, "run_request", (status.flags & (1U << 2U)) != 0U);
@@ -280,10 +360,16 @@ namespace FlexBms::Mqtt
                 cJSON_AddNumberToObject(root, "charged_energy_kwh", static_cast<double>(energy.chargedEnergyUWh) / 1'000'000'000.0);
                 cJSON_AddNumberToObject(root, "discharged_energy_kwh", static_cast<double>(energy.dischargedEnergyUWh) / 1'000'000'000.0);
             }
+            else
+            {
+                cJSON_AddNullToObject(root, "charged_energy_kwh");
+                cJSON_AddNullToObject(root, "discharged_energy_kwh");
+            }
             cJSON_AddBoolToObject(root, "uart_healthy", uartHealthy);
             cJSON_AddStringToObject(root, "mqtt_state", "connected");
             cJSON_AddNumberToObject(root, "gateway_uptime_s", lastGatewayUptimeMs / 1000U);
             cJSON_AddNumberToObject(root, "stm32_uptime_s", status.uptimeMs / 1000U);
+            cJSON_AddNumberToObject(root, "stm32_uptime_ms", status.uptimeMs);
             static constexpr const char *bmsFaults[] = {"CONFIGURATION_INVALID", "SLAVE_UNAVAILABLE", "BCC_DIAGNOSTICS", "CELL_VOLTAGE_LIMIT", "THERMAL_LIMIT", "CURRENT_LIMIT", "BCC_INTEGRITY", "ADC_FAULT", "BALANCING_HARDWARE_FAULT", "BCC_COMMUNICATION"};
             static constexpr const char *hvFaults[] = {"HV_SENSOR_DIAGNOSTIC", "BATTERY_VOLTAGE_MISMATCH", "LOAD_SIDE_ENERGISED", "PRECHARGE_TIMEOUT", "PRECHARGE_VOLTAGE_LOST", "CONTACTOR_VOLTAGE_LOST"};
             const bool activeFault = status.bmsActiveErrors != 0U || status.hvActiveErrors != 0U || status.bmsState >= 3U;
@@ -319,6 +405,18 @@ namespace FlexBms::Mqtt
                 cJSON_AddNumberToObject(root, "cell_delta_mv", static_cast<float>(pack.maxCellUv - pack.minCellUv) / 1'000.0F);
                 cJSON_AddNumberToObject(root, "min_ntc_c", static_cast<float>(pack.minNtcRaw) / 65535.0F * 120.0F - 20.0F);
                 cJSON_AddNumberToObject(root, "max_ntc_c", static_cast<float>(pack.maxNtcRaw) / 65535.0F * 120.0F - 20.0F);
+            }
+            publishAcquired(root, statusPublication, statusTopic.data(),
+                {"bms_state", "hv_state", "run_request", "measurements_fresh", "fault_active",
+                 "fault_names", "active_faults", "stm32_uptime_s", "stm32_uptime_ms"}, now);
+            if (statusPublication.fresh(now))
+            {
+                publishAcquired(root, packPublication, packTopic.data(),
+                    {"pack_voltage_v", "pack_current_a", "pack_power_w", "soc_percent",
+                     "current_valid", "soc_valid", "min_cell_v", "max_cell_v", "cell_delta_mv",
+                     "min_ntc_c", "max_ntc_c"}, now);
+                publishAcquired(root, energyPublication, energyTopic.data(),
+                    {"charged_energy_kwh", "discharged_energy_kwh", "energy_valid"}, now);
             }
             char *text = cJSON_PrintUnformatted(root);
             if (text != nullptr) { publish(stateTopic.data(), text, true); cJSON_free(text); }
@@ -376,6 +474,7 @@ namespace FlexBms::Mqtt
                 auto *event = static_cast<esp_mqtt_event_handle_t>(eventData);
                 if (eventId == MQTT_EVENT_CONNECTED)
                 {
+                    acquisitionResetRequested.store(true);
                     state = State::Connected;
                     startFailureCount = 0U;
                     startNotBeforeUs = 0;
@@ -386,10 +485,16 @@ namespace FlexBms::Mqtt
                     (void)esp_mqtt_client_subscribe(event->client, commandTopic.data(), 1);
                     (void)esp_mqtt_client_subscribe(event->client, "homeassistant/status", 0);
                 }
-                else if (eventId == MQTT_EVENT_DISCONNECTED) { state = State::Lost; statusChanged = true; }
+                else if (eventId == MQTT_EVENT_DISCONNECTED)
+                {
+                    acquisitionResetRequested.store(true);
+                    state = State::Lost;
+                    statusChanged = true;
+                }
                 else if (eventId == MQTT_EVENT_DATA && event->topic_len == 20 && std::memcmp(event->topic, "homeassistant/status", 20) == 0 &&
                          event->data_len == 6 && std::memcmp(event->data, "online", 6) == 0)
                 {
+                    acquisitionResetRequested.store(true);
                     discoveryDirty = true;
                     stateDirty = true;
                 }
@@ -415,6 +520,7 @@ namespace FlexBms::Mqtt
 
         void stopClient()
         {
+            acquisitionResetRequested.store(true);
             if (client == nullptr) return;
             (void)esp_mqtt_client_stop(client);
             esp_mqtt_client_destroy(client);
@@ -438,6 +544,7 @@ namespace FlexBms::Mqtt
 
     void tick(bool connected)
     {
+        applyAcquisitionReset();
         if (stationConnected != connected)
         {
             stationConnected = connected;
@@ -448,9 +555,11 @@ namespace FlexBms::Mqtt
         const bool refreshMeters = discoveryDirty;
         if (state == State::Connected && discoveryDirty) { publishDiscovery(); discoveryDirty = false; }
         tickMeters(now, refreshMeters);
-        if (state == State::Connected && stateDirty && now - lastStatePublishUs >= kStatePeriodUs)
+        if (state == State::Connected &&
+            (stateDirty || statusPublication.due(now) || packPublication.due(now) || energyPublication.due(now)) &&
+            now - lastStatePublishUs >= kStatePeriodUs)
         {
-            publishState();
+            publishState(now);
             lastStatePublishUs = now;
             stateDirty = false;
         }
@@ -476,15 +585,35 @@ namespace FlexBms::Mqtt
 
     void publishFrame(const UartV1::Frame &frame, uint32_t gatewayUptimeMs)
     {
+        applyAcquisitionReset();
         lastGatewayUptimeMs = gatewayUptimeMs;
+        const int64_t now = esp_timer_get_time();
         if (frame.type == UartV1::MessageType::Status && UartV1::decodeStatus(frame, status))
         {
             hasStatus = true;
-            if ((status.flags & (1U << 3U)) == 0U) hasEnergy = false;
+            if (state == State::Connected) statusPublication.received(now);
+            if ((status.flags & (1U << 3U)) == 0U)
+            {
+                hasEnergy = false;
+                packPublication.reset();
+                energyPublication.reset();
+            }
             stateDirty = true;
         }
-        else if (frame.type == UartV1::MessageType::Pack && UartV1::decodePack(frame, pack)) { hasPack = true; stateDirty = true; }
-        else if (frame.type == UartV1::MessageType::Energy && UartV1::decodeEnergy(frame, energy)) { hasEnergy = true; stateDirty = true; }
+        else if (frame.type == UartV1::MessageType::Pack && UartV1::decodePack(frame, pack))
+        {
+            hasPack = true;
+            if (state == State::Connected && statusPublication.fresh(now) && (status.flags & (1U << 3U)) != 0U)
+                packPublication.received(now);
+            stateDirty = true;
+        }
+        else if (frame.type == UartV1::MessageType::Energy && UartV1::decodeEnergy(frame, energy))
+        {
+            hasEnergy = true;
+            if (state == State::Connected && statusPublication.fresh(now) && (status.flags & (1U << 3U)) != 0U)
+                energyPublication.received(now);
+            stateDirty = true;
+        }
         else if (frame.type == UartV1::MessageType::Event && frame.length == 5U)
         {
             const uint32_t value = static_cast<uint32_t>(frame.payload[1]) | (static_cast<uint32_t>(frame.payload[2]) << 8U) |
@@ -494,5 +623,13 @@ namespace FlexBms::Mqtt
         }
     }
 
-    void setUartHealthy(bool healthy) { if (uartHealthy != healthy) { uartHealthy = healthy; stateDirty = true; } }
+    void setUartHealthy(bool healthy)
+    {
+        if (uartHealthy != healthy)
+        {
+            uartHealthy = healthy;
+            if (!healthy) resetAcquisitions();
+            stateDirty = true;
+        }
+    }
 }

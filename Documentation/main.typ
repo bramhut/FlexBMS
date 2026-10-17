@@ -102,7 +102,7 @@
     align: (left, left),
     stroke: none,
     inset: (x: 5pt, y: 4pt),
-    [*Document date*], [20 August 2026],
+    [*Document date*], [12 September 2026],
     [*System*], [96s LiFePO4 home BESS],
     [*Nominal capacity*], [314 Ah / approximately 96.5 kWh],
     [*Primary controller*], [STM32G491],
@@ -149,8 +149,8 @@ management. The battery management system remains the final authority for batter
   [Provides local BMS maintenance, Wi-Fi provisioning, and telemetry transport while remaining listen-only on CAN.],
   [#status("CURRENT")],
   [Energy management system],
-  [Chooses when and how much to charge or discharge within BMS limits.],
-  [#status("PLANNED", kind: "planned")],
+  [Optimizes charge and discharge requests within BMS, inverter, and site limits. Shadow scheduling is operational; automatic actuation is not yet enabled.],
+  [#status("SHADOW TEST")],
   [Home Assistant],
   [Provides dashboards, automation, and a user-facing view of the installation.],
   [#status("CURRENT")],
@@ -316,6 +316,10 @@ The current battery profile is:
 - 314 Ah nominal capacity; and
 - amp-hour retention in RTC backup registers while backup power is present.
 
+The configured hard charge and discharge current limits are both 63 A. A full
+charge has successfully triggered the automatic 100% SoC calibration, and the
+installed pack has completed top balancing without an observed issue.
+
 Static firmware settings contain the safety limits, monitor hardware template, and timing parameters.
 Companion-configurable values such as the shunt resistance, capacity, current polarity, balancing gate,
 diagnostics gate, and monitor topology are kept in the versioned STM32 runtime configuration in flash;
@@ -336,35 +340,38 @@ The STM32 also hosts:
 - USB serial and the trusted text command/debug console; and
 - the framed BMS v1 service interface over isolated UART and USB CDC.
 
-=== Todo:
+=== Todo
 High priority:
-- Go through CubeMX configuration. Pinout is OK.
-- Analog measurement of HV side. Including diagnostic pin checking. ADC configuraion, high accuracy low Fs.
-- Precharge handling. Including: 
-- Contactor handling. Including: economizing, failure checking using voltages (to be discussed)
-- USB VSENSE setup
-- Derating on temperature (mainly low temperature charging, high temperature is not that applicable)
-- GoodWe CAN communication. The current research and candidate protocols are
-  documented below; implementation and empirical validation remain pending.
-- User LED status language is specified in
-  `Documentation/architecture/home-bess-firmware-and-maintenance.md`; firmware
-  implementation remains pending.
+- Complete the as-built CubeMX configuration review; the pinout is considered correct.
+- Calibrate and validate both isolated AMC3330 high-voltage measurements and
+  their diagnostic inputs against external instruments.
+- Exercise precharge, contactor pull-in/economizing, voltage-loss detection,
+  opening, and recovery on the installed inverter. Characterize the persistent
+  inverter DC-link voltage before assigning any welded-contactor interpretation.
+- Complete and validate USB VBUS-sense behavior.
+- Validate low-temperature charge inhibition and the remaining temperature
+  fault/derating behavior on hardware.
+- Continue long-duration GoodWe CAN observation and controlled charge/discharge
+  validation, including communication-loss and recovery cases.
+- Verify the implemented user-LED status language on the assembled hardware
+  against `Documentation/architecture/home-bess-firmware-and-maintenance.md`.
 
 Medium priority:
 - Aux relay control (potentially useful for a future heating system).
 
 
-=== GoodWe inverter CAN protocol research
+=== GoodWe inverter CAN integration
 
-#status("RESEARCH / NOT IMPLEMENTED", kind: "planned")
+#status("OPERATIONAL / MONITORING")
 
-This section records the GoodWe CAN findings available before implementation.
-It is deliberately an evidence-weighted candidate specification, not yet a
-confirmed contract for the GW12K-ET-20. The target inverter is the high-voltage
-ET-20 model. The present CAN implementation is not a compatibility constraint:
-the STM32 CAN peripheral, bitrate, identifiers, and payload handling can be
-changed as part of this work. The CAN bus is expected to contain only the STM32
-and the inverter. The ESP32 Gateway remains listen-only.
+This section retains the evidence trail that led to the implementation and now
+also records the installation result. The selected 250 kbit/s GoodWe
+high-voltage profile is operational with the GW12K-ET-20 configured for the
+`Default *6` battery model in the Default 100 A group. The inverter recognizes
+the battery, reports the BMS measurements and limits in SEMS, and has completed
+real charge and discharge operation. The BMS remains the authority for the
+permitted current envelope. The CAN bus contains the STM32 and inverter; the
+ESP32 Gateway remains listen-only.
 
 #callout(
   [Important distinction],
@@ -433,20 +440,22 @@ frame map for the GW12K-ET-20. The official battery compatibility information
 establishes product and battery compatibility, but does not settle the
 bitrate, identifiers, payload byte order, or firmware-specific handshake.
 
-==== Candidate A: GoodWe HV protocol, highest current probability
+==== Selected profile: GoodWe HV protocol
 
-This is the first protocol I would investigate for the GW12K-ET-20. The
-confidence is based on the model family, the independent HV document, and the
-current GoodWe HV sender implementation. It remains a candidate until the
-actual inverter traffic is captured or the inverter accepts it in a controlled
-test.
+This is the implemented and hardware-validated profile for the GW12K-ET-20.
+Its byte-level interpretation still contains fields whose semantics are based
+on reverse engineering rather than an official GoodWe specification; those
+remaining uncertainties are tracked below and do not supersede the empirical
+compatibility result.
 
 #table(
   columns: (16mm, 27mm, 1fr, 26mm),
-  header-cell([ID]),
-  header-cell([Direction]),
-  header-cell([Candidate payload]),
-  header-cell([Confidence]),
+  table.header(
+    header-cell([ID]),
+    header-cell([Direction]),
+    header-cell([Candidate payload]),
+    header-cell([Confidence]),
+  ),
   [`0x420`], [Inverter -> STM32],
   [Timeout/no-BMS beacon. ASCII `GWBATTHV` is `47 57 42 41 54 54 48 56`. Approximately one-second-class timing is reported; one copy states 1.3 s.],
   [Medium for HV family; unconfirmed for ET-20.],
@@ -512,9 +521,9 @@ contract from Candidate A. It is retained as a fallback because GoodWe G2
 firmware and battery profiles may change the accepted protocol. It is not the
 first implementation target for the high-voltage ET-20 inverter.
 
-==== Implemented first software slice
+==== Implemented software and installation result
 
-#status("IMPLEMENTED / NOT HARDWARE-VALIDATED")
+#status("IMPLEMENTED / HARDWARE-VALIDATED")
 
 The STM32 now selects the protocol through
 `Software/Master/Inc/Peripherals/GoodweCanConfig.h`. Candidate A is the
@@ -555,6 +564,40 @@ transmission. Browser-local CSV logging includes the same data,
 plus a clearly labelled candidate 0.1-unit decode of `0x425`; this decode is
 diagnostic evidence and not an input to battery safety or inverter limits.
 
+On the installed inverter, adding the two-byte `0x460 00 00` compatibility
+frame removed the inverter's `BMS: Discharge disabled` condition for the
+selected `Default *6` profile. Immediately after the first firmware update,
+discharge followed the requested setpoint but intermittently returned to zero;
+the interruptions became more frequent before the inverter was returned to
+battery standby. After the subsequent restart and diagnostic firmware build,
+discharge remained stable during the available observation period. This is a
+useful compatibility result, but it does not yet prove whether `0x460`, `0x45A`,
+inverter state, or restart sequencing caused the transition. The diagnostics
+therefore remain enabled in normal builds because their runtime and bandwidth
+overhead is small and the installation has no separate USB/debug observation
+path during normal use.
+
+The inverter responds promptly to EMS discharge setpoint changes. The initial
+DC-side observations were:
+
+#table(
+  columns: (1fr, 1fr, 1fr),
+  header-cell([Requested]),
+  header-cell([Observed `P_BAT`]),
+  header-cell([Difference]),
+  [0.5 kW], [0.443 kW], [-0.057 kW],
+  [2.0 kW], [1.932 kW], [-0.068 kW],
+  [4.0 kW], [3.900 kW], [-0.100 kW],
+  [6.0 kW], [5.878 kW], [-0.122 kW],
+  [10.0 kW], [9.844 kW], [-0.156 kW],
+  [12.0 kW], [11.850 kW], [-0.150 kW],
+)
+
+These samples show a small offset and power-dependent difference. They are not
+yet a calibrated conversion between the GoodWe setpoint, DC battery power, AC
+inverter power, and net grid power. Charge response still requires an equally
+controlled test at a sufficiently low SoC.
+
 Application-level responses are guarded by
 `GOODWE_CAN_ENABLE_APPLICATION_RESPONSES`, which defaults to `0`. It must not
 be enabled until a capture from the actual inverter identifies a required
@@ -583,35 +626,31 @@ calibrated SoC.
 
 ==== Open protocol questions
 
-- Does the GW12K-ET-20 accept the 250 kbit/s GoodWe HV profile, and does its
-  current ARM/inverter firmware require a particular battery profile?
-- Is `0x420` only a timeout indication, or does this firmware require an
-  additional response? The available HV document does not establish a reply
-  to `0x420`; the implemented receiver records it so this can be verified.
-- Does the `0x460 00 00` frame clear the discharge-disable status on the
-  GW12K-ET-20 with the `Default *6` battery profile? Is `0x45A` also required,
-  and what values and timing do approved batteries use?
-- Does the inverter emit `0x425` after receiving `0x45A`, and can that frame be
-  used for diagnostics without becoming a BMS safety input?
-- What are the exact signs, limits, alarm bits, and timeout intervals on this
-  model and firmware?
-- Does the inverter require all frames at a fixed one-second period, and does
-  it tolerate a burst of frames or require spacing between them?
+- Is `0x420` only a timeout indication on this firmware, and what are the exact
+  timeout and recovery conditions?
+- Is `0x460 00 00` independently required for discharge permission, or is the
+  observed result dependent on `0x45A`, inverter state, or restart sequencing?
+- Which remaining bytes in `0x425` are meaningful, and can its candidate
+  voltage/current decode be fully validated across charge, discharge, and
+  standby without using it as a safety input?
+- What are the complete alarm/warning bit semantics in `0x455`, and which
+  status transitions does the inverter retain internally?
+- Does the inverter require the current one-second frame timing and burst
+  ordering, or would other valid timing also remain stable?
 
 ==== Validation boundary
 
-The implemented software is a protocol-specific STM32 transmitter with passive
+The installed software is a protocol-specific STM32 transmitter with passive
 receive diagnostics. The STM32 remains the safety authority: inverter-facing
 CAN frames communicate measured state and permitted limits, but they do not
 replace BMS fault evaluation, contactor permission, or HV supervision. Home
-Assistant may request an operating point through the normal control path, but it
-must not write arbitrary CAN payloads.
+Assistant may request an operating point only through the supported inverter
+control path; it must not write arbitrary CAN payloads.
 
-The next evidence needed is a passive CAN capture from the actual GW12K-ET-20
-and its installed battery/firmware, ideally covering startup, normal operation,
-charge permission removal, discharge permission removal, and an inverter
-timeout. Until that exists, Candidate A is the best starting hypothesis, while
-Candidate B remains a deliberately documented fallback.
+The next evidence is long-duration operation plus controlled boundary tests:
+charge and discharge permission removal, BMS derating, CAN interruption,
+inverter timeout, restart, and recovery. Candidate B remains documented as a
+fallback, but it is not used by the installed system.
 
 
 == HV supervisor
@@ -664,8 +703,10 @@ provisioning/station/recovery, and the local compiled Companion maintenance
 page. The Companion provides stale-status diagnostics, fresh BMS monitoring,
 CSV logging, register reads, Gateway NTP RTC synchronisation and device-time
 readback, fault clear, immediate run-request actions, and station-LAN firmware
-updates. MQTT Home Assistant discovery is a current Gateway function; CAN observation remains a separate planned increment. The Gateway uses isolated UART to the STM32 and
-remains listen-only on shared BMS/GoodWe CAN. It is not a safety authority. The
+updates. MQTT Home Assistant discovery is a current Gateway function. GoodWe
+CAN observations are produced by the STM32 and transported through the framed
+UART diagnostics; the Gateway itself remains listen-only on the shared
+BMS/GoodWe CAN bus. It is not a safety authority. The
 detailed transport, local-network, and recovery design is in
 `Documentation/architecture/home-bess-firmware-and-maintenance.md`.
 
@@ -1095,18 +1136,228 @@ GPIO17 is used internally for module flash and is not exposed.
 #block(breakable: false)[
   == Energy management system
 
-  #status("PLANNED", kind: "planned")
+  #status("SHADOW OPTIMIZATION OPERATIONAL")
 
-  The EMS is the supervisory optimization layer. It should combine battery availability with site demand,
-  PV production, inverter limits, dynamic electricity prices, EV charging, and other flexible loads.
+  EMHASS runs on Home Assistant OS as the supervisory optimizer. It combines battery state, site demand,
+  PV production, inverter limits, dynamic electricity prices, and eventually the EV charger, heat pump,
+  and air conditioners. The present deployment calculates and publishes schedules but does not actuate
+  the inverter.
 ]
 
-The EMS may request charging or discharging, but it must operate inside limits supplied by the BMS and
-inverter. It must tolerate missing telemetry and fall back to a safe, predictable operating policy.
+The detailed real-time controller specification is maintained in the separate
+Zaalsteden project, covering both Zaalsteden and Veldkamp. See
+#link("architecture/energy-controller-reference.md")[Controller documentation reference]
+for its project-relative document index. The implementation notes below record
+the earlier EMS baseline; the controller specification records the decisions
+agreed on 9 October 2026, including feeder topology, EV priority, telemetry
+validity, deployment, and the accepted communications-outage limitation.
+Controller software and automatic actuation remain unimplemented.
 
-The EMS implementation and deployment location are not yet defined in this repository. Its first
-interface should be a small, explicit contract containing battery state, available charge/discharge
-power, requested power, data freshness, and reason/status information.
+The EMS may request charging or discharging, but it must operate inside limits supplied by the BMS and
+inverter. It must tolerate missing telemetry and fall back to a zero-battery-power state. The STM32 and
+GoodWe remain responsible for their own safety and derating; an EMHASS result is never permission to
+exceed either device's current limit.
+
+=== Installed energy-system topology
+
+#table(
+  columns: (39mm, 1fr),
+  header-cell([Element]),
+  header-cell([Installed baseline]),
+  [Battery], [96s / 314 Ah LiFePO4; approximately 96 kWh configured in EMHASS. Desired operating range 10--90% SoC, with no reserved emergency-backup capacity. The BMS hard current rating is 63 A in both directions.],
+  [Hybrid inverter], [GoodWe GW12K-ET-20 with battery and 30 x 370 Wp PV: 15 panels south-west and 15 north-east, both at approximately 15 degrees.],
+  [Second PV inverter], [GoodWe GW15K-DT with 36 x 300 Wp south-east PV at approximately 35 degrees. A dedicated three-phase Modbus meter reports this inverter every five seconds.],
+  [Grid connection], [Three phase, 3 x 25 A. The current aggregate model uses 17.25 kW in each direction; protecting every individual phase remains separate work.],
+  [Flexible demand], [EV charging, heat pump, air conditioners, and other house loads are included in measured house demand but are not yet individually optimized. The battery, heat pump, and EV charger also share a provisional 3 x 20 A installation constraint whose exact scope still needs refinement.],
+)
+
+The GW12K-ET-20 is reached through a GoodWe WiFiLAN Kit-20 at
+`192.168.1.160`; the observed dongle firmware is `V2.7.64`. SEMS also contains
+the separate GW15K-DT. The hybrid inverter has no GoodWe house/load meter, so
+SEMS load power must not be used as the site-load source.
+
+=== Home Assistant measurements and controls
+
+#table(
+  columns: (62mm, 1fr),
+  table.header(
+    header-cell([Entity or source]),
+    header-cell([EMS use]),
+  ),
+  [`sensor.flexbms_state_of_charge`], [Live initial battery SoC.],
+  [`sensor.flexbms_pack_power`], [DC-side BMS power feedback. The BMS convention must be converted explicitly when compared with EMHASS and GoodWe signs.],
+  [`sensor.schuur_gw12k_` \ `et20_active_power`], [Hybrid-inverter AC power feedback.],
+  [`sensor.smart_meter_net_power`], [Total site import/export at the P1 meter.],
+  [`sensor.p1_meter_power_phase_1` through `_3`], [Per-phase grid power used for the future 3 x 25 A guard.],
+  [`sensor.rf24mesh_bijkeuken_` \ `zonnepanelen_bijkeuken_vermogen`], [Accurate AC power from the dedicated meter after the 15 kW PV inverter.],
+  [`sensor.emhass_total_pv_power`], [Home Assistant aggregate PV-power input for EMHASS.],
+  [`sensor.emhass_house_load_power`], [Home Assistant site-load input, including the EV charger, heat pump, and air conditioners.],
+  [`sensor.emhass_import_price` \ `sensor.emhass_export_price`], [Current price plus timestamped forecast attributes supplied to EMHASS.],
+  [`select.schuur_gw12k_` \ `et20_ems_mode`], [GoodWe EMS mode: tested manual charge, discharge, and battery-standby selection.],
+  [`number.schuur_gw12k_` \ `et20_ems_power_limit`], [GoodWe EMS power request in watts.],
+)
+
+The inverter entities currently come from the custom
+#link("https://github.com/TimSoethout/goodwe-sems-home-assistant")[GoodWe SEMS Home Assistant integration].
+Its measurements and control entities work, but the transport depends on the
+integration and SEMS behavior. Before closed-loop actuation, direct local
+GoodWe access through the WiFiLAN Kit-20 should be evaluated. Local control is
+preferred if it exposes the required writes reliably because it reduces delay
+and removes cloud availability from the control loop; the working SEMS path can
+remain a fallback and monitoring source.
+
+=== Measured shared feeder loss
+
+A measured voltage difference of approximately 7 V phase-to-neutral per phase
+was observed between 0 W and 12 kW balanced three-phase transfer through the
+long, relatively high-ohmic feeder between the junction box and the main
+electrical cabinet. The feeder is shared by the hybrid inverter, EV charger,
+heat pump, and other loads. This is an observed endpoint voltage drop, not yet
+a validated loss curve. The loss therefore depends on the aggregate net current
+through the feeder (approximately an I²R effect), not on battery power alone.
+
+At the 12 kW operating point the measured loss is approximately 350 W in total,
+which explains the observed increase of house-load power from approximately
+350 W to 700 W. EMHASS currently uses unity AC/DC efficiency values in the MVP
+configuration, but this loss must not be assigned solely to inverter efficiency.
+It should be represented against the aggregate feeder current or net
+junction-box power. Future validation should record phase currents, endpoint
+voltages, EV/heat-pump demand, inverter AC power, and P1 power at several
+operating points and in both directions.
+
+=== Current EMHASS MVP
+
+#status("SHADOW ONLY")
+
+The current configuration uses:
+
+- EMHASS `naive-mpc-optim` with a 15-minute optimization step;
+- a live `soc_init` and a 96 kWh nominal battery model;
+- 10% minimum and 90% maximum SoC;
+- 12 kW maximum battery charge and discharge power, with 95% efficiency in
+  each direction;
+- a profit objective with dynamic import and export price forecasts;
+- a 17.25 kW aggregate grid import/export limit;
+- a schedule run four times per hour, followed by publication of battery,
+  grid, PV, load, SoC, price, and optimizer-status forecast entities; and
+- no inverter actuation: the schedule is observed as a shadow plan only.
+
+Battery charge/discharge wear weights, SoC dwell penalties, inverter stress
+cost, and capacity-charge cost are deliberately zero in the MVP. An arbitrary
+wear price would change dispatch without yet being tied to measured degradation
+or a chosen operating policy. Throughput and cycle behavior should first be
+measured; a defensible marginal wear cost can then be introduced if schedule
+churn or low-value cycling is observed.
+
+The current house-load forecast is a temporary 96-quarter-hour bootstrap
+profile reconstructed from available measurements. This avoided an EMHASS
+shape error while the new aggregate load sensor did not yet contain a complete
+Recorder day. It must be replaced by a history-based weekday/time model after
+sufficient clean history exists. The three PV orientations are represented in
+the EMHASS model, but total-PV forecast accuracy has not yet been calibrated
+against both installed inverter measurements.
+
+Nord Pool currently supplies the market-price horizon. Home Assistant template
+sensors add the applicable Zonneplan import/export tariff components before
+passing prices to EMHASS. The Zonneplan account/integration should be revisited
+when the new contract is active. The 2026 calculation assumes the installation
+remains an annual net importer under the current net-metering treatment. The
+price templates and optimization interpretation must be reviewed before the
+Dutch net-metering rules change on 1 January 2027, when taxes on imported
+energy are no longer offset in the same way by exported energy.
+
+=== Horizon and terminal battery value
+
+`soc_final` is a hard equality in the current EMHASS model. An early shadow run
+incorrectly set it to 90%, which forced a 12 kW recharge in the final expensive
+interval simply to meet the endpoint. The current MVP uses 50%. This permits
+economically useful discharge while retaining 48 kWh at the end of the known
+forecast, but 50% is still an arbitrary boundary condition rather than a
+physical reserve requirement.
+
+The next practical strategy is a fixed 48-hour rolling horizon:
+
+- use actual Nord Pool/Zonneplan prices for every published interval;
+- extend the unknown tail with quarter-hour estimates derived from comparable
+  historical weekdays, including the applicable tariff components;
+- provide load and PV forecasts over the same complete horizon;
+- retain the 50% hard target only at the distant end of that fixed horizon;
+  and
+- execute only the first interval before solving again with fresh data.
+
+This prevents the horizon from shrinking to the last published price and moves
+the artificial endpoint away from the near-term dispatch decision. A later,
+mathematically cleaner improvement is a terminal salvage value: reward each kWh
+remaining at the endpoint according to its expected future replacement value,
+while leaving final SoC free inside 10--90%. EMHASS does not currently expose
+that objective directly. Implementing it would require an EMHASS enhancement or
+a separate optimizer; the hourly SoC deficit/surplus penalties are battery-dwell
+preferences and are not equivalent to a terminal value.
+
+=== Path to automatic inverter control
+
+Automatic control must not be enabled until the shadow output and feedback
+paths have passed the observation gates below. The executor should then:
+
+1. read the current `P_batt_forecast` command and reject stale or unsuccessful
+   plans;
+2. convert the EMHASS sign convention explicitly into `Charge Battery` or
+   `Discharge Battery` plus a non-negative GoodWe power limit;
+3. clamp the request to the inverter's 12 kW limit; GoodWe must continue to
+   enforce the fresh BMS charge/discharge limits received over CAN, and those
+   limits should also be exposed to Home Assistant if the executor is to
+   pre-clamp against them;
+4. apply SoC bounds, a small zero-power deadband, minimum mode residence time,
+   and rate limiting to prevent unnecessary mode chatter;
+5. calculate remaining headroom on each P1 phase before allowing battery,
+   heat-pump, or EV power to approach either the 3 x 25 A grid connection or
+   the provisional shared 3 x 20 A installation limit;
+6. verify response using BMS power, hybrid-inverter AC power, and P1 power; and
+7. return to a tested zero-battery-power state on stale data, failed writes,
+   Home Assistant/EMHASS unavailability, or manual override.
+
+Battery standby is the functional zero-power state for the first executor.
+Idle-energy optimization is a separate unresolved topic. Battery standby has
+been observed to consume approximately 70--75 W, sometimes from the battery.
+ECO mode has also shown approximately 5 W in one sequence, but returning from
+an EMS charge/discharge request to standby did not consistently restore that
+low-power condition. Selecting another operating mode and then ECO changed the
+result, and opening the BMS contactor did not produce the expected increase in
+grid power. This behavior is dynamic and must be characterized before ECO or
+contactor control is included in normal EMS sequencing.
+
+#pagebreak()
+
+=== Observation and improvement plan
+
+#table(
+  columns: (35mm, 1fr, 1fr),
+  table.header(
+    header-cell([Area]),
+    header-cell([Record]),
+    header-cell([Decision after evidence]),
+  ),
+  [Optimizer], [Run status, horizon start/end, objective, schedule changes between runs, final-interval power, and SoC endpoint.], [Detect terminal-boundary artifacts, infeasibility, timestamp/DST errors, and excessive schedule churn.],
+  [Forecasts], [15-minute predicted versus measured house load and PV; bias and absolute error by time of day and weekday.], [Replace the bootstrap load, tune PV models, and choose historical-tail rules.],
+  [Prices], [Published interval count, timestamps, import/export values, tariff components, and update time.], [Catch missing tomorrow prices, unit/tax mistakes, and the required 2027 tariff transition.],
+  [Power response], [Requested GoodWe limit, EMS mode, `P_BAT`, inverter AC power, P1 response, phase currents, endpoint voltages, settling time, cable drop, and residual error.], [Fit charge and discharge mappings, current-dependent cable/conversion losses, deadband, and closed-loop correction if necessary.],
+  [Battery model], [SoC change versus integrated Wh, charge/discharge efficiency, usable capacity, temperature, and BMS derating.], [Calibrate capacity/efficiency and enable EMHASS battery identification first in observation mode.],
+  [Grid protection], [Maximum and duration of current/power on each P1 phase, including EV, heat-pump, 3 x 25 A service, and provisional shared 3 x 20 A loading.], [Confirm the actual circuit scope, then set conservative per-phase headroom, transient allowance, and load-shedding priorities.],
+  [CAN], [Transmit-cycle/skipped-snapshot counts, per-frame timestamps, TX failures, TEC/REC, bus state, and normalized `0x458` versus `0x425` current.], [Investigate gaps, sign/scaling drift, permission loss, bus recovery, and any recurrence of intermittent zero power.],
+  [Modes and idle], [Mode transition sequence, BMS contactor state, battery/grid power, and steady-state auxiliary consumption.], [Define a repeatable zero-power/ECO sequence or keep battery standby as the reliable fallback.],
+  [Economics], [Actual import/export cost, battery throughput, conversion loss, and a no-battery baseline.], [Quantify savings and introduce a wear cost only if supported by the observed value and cycling.],
+  [Availability], [Age and availability of BMS, P1, PV, GoodWe, price, optimizer, and command entities; HA/add-on restarts and failed writes.], [Define timeouts, alarm thresholds, and the exact automatic fallback behavior.],
+)
+
+After approximately one week of clean shadow data, review timestamp alignment,
+price completeness, load/PV error, endpoint behavior, and plan stability. After
+several representative charge/discharge cycles, estimate setpoint mapping,
+efficiency, usable capacity, and SoC drift. Repeat the review after several
+weeks and after materially different weather or heating demand; the large
+battery and flexible household loads make a single sunny test day insufficient.
+Automatic actuation should start with conservative power and a supervised trial,
+then expand only after the per-phase fuse guard and stale-data fallback have
+been exercised.
 
 == Home Assistant integration
 
@@ -1119,6 +1370,13 @@ Home Assistant is the intended user-facing integration point for the installatio
 - manual operating-mode selection;
 - automation around dynamic prices and flexible loads; and
 - long-term energy and temperature history.
+
+The current Home Assistant OS host is a Raspberry Pi 5. The BMS MQTT entities,
+GoodWe entities, Nord Pool data, aggregate PV/load templates, price templates,
+and EMHASS forecast entities are installed and exposed. The GoodWe integration
+does not provide site house/load power because neither inverter has the required
+GoodWe load meter; the P1 and dedicated PV measurements remain authoritative
+for site accounting.
 
 Home Assistant must not become a safety dependency. If Home Assistant is unavailable, the STM32 must
 continue to protect the battery and the EMS must remain within the last valid limits or stop requesting
@@ -1185,7 +1443,9 @@ its self-test and precharge sequence only when a new run request is supplied.
 
 During normal operation the STM32 repeatedly measures the pack and evaluates its safety state. Battery
 limits and status are made available to the surrounding system. The inverter converts energy between the
-DC battery and the AC installation, while the future EMS decides the desired operating point.
+DC battery and the AC installation. EMHASS currently calculates the desired operating point in shadow
+mode; after validation, a separate executor will translate the first schedule interval into a bounded
+GoodWe request.
 
 == Faulted operation
 
@@ -1234,21 +1494,28 @@ must never be interpreted as a current permission to charge, discharge, or close
   [`Hardware/ModuleBoard`], [Battery module-board schematic, PCB, and production data.],
   [`Software/Master`], [STM32G491 firmware and platform configuration.],
   [`Software/Companion`], [Current FlexBMS BMS maintenance UI with direct USB, Gateway, and portable Windows package outputs.],
-  [`Software/Gateway`], [ESP32 UART v1, Wi-Fi provisioning/recovery, compiled Companion serving, Home Assistant MQTT discovery, optional RS485 energy meters, and OTA; CAN observation remains planned.],
+  [`Software/Gateway`], [ESP32 UART v1, Wi-Fi provisioning/recovery, compiled Companion serving, Home Assistant MQTT discovery, optional RS485 energy meters, OTA, and transport of STM32-produced GoodWe CAN diagnostics.],
   [`Documentation/protocol/uart-v1.md`], [Canonical framed BMS protocol for Gateway UART and direct USB CDC, including test vectors.],
   [`Simulations`], [Electrical simulation files used during hardware development.],
   [`Documentation`], [This system overview and its Typst build setup.],
 )
 
-The repository contains the initial ESP32 Gateway and FlexBMS Companion
-implementations. EMS and Home Assistant remain planned.
+The repository contains the operational STM32, ESP32 Gateway, and FlexBMS
+Companion implementations. Home Assistant integration is active and EMHASS is
+running in shadow mode. The site-specific Home Assistant/EMHASS configuration
+is deployed outside this firmware repository; automatic inverter actuation
+remains planned.
 
 = Open topics
 
-This overview is intentionally incomplete. The next useful documentation additions are:
+This overview is intentionally incomplete. The next useful documentation and
+validation additions are:
 
 - confirmed as-built module, NTC, and high-voltage topology;
-- final inverter selection, protocol compatibility, and commissioning sequence;
+- controlled GoodWe charge, derating, timeout, and recovery evidence;
 - system-level operating, fault, recovery, and shutdown policy;
-- commissioning of the ESP32 telemetry, local-network, and update architecture; and
-- EMS and Home Assistant interfaces, fallback behavior, and user permissions.
+- the as-deployed Home Assistant templates, EMHASS inputs, and executor contract;
+- fixed-horizon price/load/PV tail generation and eventual terminal-value handling;
+- per-phase fuse protection and coordination with the EV charger and heat pump;
+- a characterized GoodWe standby/ECO sequence and measured auxiliary power; and
+- automatic-control fallback behavior, manual override, and user permissions.

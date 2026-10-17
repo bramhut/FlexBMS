@@ -187,10 +187,10 @@ add-on on Home Assistant OS. The Companion stores a normal local-broker host,
 port, username, and write-only password in Gateway NVS. MQTT configuration is
 available only on the trusted station LAN, never through the open setup or
 recovery AP. The ESP32 reconnects when the broker returns and republishes
-current discovery and state after reconnect. Home Assistant, the broker, and
+current discovery and diagnostic state after reconnect. Home Assistant, the broker, and
 MQTT are not BMS safety dependencies.
 
-Discovery/configuration and the most recent state values are retained. Gateway
+Discovery/configuration and the combined diagnostic snapshot are retained. Gateway
 availability uses MQTT last-will/offline status. An unavailable Gateway marks
 the Home Assistant entities unavailable but does not alter the STM32 request or
 safety state.
@@ -225,6 +225,63 @@ only for an active/blocking BMS or HV fault. Gateway uptime is the ESP32
 microsecond timer converted to seconds; BMS-controller uptime is the STM32
 `STATUS.uptime_ms` tick converted to seconds. Both reset on their respective
 controller reset and are diagnostic only.
+
+### Acquisition-based HA publishing (local increment, 12 October 2026)
+
+The MQTT discovery identities, entity names, device identity and command topic
+are unchanged. Acquisition-sensitive entities now override the common state
+topic with one of the following topics beneath `flexbms/flexbms_XXYYZZ`:
+
+| Topic | Entities / source |
+|---|---|
+| `state/status` | Run request, BMS/HV state, HV running, faults, telemetry freshness and STM32 uptime; newly decoded STATUS only |
+| `state/pack` | Pack voltage/current/power/SoC, cell extrema and temperatures; newly decoded PACK only |
+| `state/energy` | Charged/discharged energy; newly decoded ENERGY only |
+| `state` | Legacy combined diagnostic snapshot and Gateway link diagnostics; **not acquisition proof** |
+
+Live source packets are non-retained QoS 0: a missed packet waits for the next
+UART acquisition rather than replaying an old QoS-1 outbox entry after reconnect.
+The Gateway coalesces each source's newest decoded frame into its existing
+one-second publication cycle. It consumes that source only when publication is
+accepted; a failed local send may retry while the acquisition is under three
+seconds old. Periodic ticks, unrelated frames and discovery cannot publish a
+cached source. PACK/ENERGY require a recent STATUS with measurements-fresh set.
+Malformed frames do not mark a source acquired. Invalid measurement status,
+UART loss, MQTT reconnect/disconnect and HA birth discard pending acquisitions.
+Fresh STATUS alone cannot resurrect a discarded PACK or ENERGY.
+
+Live sensors/binary sensors use `force_update: true` for unchanged successful
+acquisitions and a provisional ten-second expiry. The run-request switch has no
+force-update or expiry option: its attributes carry the existing STATUS
+`stm32_uptime_ms`, so unchanged intent receives a real HA write on a new status
+tick. Its old displayed value is not readiness; consumers must enforce source
+age. There is no new entity, heartbeat counter or UART schema. See the official
+[MQTT sensor](https://www.home-assistant.io/integrations/sensor.mqtt/),
+[binary sensor](https://www.home-assistant.io/integrations/binary_sensor.mqtt/)
+and [switch](https://www.home-assistant.io/integrations/switch.mqtt/) contracts.
+
+The existing STM32 sends PACK only after `tryGetNewMeasurementFrame` accepts a
+new measurement sequence; STATUS comes from the BMS task at 500 ms intervals.
+No STM32 safety logic, acquisition path or firmware was changed here. Timestamps
+remain HA receipt times, not synchronized physical-acquisition times. Network
+delay, restored HA states and publisher compatibility still require commissioning.
+Direct subscribers to legacy `state` must not treat it as a live acquisition.
+
+Native tests exercise the real `MqttClient.cpp`, real UART decoder and cJSON
+with fake ESP/network calls, plus the pure publication gate and pack/schema
+regression. Run with GCC under Linux/WSL from the repository root:
+
+```text
+bash Software/Gateway/tests/run-mqtt-tests.sh PATH_TO_ESP_IDF/components/json/cJSON
+```
+
+The ESP-IDF directory is the configured PlatformIO framework location on that
+PC. Test artifacts use a unique temporary directory. The local Gateway firmware
+build also passes. This increment is **not flashed or hardware-commissioned**;
+there is no release/version publication. Before relying on `last_reported`,
+verify unchanged run/HV/fault reports, unchanged power, pack-read loss while
+STATUS continues, UART loss, broker/HA restart and recovery on the installed
+Gateway. Compare acquisition age and cadence without commanding battery transfer.
 
 ## Optional RS485 energy meters
 
@@ -320,8 +377,8 @@ sensible display rounding. The initial cadence is:
 
 | Data | STM32 to Gateway | Gateway to MQTT / Home Assistant |
 |---|---:|---:|
-| BMS/HV state, fault state, and `run_request` | On change and 1 Hz | On change |
-| Pack voltage/current/SoC and min/max values | 2 Hz | 1 Hz |
+| BMS/HV state, fault state, and `run_request` | 2 Hz STATUS (plus new measurement set) | Up to 1 Hz after new STATUS, including unchanged values |
+| Pack voltage/current/SoC and min/max values | Up to 2 Hz, new measurement set only | Up to 1 Hz after new PACK, including unchanged values |
 | AMC3330 BAT+ and LOAD+ voltage readings | Every fresh BMS set | Companion only |
 | Per-slave cell voltages and balancing | Every fresh BMS set | Companion only |
 | Per-slave temperatures | Every fresh BMS set | Companion only |

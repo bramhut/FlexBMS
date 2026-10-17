@@ -21,6 +21,13 @@ The optional Gateway RS485 meter configuration, register map, MQTT freshness,
 and commissioning procedure are in
 [`architecture/rs485-energy-meters.md`](architecture/rs485-energy-meters.md).
 
+The real-time EMHASS-to-inverter and Peblar controller specification lives in
+the separate Zaalsteden project. Its portable document index and ownership
+boundaries are in
+[`architecture/energy-controller-reference.md`](architecture/energy-controller-reference.md).
+Keep the detailed controller design there rather than duplicating it in the
+FlexBMS overview.
+
 ## Prerequisite
 
 The repository currently targets Typst 0.15.1. Install it on Windows with:
