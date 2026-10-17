@@ -1,27 +1,27 @@
 {
   "format": 1,
-  "companion_version": "0.2.1",
-  "build_id": "8fe361f96efa16a1",
+  "companion_version": "0.2.2",
+  "build_id": "410b745d89a8d0ca",
   "files": [
     {
-      "path": "assets/index-B23Sk_A0.js",
+      "path": "assets/index-C1gLt31j.js",
       "bytes": 175116,
-      "sha256": "5cd01f50e612a085029cae25e9c785065a2056e330a94ffd16a5ea5c4e9b7c68"
+      "sha256": "a0ce2f3a414a52dab3c745993b2668395133f2d5a12572ad988cd62aec5efd26"
     },
     {
-      "path": "assets/index-D4ysfq02.css",
+      "path": "assets/index-CqhnKbB2.css",
       "bytes": 30304,
-      "sha256": "aaa7fd4b341a8f25b0572e947299893430ac7f2241615e3a64d23f6d7dcbac39"
+      "sha256": "408f72b2ea9d5283f65a0e361567818777b0e56093818d871afa6e7b03183252"
     },
     {
       "path": "favicon-dark.svg",
-      "bytes": 403,
-      "sha256": "32abeb2e93fc1bff3c3a8eebb54f98f8a37814687ccc16dee1e44ab0ed802271"
+      "bytes": 397,
+      "sha256": "889cf47f285d979f1ab18c9f3121ded1d9e1472b60091624e3b786fb2184d287"
     },
     {
       "path": "favicon-light.svg",
-      "bytes": 403,
-      "sha256": "31a2256d8501c0eb8059d270777e912bb2280adedfbfec033097b786d4c0a9b5"
+      "bytes": 397,
+      "sha256": "75297c24913b59065685321bb9e83ca40e1cd2370045c3154e2158aa7d413b37"
     },
     {
       "path": "favicon.ico",
@@ -30,9 +30,9 @@
     },
     {
       "path": "index.html",
-      "bytes": 596,
-      "sha256": "146dc24845d9d88a8b7ab96e9582e9ad540f632a18df782fb1f985d0579a2a5b"
+      "bytes": 595,
+      "sha256": "55eb7a2b643748146e05d41068e8e29f84b0a5c50aab7257748d017eb8ad7617"
     }
   ],
-  "total_bytes": 221331
+  "total_bytes": 221318
 }
