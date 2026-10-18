@@ -12,6 +12,7 @@
 #include "bcc/bcc.h"
 #include "bcc/UserSettings.h"
 #include "bcc/FaultMasks.h"
+#include "bcc/ConversionTiming.h"
 #include "Peripherals/CoulombIntegration.h"
 
 #include <algorithm>
@@ -760,12 +761,11 @@ bcc_status_t BCC::meas_WaitOnConversion(const bcc_avg_t avg)
     bcc_status_t status;
     bool complete = false;
 
-    // Wait for BCC_T_EOC_TIMEOUT_US before checking if the conversion is done.
-    // Reduce the waiting time by the time that has already passed since the last conversion started
-    // Either use the global or local version of the last conversion started time, depending on which one is more recent
-    uint32_t lastConversionStarted = std::max(mLastConversionStarted, mLastGlobalConversionStarted);
-    uint32_t timeSinceConvStarted = micros() - lastConversionStarted;
-    int32_t timeToWait = ((int32_t)BCC_T_EOC_TIMEOUT_US << ((uint8_t)avg)) - ((int32_t)timeSinceConvStarted);
+    const uint32_t nowUs = micros();
+    const uint32_t timeSinceConvStarted = BccConversionTiming::elapsedSinceLatestStartUs(
+        nowUs, mLastConversionStarted, mLastGlobalConversionStarted);
+    const uint32_t conversionUs = BCC_T_EOC_TIMEOUT_US << static_cast<uint8_t>(avg);
+    const uint32_t timeToWait = BccConversionTiming::remainingWaitUs(timeSinceConvStarted, conversionUs);
 
     if (timeToWait > 0)
     {
@@ -781,7 +781,8 @@ bcc_status_t BCC::meas_WaitOnConversion(const bcc_avg_t avg)
     if (!complete)
     {
         PRINTF_WARN("[BCC] WaitOnConversion timeout\n");
-        PRINTF_WARN("    Time since last conversion: %lu us\n", micros() - lastConversionStarted);
+        PRINTF_WARN("    Time since last conversion: %lu us\n",
+                    timeSinceConvStarted + static_cast<uint32_t>(micros() - nowUs));
     }
 
     return (complete) ? BCC_STATUS_SUCCESS : BCC_STATUS_CONVERSION_TIMEOUT;

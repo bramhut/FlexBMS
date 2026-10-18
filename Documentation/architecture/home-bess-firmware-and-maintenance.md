@@ -80,6 +80,12 @@ device initialization, CID assignment and register initialization. The delay
 exceeds the monitors' 1024 ms communication-reset timeout, so diagnostic retries
 must not reuse the old CID assignments or modified diagnostic registers.
 
+ADC conversion waits compare unsigned elapsed times from the per-slave and
+global conversion starts. This keeps retained startup-test timestamps valid
+across the 32-bit microsecond timer's approximately 71.6-minute rollover.
+The wait is limited to the remaining conversion duration; an already elapsed
+conversion adds no delay. The 500 ms safety watchdog remains unchanged.
+
 Companion's **Diagnostics → Hardware & tools** view shows the startup reports,
 including register context and the raw/checked GPIO masks. Opening Diagnostics
 refreshes the reports, including successful results. The first failed result

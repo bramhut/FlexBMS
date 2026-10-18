@@ -1061,6 +1061,11 @@ visible in the raw mask. Failed startup diagnostics repeat CID and register
 initialization after the retry delay so communication resets cannot invalidate
 the next attempt.
 
+ADC conversion waits compare unsigned elapsed times from local and global
+conversion starts, including across the 32-bit microsecond timer's approximately
+71.6-minute rollover. Each wait is limited to the remaining conversion duration;
+the 500 ms safety watchdog remains unchanged.
+
 `PREPARE_STM32_BOOTLOADER` and `COMMIT_STM32_BOOTLOADER` form the STM32-update handoff.
 The Gateway must already have staged and CRC-checked the image. The STM32 validates the prepare
 request shape and image length; `firmware_version` and `image_crc32` identify the Gateway-staged
