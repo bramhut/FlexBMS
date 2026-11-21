@@ -107,8 +107,15 @@ namespace FlexBms::Mqtt
 
         // Queue without waiting on network I/O. Backpressure leaves samples
         // unpublished; Home Assistant expiry marks them unavailable.
+        // Never enqueue a message that would be fragmented (see kMqttOutBufferBytes).
         bool publishMeter(const char *topic, const char *payload, bool retained)
         {
+            if (!EnergyMeters::fitsUnfragmented(topic, payload))
+            {
+                ESP_LOGE(kLogTag, "Meter MQTT message too large to queue (%u B): %s",
+                         static_cast<unsigned>(EnergyMeters::publishPacketBytes(topic, payload)), topic);
+                return false;
+            }
             return client != nullptr && state == State::Connected && esp_mqtt_client_get_outbox_size(client) < 8192 &&
                 esp_mqtt_client_enqueue(client, topic, payload, 0, 1, retained, true) >= 0;
         }
@@ -456,6 +463,7 @@ namespace FlexBms::Mqtt
             config.credentials.username = credentials.username.data();
             config.credentials.authentication.password = credentials.password.data();
             config.credentials.client_id = deviceId.data();
+            config.buffer.out_size = static_cast<int>(EnergyMeters::kMqttOutBufferBytes);
             config.session.last_will.topic = availabilityTopic.data();
             config.session.last_will.msg = "offline";
             config.session.last_will.msg_len = 7U;

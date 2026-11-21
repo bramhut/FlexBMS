@@ -1,6 +1,8 @@
 #include "flexbms/MeterJson.h"
 #include "flexbms/MeterPublisher.h"
 #include <cassert>
+#include <cstdio>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <vector>
@@ -95,6 +97,19 @@ int main()
     std::strcpy(state.configuration.meters[0].name.data(), "Schuur feeder"); state.configuration.meters[0].address = 37;
     json = discoveryJson(state, 0, "flexbms_AABBCC", "flexbms/flexbms_AABBCC"); assert(unique == get(get(get(json, "cmps"), "current_l1_a"), "unique_id")->valuestring); cJSON_Delete(json);
     json = discoveryJson(state, 1, "flexbms_AABBCC", "flexbms/flexbms_AABBCC"); assert(unique != get(get(get(json, "cmps"), "current_l1_a"), "unique_id")->valuestring); cJSON_Delete(json);
+    // Queued meter messages must never be fragmented by esp-mqtt (see kMqttOutBufferBytes):
+    // worst-case discovery with maximum-length names that double in size when JSON-escaped.
+    for (size_t slot = 0; slot < kMeterCount; ++slot)
+    {
+        std::memset(state.configuration.meters[slot].name.data(), '"', kNameBytes);
+        state.configuration.meters[slot].name[kNameBytes] = '\0';
+        char topic[160]{};
+        std::snprintf(topic, sizeof(topic), "homeassistant/device/%s_meter%u/config", "flexbms_AABBCC", static_cast<unsigned>(slot + 1));
+        const std::string payload = text(discoveryJson(state, slot, "flexbms_AABBCC", "flexbms/flexbms_AABBCC"));
+        assert(publishPacketBytes(topic, payload.c_str()) > 1024U); // the ESP-IDF default would fragment
+        assert(fitsUnfragmented(topic, payload.c_str()));
+    }
+    assert(!fitsUnfragmented("t", std::string(kMqttOutBufferBytes, 'x').c_str()));
     Publisher publisher;
     const auto tick = [&](int64_t now, bool force = false) { publisher.tick(state, now, force, "flexbms_AABBCC", "flexbms/flexbms_AABBCC", publish); };
     state.configuration = defaults(); state.configuration.meters[0].enabled = true;

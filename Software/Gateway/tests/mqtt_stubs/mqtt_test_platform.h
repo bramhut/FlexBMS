@@ -24,6 +24,7 @@ struct esp_mqtt_client_config_t {
     struct {
         struct { const char *topic = nullptr, *msg = nullptr; int msg_len = 0, qos = 0; bool retain = false; } last_will;
     } session;
+    struct { int size = 0, out_size = 0; } buffer;
 };
 int64_t esp_timer_get_time();
 int esp_mqtt_client_publish(esp_mqtt_client_handle_t, const char *, const char *, int, int, int);
@@ -47,3 +48,4 @@ inline esp_err_t nvs_set_u16(nvs_handle_t, const char *, uint16_t) { return ESP_
 inline esp_err_t nvs_commit(nvs_handle_t) { return ESP_OK; }
 inline void nvs_close(nvs_handle_t) {}
 #define ESP_LOGW(tag, ...) do { (void)(tag); } while (0)
+#define ESP_LOGE(tag, ...) do { (void)(tag); } while (0)

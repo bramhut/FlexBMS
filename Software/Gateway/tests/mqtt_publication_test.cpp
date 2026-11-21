@@ -1,5 +1,6 @@
 #include "flexbms/MqttClient.h"
 #include "flexbms/EnergyMeters.h"
+#include "flexbms/MeterPublisher.h"
 #include "mqtt_test_platform.h"
 #include "cJSON.h"
 #include <cassert>
@@ -15,7 +16,9 @@ static std::string failTopic;
 static FlexBms::EnergyMeters::State meterState;
 namespace FlexBms::EnergyMeters { State getState() { return meterState; } }
 int64_t esp_timer_get_time() { return nowUs; }
-esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t *) { return &nowUs; }
+static int configuredOutBufferBytes = 0;
+esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t *config)
+{ configuredOutBufferBytes = config->buffer.out_size; return &nowUs; }
 esp_err_t esp_mqtt_client_register_event(esp_mqtt_client_handle_t, int, EventHandler fn, void *)
 { handler = fn; return ESP_OK; }
 int esp_mqtt_client_publish(esp_mqtt_client_handle_t, const char *topic, const char *payload, int, int qos, int retain)
@@ -73,6 +76,8 @@ int main()
     assert(FlexBms::Mqtt::start(nullptr));
     assert(FlexBms::Mqtt::configure("broker.test", 1883, "test", "test"));
     tick(); event(MQTT_EVENT_CONNECTED);
+    // Queued meter discovery (~4 KB) must fit the outbound buffer unfragmented.
+    assert(configuredOutBufferBytes == static_cast<int>(FlexBms::EnergyMeters::kMqttOutBufferBytes));
     nowUs = 1'000'000; tick();
     assert(count("state/status") == 0 && count("state/pack") == 0);
     auto *discovery = cJSON_Parse(publications[1].payload.c_str());

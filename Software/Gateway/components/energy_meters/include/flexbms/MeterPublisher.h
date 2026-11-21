@@ -2,8 +2,28 @@
 #include "flexbms/MeterModel.h"
 #include "cJSON.h"
 
+#include <cstring>
+
 namespace FlexBms::EnergyMeters
 {
+    // Outbound MQTT buffer of the Gateway client. Meter messages are queued
+    // with esp_mqtt_client_enqueue. ESP-IDF 5.5 esp-mqtt leaves
+    // fragmented_msg_data_offset stale after enqueueing a message larger than
+    // this buffer; the next direct publish then sends surplus payload bytes
+    // and the broker rejects the stream ("Invalid QoS", "malformed packet").
+    // Queued meter messages must therefore always fit unfragmented.
+    inline constexpr size_t kMqttOutBufferBytes = 6144U;
+
+    // Size of an MQTT 3.1.1 QoS 1 PUBLISH, including the worst-case fixed header.
+    inline size_t publishPacketBytes(const char *topic, const char *payload)
+    {
+        return 5U + 2U + std::strlen(topic) + 2U + std::strlen(payload);
+    }
+    inline bool fitsUnfragmented(const char *topic, const char *payload)
+    {
+        return publishPacketBytes(topic, payload) <= kMqttOutBufferBytes;
+    }
+
     // Transport-independent publisher, also exercised by native tests.
     class Publisher
     {
