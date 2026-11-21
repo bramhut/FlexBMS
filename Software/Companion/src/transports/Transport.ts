@@ -37,7 +37,7 @@ export type EnergyMeterStatus = {
   bus_state: 'disabled' | 'starting' | 'ready' | 'error' | 'unavailable'; bus_error: number
   meters: Array<{ available: boolean; energy_fresh: boolean; failed_reads: number; last_error: number; last_success_age_ms: number | null
     serial_number?: number; meter_code?: number; firmware_version?: string
-    electrical?: { current_l1_a: number; current_l2_a: number; current_l3_a: number; power_l1_w: number; power_l2_w: number; power_l3_w: number; total_power_w: number; sample_age_ms: number; failed_reads: number }
+    electrical?: { voltage_l1_v?: number; voltage_l2_v?: number; voltage_l3_v?: number; current_l1_a: number; current_l2_a: number; current_l3_a: number; power_l1_w: number; power_l2_w: number; power_l3_w: number; total_power_w: number; sample_age_ms: number; failed_reads: number }
     energy?: { import_kwh: number; export_kwh: number } }>
 }
 export type WifiScanResponse = { request_id: string; result: 'ok' | 'busy' | 'rate_limited' | 'unavailable' | 'transport_error'; networks?: WifiNetwork[] }

@@ -59,7 +59,7 @@ const gateway = ref<GatewayStatus>({ gateway_version: '0.2.0+preview', gateway_b
     stored_configuration_valid: true, bus_state: 'ready', bus_error: 0,
     meters: Array.from({ length: 2 }, (_, slot) => ({ available: true, energy_fresh: true, failed_reads: 0, last_error: 0,
       last_success_age_ms: 250, serial_number: 12345678 + slot, meter_code: 72, firmware_version: '1.2',
-      electrical: { current_l1_a: 8.25, current_l2_a: 12.5, current_l3_a: 3.75,
+      electrical: { voltage_l1_v: 231.4, voltage_l2_v: 229.8, voltage_l3_v: 230.6, current_l1_a: 8.25, current_l2_a: 12.5, current_l3_a: 3.75,
         power_l1_w: 1897, power_l2_w: 2875, power_l3_w: 862, total_power_w: 5634, sample_age_ms: 250, failed_reads: 0 },
       energy: { import_kwh: 1234.567, export_kwh: 89.012 } })) },
 })

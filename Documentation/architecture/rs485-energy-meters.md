@@ -77,7 +77,7 @@ validate before a complete electrical sample becomes visible.
 
 | Function | Zero-based address | Registers | Values / cadence |
 |---|---|---:|---|
-| FC04 Read Input Registers | `0x0006` | 12 | L1/L2/L3 current (A), followed by L1/L2/L3 active power (W); 1 s. |
+| FC04 Read Input Registers | `0x0000` | 18 | L1/L2/L3 voltage (V), L1/L2/L3 current (A), then L1/L2/L3 active power (W); 1 s. |
 | FC04 | `0x0034` | 2 | Total signed active power (W); 1 s. |
 | FC04 | `0x0048` | 4 | Total import and export active energy (kWh); 30 s. |
 | FC03 Read Holding Registers | `0xFC00` | 3 | Serial number (two registers) and meter/model code; once after configuration, retry on failure. |
@@ -87,13 +87,20 @@ These are **protocol offsets**, not 30001/40001-style register numbers.
 Electrical/energy values are IEEE-754 32-bit floats with the most significant
 word first. ESP-Modbus supplies host-endian 16-bit words; the extension joins
 words explicitly before decoding. NaN, infinity, negative currents or energy,
-and implausible electrical magnitudes are rejected. Identity reads are optional
+and implausible electrical magnitudes (voltage outside 0–500 V) are rejected. Identity reads are optional
 and never gate electrical availability. The map is specific to SDM72D-M-2;
 other SDM72 variants are not interchangeable. Part 3 of the
 [Eastron SDM72D-M-2 User Manual V1.2](https://vairema.lt/wp-content/uploads/3-phase-eastron-sdm72d-m-2-user-manual-v1.2.pdf)
 is the register reference; the
 [Espressif serial master example](https://github.com/espressif/esp-modbus/tree/v2.1.4/examples/serial/mb_serial_master)
 documents the controller integration.
+
+Queued meter messages must fit the Gateway's 6144-byte MQTT outbound buffer
+unfragmented (worst-case discovery is about 5 KB). ESP-IDF 5.5 esp-mqtt leaves
+`fragmented_msg_data_offset` stale after enqueueing a fragmented message, which
+corrupts the next direct publish; `publishMeter` refuses oversized messages, and
+the native tests assert the worst-case discovery size. Found on 2026-11-21 when
+the second meter was enabled (Gateway 0.2.6).
 
 ## MQTT and freshness
 
@@ -108,7 +115,7 @@ The following topics are below `flexbms/flexbms_XXYYZZ/meter1/` or `meter2/`:
 
 | Topic | Retained | Contents |
 |---|---|---|
-| `state` | No | `current_l1_a` … `current_l3_a`, `power_l1_w` … `power_l3_w`, `total_power_w`, `sample_age_ms`, `failed_reads`. |
+| `state` | No | `voltage_l1_v` … `voltage_l3_v`, `current_l1_a` … `current_l3_a`, `power_l1_w` … `power_l3_w`, `total_power_w`, `sample_age_ms`, `failed_reads`. |
 | `energy` | No | `import_kwh`, `export_kwh`. |
 | `availability` | Yes | `online` only for a complete electrical sample less than 3 s old; otherwise `offline`. |
 | `energy_availability` | Yes | `online` only when the meter is available and energy is valid and less than 90 s old. |
@@ -122,7 +129,7 @@ and failure count, and never publish zero as a substitute. MQTT queueing is
 nonblocking and bounded by an outbox backpressure check; when publication
 cannot proceed, HA expiry continues to protect freshness.
 
-The HA entities are three phase currents, three phase active powers, total
+The HA entities are three phase voltages, three phase currents, three phase active powers, total
 active power, import/export energy (`total_increasing`), and diagnostic
 measurement age/failed reads. Companion additionally shows serial number,
 model code, firmware version, last error, and last successful electrical age.

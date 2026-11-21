@@ -60,16 +60,22 @@ int main()
 
     // Explicit Eastron high-word-first examples, including signed export.
     const uint16_t known[] = {0x41A0, 0x0000}; assert(decodeFloat(known) == 20.0F);
-    uint16_t phases[12]{}, total[2]{}, counters[4]{};
-    for (size_t i = 0; i < 3; ++i) { encode(20.0F + i, phases + i*2); encode(-2300.0F*(i+1), phases + 6+i*2); }
+    uint16_t phases[kPhaseRegisterCount]{}, total[2]{}, counters[4]{};
+    for (size_t i = 0; i < 3; ++i) { encode(230.0F + i, phases + i*2); encode(20.0F + i, phases + 6+i*2); encode(-2300.0F*(i+1), phases + 12+i*2); }
     encode(-13800, total); encode(123.25F, counters); encode(42.5F, counters + 2);
     Reading reading{}; assert(decodeElectrical(phases, total, reading) && decodeEnergy(counters, reading));
-    assert(reading.currentA[2] == 22 && reading.powerW[2] == -6900 && reading.totalPowerW == -13800);
+    assert(reading.voltageV[2] == 232 && reading.currentA[2] == 22 && reading.powerW[2] == -6900 && reading.totalPowerW == -13800);
     auto reverse = reported(reading, true); assert(reverse.totalPowerW == 13800 && reverse.powerW[0] == 2300 && reverse.currentA == reading.currentA);
+    assert(reverse.voltageV == reading.voltageV);
     assert(reverse.importKwh == 42.5F && reverse.exportKwh == 123.25F && reading.importKwh == 123.25F);
     encode(std::numeric_limits<float>::quiet_NaN(), total); assert(!decodeElectrical(phases, total, reading) && reading.totalPowerW == -13800);
-    encode(-13800, total); encode(-1, phases); assert(!decodeElectrical(phases, total, reading) && reading.currentA[0] == 20);
+    encode(-13800, total); encode(-1, phases + 6); assert(!decodeElectrical(phases, total, reading) && reading.currentA[0] == 20);
+    encode(20, phases + 6); encode(-1, phases); assert(!decodeElectrical(phases, total, reading) && reading.voltageV[0] == 230);
+    encode(501, phases); assert(!decodeElectrical(phases, total, reading));
+    encode(std::numeric_limits<float>::quiet_NaN(), phases); assert(!decodeElectrical(phases, total, reading));
+    encode(230, phases); assert(decodeElectrical(phases, total, reading));
     encode(std::numeric_limits<float>::infinity(), counters); assert(!decodeEnergy(counters, reading) && reading.importKwh == 123.25F);
+    assert(text(electricalJson(reading, true, 1'000'000)).find("\"voltage_l3_v\":232") != std::string::npos);
     assert(fresh(true, 1'000'000, 3'999'999, kElectricalFreshUs)); assert(!fresh(true, 1'000'000, 4'000'000, kElectricalFreshUs));
     assert(!fresh(false, 1, 2, kElectricalFreshUs) && !fresh(true, 2, 1, kElectricalFreshUs));
 
@@ -89,6 +95,9 @@ int main()
     auto component = get(get(json, "cmps"), "current_l1_a");
     const std::string unique = get(component, "unique_id")->valuestring;
     assert(unique == "flexbms_AABBCC_meter1_current_l1_a" && get(component, "expire_after")->valueint == 3);
+    auto voltage = get(get(json, "cmps"), "voltage_l3_v");
+    assert(voltage && std::string(get(voltage, "unit_of_measurement")->valuestring) == "V" &&
+           std::string(get(voltage, "device_class")->valuestring) == "voltage" && get(voltage, "expire_after")->valueint == 3);
     auto energy = get(get(json, "cmps"), "import_kwh");
     assert(get(energy, "expire_after")->valueint == 90 && cJSON_GetArraySize(get(energy, "avty")) == 3);
     assert(std::string(get(energy, "state_class")->valuestring) == "total_increasing");

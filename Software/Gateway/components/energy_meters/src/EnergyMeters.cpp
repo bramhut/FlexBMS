@@ -147,9 +147,9 @@ namespace FlexBms::EnergyMeters
                     int64_t now = esp_timer_get_time();
                     if (!config.enabled || now < nextElectrical[slot]) continue;
                     Reading reading = state.readings[slot];
-                    std::array<uint16_t, 12> phases{};
+                    std::array<uint16_t, kPhaseRegisterCount> phases{};
                     std::array<uint16_t, 2> total{};
-                    esp_err_t error = read(config.address, 4, 0x0006, phases.size(), phases.data());
+                    esp_err_t error = read(config.address, 4, 0x0000, phases.size(), phases.data());
                     if (error == ESP_OK) error = read(config.address, 4, 0x0034, total.size(), total.data());
                     if (error == ESP_OK && !decodeElectrical(phases.data(), total.data(), reading)) error = ESP_ERR_INVALID_RESPONSE;
                     reading.electricalValid = error == ESP_OK;

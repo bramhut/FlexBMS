@@ -57,6 +57,7 @@ namespace FlexBms::EnergyMeters
 
     struct Reading
     {
+        std::array<float, 3> voltageV{};
         std::array<float, 3> currentA{};
         std::array<float, 3> powerW{};
         float totalPowerW = 0;
@@ -98,14 +99,18 @@ namespace FlexBms::EnergyMeters
         std::memcpy(&value, &bits, sizeof(value));
         return value;
     }
+    // Input registers 0x0000-0x0011 (18 words): L1-L3 voltage, current, active power.
+    constexpr size_t kPhaseRegisterCount = 18U;
     inline bool decodeElectrical(const uint16_t *phases, const uint16_t *total, Reading &reading)
     {
         Reading candidate = reading;
         for (size_t phase = 0; phase < 3U; ++phase)
         {
-            candidate.currentA[phase] = decodeFloat(phases + phase * 2U);
-            candidate.powerW[phase] = decodeFloat(phases + 6U + phase * 2U);
-            if (!std::isfinite(candidate.currentA[phase]) || candidate.currentA[phase] < 0 || candidate.currentA[phase] > 120 ||
+            candidate.voltageV[phase] = decodeFloat(phases + phase * 2U);
+            candidate.currentA[phase] = decodeFloat(phases + 6U + phase * 2U);
+            candidate.powerW[phase] = decodeFloat(phases + 12U + phase * 2U);
+            if (!std::isfinite(candidate.voltageV[phase]) || candidate.voltageV[phase] < 0 || candidate.voltageV[phase] > 500 ||
+                !std::isfinite(candidate.currentA[phase]) || candidate.currentA[phase] < 0 || candidate.currentA[phase] > 120 ||
                 !std::isfinite(candidate.powerW[phase]) || std::fabs(candidate.powerW[phase]) > 100'000) return false;
         }
         candidate.totalPowerW = decodeFloat(total);

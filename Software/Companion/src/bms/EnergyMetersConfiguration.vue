@@ -84,6 +84,9 @@ function age(ms: number | null) { return ms === null ? 'No successful read yet' 
               <div><dt>L1 current</dt><dd>{{ meter.electrical.current_l1_a.toFixed(2) }} A</dd></div>
               <div><dt>L2 current</dt><dd>{{ meter.electrical.current_l2_a.toFixed(2) }} A</dd></div>
               <div><dt>L3 current</dt><dd>{{ meter.electrical.current_l3_a.toFixed(2) }} A</dd></div>
+              <div><dt>L1 voltage</dt><dd>{{ meter.electrical.voltage_l1_v?.toFixed(1) ?? '—' }} V</dd></div>
+              <div><dt>L2 voltage</dt><dd>{{ meter.electrical.voltage_l2_v?.toFixed(1) ?? '—' }} V</dd></div>
+              <div><dt>L3 voltage</dt><dd>{{ meter.electrical.voltage_l3_v?.toFixed(1) ?? '—' }} V</dd></div>
             </dl>
             <dl v-if="connected && meter.energy_fresh && meter.energy" class="meter-values meter-energy">
               <div><dt>Import energy</dt><dd>{{ meter.energy.import_kwh.toFixed(3) }} kWh</dd></div>

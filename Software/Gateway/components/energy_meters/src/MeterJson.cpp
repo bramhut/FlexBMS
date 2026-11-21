@@ -116,6 +116,8 @@ namespace FlexBms::EnergyMeters
         char key[32]{};
         for (size_t phase = 0; phase < 3; ++phase)
         {
+            std::snprintf(key, sizeof(key), "voltage_l%u_v", static_cast<unsigned>(phase + 1));
+            cJSON_AddNumberToObject(root, key, reading.voltageV[phase]);
             std::snprintf(key, sizeof(key), "current_l%u_a", static_cast<unsigned>(phase + 1));
             cJSON_AddNumberToObject(root, key, reading.currentA[phase]);
             std::snprintf(key, sizeof(key), "power_l%u_w", static_cast<unsigned>(phase + 1));
@@ -182,6 +184,8 @@ namespace FlexBms::EnergyMeters
         char key[32]{}, name[32]{};
         for (size_t phase = 0; phase < 3; ++phase)
         {
+            std::snprintf(key, sizeof(key), "voltage_l%u_v", static_cast<unsigned>(phase + 1)); std::snprintf(name, sizeof(name), "L%u voltage", static_cast<unsigned>(phase + 1));
+            sensor(key, name, "voltage", "V", false);
             std::snprintf(key, sizeof(key), "current_l%u_a", static_cast<unsigned>(phase + 1)); std::snprintf(name, sizeof(name), "L%u current", static_cast<unsigned>(phase + 1));
             sensor(key, name, "current", "A", false);
             std::snprintf(key, sizeof(key), "power_l%u_w", static_cast<unsigned>(phase + 1)); std::snprintf(name, sizeof(name), "L%u power", static_cast<unsigned>(phase + 1));
