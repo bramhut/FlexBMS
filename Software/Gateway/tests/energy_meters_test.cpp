@@ -99,6 +99,8 @@ int main()
     assert(voltage && std::string(get(voltage, "unit_of_measurement")->valuestring) == "V" &&
            std::string(get(voltage, "device_class")->valuestring) == "voltage" && get(voltage, "expire_after")->valueint == 3);
     auto energy = get(get(json, "cmps"), "import_kwh");
+    assert(cJSON_IsTrue(get(component, "force_update")) && cJSON_IsTrue(get(voltage, "force_update")));
+    assert(cJSON_GetObjectItemCaseSensitive(energy, "force_update") == nullptr);
     assert(get(energy, "expire_after")->valueint == 90 && cJSON_GetArraySize(get(energy, "avty")) == 3);
     assert(std::string(get(energy, "state_class")->valuestring) == "total_increasing");
     assert(cJSON_GetArraySize(get(json, "avty")) == 2);

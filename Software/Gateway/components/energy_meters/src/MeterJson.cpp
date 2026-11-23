@@ -170,6 +170,10 @@ namespace FlexBms::EnergyMeters
             if (unit != nullptr) cJSON_AddStringToObject(item, "unit_of_measurement", unit);
             cJSON_AddStringToObject(item, "state_class", energy ? "total_increasing" : "measurement");
             cJSON_AddNumberToObject(item, "expire_after", energy ? 90 : 3);
+            // Every 1 s poll must reach HA as a new report, also when the value is
+            // unchanged (for example 0 W at idle). Without it HA keeps last_reported
+            // old and the Energy Controller sees a stale feeder measurement.
+            if (!energy) cJSON_AddBoolToObject(item, "force_update", true);
             if (energy)
             {
                 cJSON_AddStringToObject(item, "avty_mode", "all");
